@@ -17,12 +17,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
+from ..config import get_path
 from ..core import SourceItem
 
-# Default location of the synced corpus (OneDrive). Override via run.py --root.
-DEFAULT_ROOT = Path(
-    r"C:\Users\jeulin\OneDrive - Assicurazioni Generali S.p.A\DATABASE\cb_corpus"
-)
+# Name of the ``.env`` key holding this machine's corpus root. The path itself
+# is never hard-coded here: it varies per machine and lives in ``.env`` (see
+# ``.env.example``), or can be passed explicitly via the CLI ``--root`` flag.
+ROOT_ENV_KEY = "CB_CORPUS_ROOT"
+
+
+def default_root() -> Optional[Path]:
+    """Corpus root for this machine, read from ``CB_CORPUS_ROOT`` in ``.env``.
+
+    Returns ``None`` if it is not configured (the caller then requires an
+    explicit ``--root``).
+    """
+    return get_path(ROOT_ENV_KEY)
 
 # cb_corpus taxonomy (code -> human label). Kept local so this connector has no
 # import dependency on the cb_corpus project. Group = first letter of the code.
@@ -58,7 +68,7 @@ def _has_pdf_sibling(html_path: Path) -> bool:
 
 
 def iter_items(
-    root: Path = DEFAULT_ROOT,
+    root: Optional[Path] = None,
     *,
     banks: Optional[Sequence[str]] = None,
     doctypes: Optional[Sequence[str]] = None,
@@ -72,7 +82,8 @@ def iter_items(
     Parameters
     ----------
     root:
-        Corpus root (the folder that contains ``raw/``).
+        Corpus root (the folder that contains ``raw/``). Defaults to the
+        ``CB_CORPUS_ROOT`` value from ``.env``.
     banks / doctypes / groups:
         Optional case-insensitive allow-lists (e.g. ``["ecb", "fr"]``,
         ``["C1", "A3"]``, ``["A", "C"]``). ``None`` means "all".
@@ -83,6 +94,13 @@ def iter_items(
         files are also yielded — but only when they have no ``.pdf`` sibling
         (the PDF is the canonical artifact when both exist).
     """
+    if root is None:
+        root = default_root()
+    if root is None:
+        raise ValueError(
+            f"cb_corpus root not configured: set {ROOT_ENV_KEY} in .env "
+            "(copy .env.example) or pass --root"
+        )
     raw = Path(root) / "raw"
     if not raw.is_dir():
         raise FileNotFoundError(f"corpus raw dir not found: {raw}")

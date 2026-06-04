@@ -41,7 +41,7 @@ def _csv(value: str | None) -> list[str] | None:
 
 def _build_cb_corpus_items(args: argparse.Namespace):
     return cb_corpus_source.iter_items(
-        root=Path(args.root) if args.root else cb_corpus_source.DEFAULT_ROOT,
+        root=Path(args.root) if args.root else None,
         banks=_csv(args.banks),
         doctypes=_csv(args.doctypes),
         groups=_csv(args.groups),

@@ -1,5 +1,10 @@
-# Local ingestion state (resume ledgers) — do not commit.
+# Local ingestion state (resume ledgers) ï¿½ do not commit.
 state/
+
+# Per-machine secrets / paths - do not commit. Use .env.example as a template.
+.env
+.env.local
+
 __pycache__/
 *.egg-info/
 build/
