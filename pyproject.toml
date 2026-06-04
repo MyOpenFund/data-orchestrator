@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-orchestrator"
+version = "0.1.0"
+description = "Ingestion orchestrator that feeds the mvp-graph-rag vector DB from fixed data sources."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jeulinmarc", email = "jeulinmarc@gmail.com" }]
+keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
+
+# NOTE on the mvp-graph-rag dependency
+# ------------------------------------
+# mvp-graph-rag (https://github.com/jeulinmarc/mvp-graph-rag) is intentionally
+# NOT declared here as an installable dependency: it is a standalone app made of
+# flat scripts under its `src/`, not a published package, and it must keep
+# living entirely on its own. This orchestrator locates that `src/` at runtime
+# (sibling folder, or the MVP_GRAPH_RAG_SRC env var) and drives its pipeline.
+#
+# The dependencies below mirror what that pipeline imports, so the orchestrator
+# can run in its own environment if desired. In practice you can also just reuse
+# the mvp-graph-rag virtualenv, which already provides all of these.
+dependencies = [
+    "qdrant-client>=1.18",
+    "sentence-transformers>=5.5",
+    "pypdf>=6.0",
+    "langchain-text-splitters>=1.1",
+]
+
+[project.optional-dependencies]
+# OCR fallback for scanned pages (the mvp load_pdf "auto"/"always" OCR path).
+# Also needs the system binaries `tesseract` and `poppler`.
+ocr = ["pytesseract>=0.3.13", "pdf2image>=1.17", "Pillow>=12.0"]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+"mvp-graph-rag" = "https://github.com/jeulinmarc/mvp-graph-rag"
+
+[project.scripts]
+rag-orchestrator = "rag_orchestrator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rag_orchestrator*"]

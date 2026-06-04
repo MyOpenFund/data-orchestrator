@@ -1,0 +1,8 @@
+# Local ingestion state (resume ledgers) — do not commit.
+state/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
