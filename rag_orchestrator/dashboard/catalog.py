@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -329,4 +331,215 @@ def load_jsonl(name: str) -> list[dict]:
             except json.JSONDecodeError:
                 continue
     rows.reverse()
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Inventory & quality control: coverage matrix, anomalies, cadence, fetch errors
+# ---------------------------------------------------------------------------
+# Known per-year expectations, mirrored from cb_corpus adapters' `expected_per_year`
+# (the published meeting/release calendars). Anchors the anomaly check for the
+# majors; everything else falls back to a data-driven baseline (median).
+EXPECTED_PER_YEAR: dict[tuple[str, str], int] = {
+    ("ecb", "A1"): 8, ("ecb", "A2"): 8, ("ecb", "A3"): 8, ("ecb", "E4"): 8,
+    ("us", "A2"): 8, ("us", "A3"): 8, ("us", "F1"): 4,
+    ("au", "A1"): 8, ("au", "A3"): 8, ("au", "E1"): 4,
+}
+
+
+def counts_by_bank_type_year(rows: Iterable[dict]) -> dict[tuple[str, str, int], int]:
+    """Document counts keyed by (bank_code, doc_type, year)."""
+    counts: dict[tuple[str, str, int], int] = defaultdict(int)
+    for r in rows:
+        y = r.get("year")
+        if y is None:
+            continue
+        counts[(r.get("bank_code"), r.get("doc_type"), y)] += 1
+    return dict(counts)
+
+
+def coverage_matrix(rows: Iterable[dict], bank: str) -> dict:
+    """Year × doc_type count grid for one bank (for a pivot table)."""
+    grid: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    types: set[str] = set()
+    for r in rows:
+        if r.get("bank_code") != bank:
+            continue
+        y = r.get("year")
+        if y is None:
+            continue
+        dt = r.get("doc_type")
+        grid[y][dt] += 1
+        types.add(dt)
+    return {"grid": {y: dict(v) for y, v in grid.items()}, "types": sorted(types)}
+
+
+# Human labels for cb_corpus doc-type codes (kept local; mirrors the taxonomy).
+DOCTYPE_LABELS = {
+    "A1": "Rate-decision press release", "A2": "Policy statement",
+    "A3": "Minutes / accounts", "A4": "Voting record",
+    "B1": "Press-conference transcript", "B2": "Opening remarks",
+    "C1": "Speech", "C2": "Interview / op-ed / testimony",
+    "D1": "Working paper", "D2": "Occasional / discussion paper",
+    "D3": "Economic letter / blog", "E1": "Monetary policy / inflation report",
+    "E2": "Financial stability report", "E3": "Annual report",
+    "E4": "Economic / quarterly bulletin", "F1": "Staff projections / forecasts",
+    "G1": "Regulatory notice", "G2": "Statistical release", "G3": "Supervisory report",
+}
+
+
+def type_summary(rows: Iterable[dict], bank: str) -> list[dict]:
+    """Per doc_type inventory stats for a bank.
+
+    Returns total, active-year span, **avg/yr** and **median/yr** (the corpus's
+    real cadence), plus ``calendar_per_year`` — the bank's *published* meeting
+    count (:data:`EXPECTED_PER_YEAR`) as a reference, or ``None`` if unknown.
+    The corpus often stores several documents per meeting, so avg/median is the
+    honest "how many do we actually have per year", and the calendar number is
+    just context.
+    """
+    per_type_year: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for r in rows:
+        if r.get("bank_code") != bank:
+            continue
+        y = r.get("year")
+        if y is None:
+            continue
+        per_type_year[r.get("doc_type")][y] += 1
+
+    out: list[dict] = []
+    for dt, yearly in per_type_year.items():
+        counts = list(yearly.values())
+        years = sorted(yearly)
+        total = sum(counts)
+        n = len(years)
+        out.append({
+            "doc_type": dt,
+            "label": DOCTYPE_LABELS.get(dt, ""),
+            "total": total,
+            "years": f"{years[0]}–{years[-1]}" if years else "",
+            "avg_per_year": round(total / n, 1) if n else 0,
+            "median_per_year": int(statistics.median(counts)) if counts else 0,
+            "calendar_per_year": EXPECTED_PER_YEAR.get((bank, dt)),
+            "last_year": years[-1] if years else None,
+        })
+    out.sort(key=lambda r: r["doc_type"])
+    return out
+
+
+def anomalies(rows: Iterable[dict], *, current_year: int,
+              lookback_years: int = 12, min_baseline: int = 4) -> list[dict]:
+    """Flag (bank, type, year) cells that deviate from the expected count.
+
+    `missing` (year with 0), `low` (< 50% of baseline), `exceptional` (> 150%).
+    The baseline is the corpus's **own recent cadence** for that (bank, type) —
+    the median of its non-zero yearly counts inside the lookback window — NOT the
+    published meeting calendar: the corpus stores a varying number of documents
+    per meeting (e.g. ~2 ECB accounts per meeting → 16/yr, not 8), so a meeting
+    count would flag every normal year. To stay a short, actionable list the
+    check is constrained to:
+
+    * the type's **active span** (first→last year it published), so a type that
+      didn't exist yet / was discontinued isn't flagged as "missing";
+    * the **recent** ``lookback_years`` window, where gaps are actionable;
+    * completed years only (the in-progress year is partial);
+    * a baseline of at least ``min_baseline``/yr (skips low-volume noise).
+
+    The published calendar (:data:`EXPECTED_PER_YEAR`) is surfaced separately in
+    the UI as a reference, not used as the threshold here.
+    """
+    per_bt: dict[tuple[str, str], dict[int, int]] = defaultdict(dict)
+    for (bank, dt, y), c in counts_by_bank_type_year(rows).items():
+        per_bt[(bank, dt)][y] = c
+
+    out: list[dict] = []
+    for (bank, dt), yearly in per_bt.items():
+        nonzero_years = [y for y, c in yearly.items() if c > 0]
+        if not nonzero_years:
+            continue
+        span_lo, span_hi = min(nonzero_years), max(nonzero_years)
+        lo = max(span_lo, current_year - lookback_years)
+        hi = min(span_hi, current_year - 1)               # completed & within activity
+        recent_nonzero = [yearly[y] for y in nonzero_years if lo <= y <= hi]
+        if len(recent_nonzero) < 3:
+            continue
+        baseline = int(statistics.median(recent_nonzero))
+        if baseline < min_baseline:
+            continue
+        basis = "recent-median"
+        for y in range(lo, hi + 1):
+            c = yearly.get(y, 0)
+            if c == 0:
+                flag = "missing"
+            elif c < baseline * 0.5:
+                flag = "low"
+            elif c > baseline * 1.5:
+                flag = "exceptional"
+            else:
+                continue
+            out.append({"bank_code": bank, "doc_type": dt, "year": y, "count": c,
+                        "expected": baseline, "basis": basis, "flag": flag})
+    order = {"missing": 0, "low": 1, "exceptional": 2}
+    out.sort(key=lambda r: (order.get(r["flag"], 9), r["bank_code"], r["doc_type"], r["year"]))
+    return out
+
+
+def upcoming(rows: Iterable[dict], *, today: date,
+             horizon_days: int = 60) -> list[dict]:
+    """Next-expected / overdue per recurring (bank, type), from publication cadence.
+
+    Uses only real-dated (manifest-enriched) docs of calendar-known types so the
+    `YYYY-01-01` path fallback never pollutes the interval estimate. Estimates
+    the next release as last_date + median(recent intervals); `overdue` if we're
+    >7 days past it, `soon` if it's within `horizon_days`.
+    """
+    series: dict[tuple[str, str], list[date]] = defaultdict(list)
+    for r in rows:
+        if r.get("metadata_source") != "manifest":
+            continue
+        pd_ = r.get("pub_date")
+        key = (r.get("bank_code"), r.get("doc_type"))
+        if pd_ is not None and key in EXPECTED_PER_YEAR:
+            series[key].append(pd_)
+
+    out: list[dict] = []
+    for (bank, dt), dates in series.items():
+        dates = sorted(set(dates))
+        if len(dates) < 4:
+            continue
+        intervals = [(dates[i] - dates[i - 1]).days for i in range(1, len(dates))]
+        med = statistics.median(intervals[-12:])          # recent cadence
+        if med <= 0:
+            continue
+        nxt = dates[-1] + timedelta(days=med)
+        days_until = (nxt - today).days
+        status = ("overdue" if days_until < -7
+                  else "soon" if days_until <= horizon_days else "on-track")
+        out.append({"bank_code": bank, "doc_type": dt, "last": dates[-1],
+                    "interval_days": round(med), "next_expected": nxt,
+                    "days_until": days_until, "status": status})
+    order = {"overdue": 0, "soon": 1, "on-track": 2}
+    out.sort(key=lambda r: (order.get(r["status"], 9), r["days_until"]))
+    return out
+
+
+def load_discovery_errors(manifest_path: Optional[Path] = None) -> list[dict]:
+    """Read cb_corpus's ``data/discovery_errors.jsonl`` (fetch-failure audit trail)."""
+    if manifest_path is None:
+        manifest_path = find_manifest()
+    if manifest_path is None:
+        return []
+    path = Path(manifest_path).parent / "discovery_errors.jsonl"
+    if not path.is_file():
+        return []
+    rows: list[dict] = []
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     return rows

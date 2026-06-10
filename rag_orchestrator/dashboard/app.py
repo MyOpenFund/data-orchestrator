@@ -97,7 +97,8 @@ docs = catalog.build_documents(corpus_rows, rag, as_of=as_of)
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_docs, tab_graphs, tab_queries = st.tabs(["📄 Documents", "🕸️ Graphs", "💬 LLM Queries"])
+tab_docs, tab_qc, tab_graphs, tab_queries = st.tabs(
+    ["📄 Documents", "🔎 Inventory & QC", "🕸️ Graphs", "💬 LLM Queries"])
 
 # === Documents =============================================================
 with tab_docs:
@@ -213,6 +214,132 @@ with tab_docs:
                     st.info(f"Non-PDF artifact on disk: {p.name}")
                 else:
                     st.warning(f"File not found on disk: {p}")
+
+# === Inventory & QC ========================================================
+with tab_qc:
+    st.header("Inventory & quality control")
+    if not corpus_rows:
+        st.info("No corpus found.")
+    else:
+        current_year = date.today().year
+        docs_all = catalog.build_documents(corpus_rows, rag, as_of=None)  # full, not as-of
+        all_banks = sorted({r["bank_code"] for r in corpus_rows if r.get("bank_code")})
+        default_bank = "ecb" if "ecb" in all_banks else all_banks[0]
+        sel_bank = st.selectbox("Bank", all_banks, index=all_banks.index(default_bank))
+
+        # --- Per-type summary: what we have & the typical cadence ---
+        st.subheader(f"What we have — {sel_bank}, by document type")
+        ts = catalog.type_summary(corpus_rows, sel_bank)
+        if ts:
+            tdf = pd.DataFrame(ts)[["doc_type", "label", "total", "years",
+                                    "avg_per_year", "median_per_year",
+                                    "calendar_per_year", "last_year"]]
+            st.dataframe(
+                tdf, use_container_width=True, hide_index=True,
+                column_config={
+                    "avg_per_year": st.column_config.NumberColumn("avg/yr"),
+                    "median_per_year": st.column_config.NumberColumn("median/yr"),
+                    "calendar_per_year": st.column_config.NumberColumn(
+                        "calendar/yr",
+                        help="Bank's published meeting count (reference only — the "
+                             "corpus often stores several documents per meeting)"),
+                })
+            st.caption("**avg/yr · median/yr** = the corpus's real cadence (what you "
+                       "actually have). **calendar/yr** = the published meeting count, "
+                       "shown as context — it is NOT used to flag anomalies.")
+
+        # --- Coverage matrix (per bank) ---
+        st.subheader(f"Coverage matrix — {sel_bank}: documents per year × type")
+        cov = catalog.coverage_matrix(corpus_rows, sel_bank)
+        if cov["types"]:
+            mat = pd.DataFrame(
+                {dt: {y: cov["grid"].get(y, {}).get(dt, 0) for y in sorted(cov["grid"])}
+                 for dt in cov["types"]}
+            )
+            mat.index.name = "year"
+            st.dataframe(mat, use_container_width=True)
+            exp = {f"{t}": v for (b, t), v in catalog.EXPECTED_PER_YEAR.items() if b == sel_bank}
+            if exp:
+                st.caption("Expected/yr (published calendar): "
+                           + ", ".join(f"{k}={v}" for k, v in sorted(exp.items())))
+        else:
+            st.info(f"No documents for {sel_bank}.")
+
+        # --- Browse / view the documents behind a cell ---
+        with st.expander(f"📂 Browse & view {sel_bank} documents"):
+            bdocs = [d for d in docs_all if d.get("bank_code") == sel_bank]
+            types_here = sorted({d["doc_type"] for d in bdocs})
+            if types_here:
+                cdt, cyr = st.columns(2)
+                pick_t = cdt.selectbox("Type", types_here, key="qc_type")
+                yrs = sorted({d["year"] for d in bdocs
+                              if d["doc_type"] == pick_t and d.get("year")}, reverse=True)
+                pick_y = cyr.selectbox("Year", yrs, key="qc_year") if yrs else None
+                sub = [d for d in bdocs if d["doc_type"] == pick_t and d.get("year") == pick_y]
+                st.caption(f"{len(sub)} document(s) · "
+                           f"{sum(1 for d in sub if d['in_rag'])} in RAG")
+                if sub:
+                    labels = [f"{d.get('pub_date')} · "
+                              f"{(str(d.get('title')) or d['doc_id'])[:70]}"
+                              f"{'  ✓RAG' if d['in_rag'] else ''}" for d in sub]
+                    di = st.selectbox("Document", range(len(labels)),
+                                      format_func=lambda i: labels[i], key="qc_doc")
+                    chosen = sub[di]
+                    p = chosen.get("abs_path")
+                    p = Path(p) if p else None
+                    if p and p.is_file() and p.suffix.lower() == ".pdf":
+                        data = p.read_bytes()
+                        st.download_button("Download PDF", data, file_name=p.name, key="qc_dl")
+                        b64 = base64.b64encode(data).decode()
+                        st.markdown(
+                            f'<iframe src="data:application/pdf;base64,{b64}" '
+                            f'width="100%" height="500"></iframe>', unsafe_allow_html=True)
+                    elif p:
+                        st.warning(f"File not on disk: {p}")
+
+        # --- Anomalies ---
+        st.subheader("Anomalies — deviations from the expected count")
+        anom = catalog.anomalies(corpus_rows, current_year=current_year)
+        if anom:
+            adf = pd.DataFrame(anom)
+            cc = st.columns(4)
+            cc[0].metric("Flagged", len(anom))
+            cc[1].metric("Missing", int((adf["flag"] == "missing").sum()))
+            cc[2].metric("Low", int((adf["flag"] == "low").sum()))
+            cc[3].metric("Exceptional", int((adf["flag"] == "exceptional").sum()))
+            if st.checkbox(f"Only {sel_bank}", value=False, key="anom_bank"):
+                adf = adf[adf["bank_code"] == sel_bank]
+            st.dataframe(adf, use_container_width=True, hide_index=True)
+            st.caption("`expected` = the type's own **recent median docs/yr** (data-driven, "
+                       "within its active span — not the meeting calendar). "
+                       "`missing` = 0 in an active year · `low` < 50% · "
+                       "`exceptional` > 150% of that baseline (e.g. an emergency-meeting year).")
+        else:
+            st.success("No anomalies flagged against the expected baselines.")
+
+        # --- Upcoming / overdue ---
+        st.subheader("Upcoming & overdue (from publication cadence)")
+        up = catalog.upcoming(corpus_rows, today=date.today())
+        if up:
+            udf = pd.DataFrame(up)
+            c1u, c2u = st.columns(2)
+            c1u.metric("Overdue (>7d past)", int((udf["status"] == "overdue").sum()))
+            c2u.metric("Due soon (≤60d)", int((udf["status"] == "soon").sum()))
+            st.dataframe(udf, use_container_width=True, hide_index=True)
+            st.caption("Next release ≈ last date + median recent interval. "
+                       "`overdue` often signals a fetch gap rather than a late release.")
+        else:
+            st.info("Not enough dated history to estimate cadence.")
+
+        # --- Fetching problems ---
+        st.subheader("Fetching problems")
+        errs = catalog.load_discovery_errors()
+        if errs:
+            st.error(f"{len(errs)} discovery error(s) recorded — see below.")
+            st.dataframe(pd.DataFrame(errs), use_container_width=True, hide_index=True)
+        else:
+            st.success("No fetch errors recorded "
+                       "(cb_corpus writes data/discovery_errors.jsonl on failures).")
 
 # === Graphs ================================================================
 with tab_graphs:
