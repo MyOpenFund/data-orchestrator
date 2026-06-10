@@ -6,14 +6,30 @@ and yields :class:`..core.SourceItem` objects for the orchestrator.
 On-disk layout (produced by cb_corpus ``storage.py``)::
 
     <root>/raw/<bank>/<doctype>/<year>/<doc_id>.<ext>
+    <root>/manifest.jsonl          # rich index, one JSON row per document
 
-There is no ``manifest.jsonl`` synced alongside the data, but ``bank``,
-``doctype`` and ``year`` are fully recoverable from the path — that's exactly
-the metadata we attach to every chunk so the vector DB can be filtered and
-cited per bank / document-type / year.
+Hybrid strategy
+---------------
+The **disk** is the source of truth for *completeness*: every file under
+``raw/`` is yielded, so nothing is ever silently skipped just because the
+manifest lags behind the downloads (this happens — a re-download can add
+thousands of PDFs before the manifest is regenerated).
+
+The **manifest** is the source of truth for *rich metadata*: when an on-disk
+file's ``doc_id`` (its filename stem, == cb_corpus's stable sha1 id) is found in
+the manifest we attach the real publication ``date``, ``title``, ``pdf_url`` and
+``sha256`` (``metadata_source="manifest"``). When it is not yet indexed we fall
+back to what the path encodes — ``bank``/``doctype``/``year`` — and date the doc
+to ``<year>-01-01`` (cb_corpus's own year→Jan-1 convention, so working papers,
+which are year-only at the source anyway, match exactly). Such rows are flagged
+``metadata_source="path"`` / ``date_granularity="year"`` so downstream (the
+dashboard, the quant point-in-time layer) can treat them conservatively and so a
+later ``cb_corpus reindex-from-disk`` transparently upgrades them to exact dates.
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
@@ -67,6 +83,77 @@ def _has_pdf_sibling(html_path: Path) -> bool:
     return html_path.with_suffix(".pdf").exists()
 
 
+def _find_manifest(root: Path) -> Optional[Path]:
+    """Locate ``manifest.jsonl`` for a corpus root (``<root>`` or ``<root>/data``)."""
+    for cand in (root / "manifest.jsonl", root / "data" / "manifest.jsonl"):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _load_manifest_index(manifest: Path) -> dict[str, dict]:
+    """Build a ``doc_id -> manifest row`` index for enriching on-disk files.
+
+    Keyed by the manifest ``doc_id``, which equals the on-disk filename stem
+    (files are stored as ``<doc_id>.<ext>``), so the join with the disk walk is
+    exact.
+    """
+    index: dict[str, dict] = {}
+    with manifest.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            doc_id = rec.get("doc_id")
+            if doc_id:
+                index[doc_id] = rec
+    return index
+
+
+def _build_payload(
+    *, bank_code: str, doc_type: str, group: str, year: Optional[int],
+    ext: str, rel_path: str, rec: Optional[dict],
+) -> dict:
+    """Chunk payload for one document — rich from the manifest, else path-derived."""
+    payload = {
+        "source": "cb_corpus",
+        "bank_code": bank_code,
+        "doc_type": doc_type,
+        "doc_type_label": DOCTYPE_LABELS.get(doc_type, ""),
+        "doc_group": group,
+        "year": year,
+        "ext": ext.lstrip("."),
+        "rel_path": rel_path,
+    }
+    if rec is not None:
+        payload.update({
+            "publication_date": rec.get("date"),       # as-of key (exact ISO)
+            "title": rec.get("title", ""),
+            "url": rec.get("pdf_url", ""),
+            "sha256": rec.get("sha256", ""),
+            "provenance": rec.get("provenance", ""),
+            "metadata_source": "manifest",
+            "date_granularity": "source",
+        })
+    else:
+        # Not indexed yet: derive from the path. Use cb_corpus's year->Jan-1
+        # convention so the date matches the manifest's granularity for papers.
+        payload.update({
+            "publication_date": f"{year:04d}-01-01" if year else None,
+            "title": "",
+            "url": "",
+            "sha256": "",
+            "provenance": "disk",
+            "metadata_source": "path",
+            "date_granularity": "year",
+        })
+    return payload
+
+
 def iter_items(
     root: Optional[Path] = None,
     *,
@@ -76,6 +163,7 @@ def iter_items(
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
     include_html: bool = False,
+    prefer_manifest: bool = True,
 ) -> Iterator[SourceItem]:
     """Walk the corpus and yield one :class:`SourceItem` per document.
 
@@ -93,6 +181,10 @@ def iter_items(
         If False (default) only ``.pdf`` files are yielded. If True, ``.html``
         files are also yielded — but only when they have no ``.pdf`` sibling
         (the PDF is the canonical artifact when both exist).
+    prefer_manifest:
+        If True (default) on-disk files are enriched with manifest metadata when
+        their ``doc_id`` is indexed. If False the manifest is ignored entirely
+        (pure path-derived metadata) — mostly useful for testing.
     """
     if root is None:
         root = default_root()
@@ -109,15 +201,19 @@ def iter_items(
     doctype_set = {d.upper() for d in doctypes} if doctypes else None
     group_set = {g.upper() for g in groups} if groups else None
 
+    # Walk the disk for completeness; enrich from the manifest index when present.
+    manifest = _find_manifest(Path(root)) if prefer_manifest else None
+    index = _load_manifest_index(manifest) if manifest is not None else {}
+
     for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
         bank_code = bank_dir.name
         if bank_set and bank_code.lower() not in bank_set:
             continue
 
         for dt_dir in sorted(p for p in bank_dir.iterdir() if p.is_dir()):
-            doc_type = dt_dir.name
-            group = doc_type[:1].upper()
-            if doctype_set and doc_type.upper() not in doctype_set:
+            doc_type = dt_dir.name.upper()
+            group = doc_type[:1]
+            if doctype_set and doc_type not in doctype_set:
                 continue
             if group_set and group not in group_set:
                 continue
@@ -142,15 +238,10 @@ def iter_items(
                     else:
                         continue  # .DS_Store, .html (when PDF exists / excluded), etc.
 
+                    doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
                     rel = f"{bank_code}/{doc_type}/{year_dir.name}/{f.name}"
-                    payload = {
-                        "source": "cb_corpus",
-                        "bank_code": bank_code,
-                        "doc_type": doc_type,
-                        "doc_type_label": DOCTYPE_LABELS.get(doc_type.upper(), ""),
-                        "doc_group": group,
-                        "year": year,
-                        "ext": ext.lstrip("."),
-                        "rel_path": rel,
-                    }
-                    yield SourceItem(doc_id=rel, path=f, payload=payload)
+                    payload = _build_payload(
+                        bank_code=bank_code, doc_type=doc_type, group=group,
+                        year=year, ext=ext, rel_path=rel, rec=index.get(doc_id),
+                    )
+                    yield SourceItem(doc_id=doc_id, path=f, payload=payload)
