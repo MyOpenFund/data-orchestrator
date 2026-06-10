@@ -180,6 +180,7 @@ def load_corpus(manifest_path: Optional[Path] = None) -> list[dict]:
             rows.append({
                 "doc_id": f.stem, "source": rec.get("source", "cb_corpus"),
                 "bank_code": bank, "doc_type": doc_type, "doc_group": group,
+                "doc_type_label": DOCTYPE_LABELS.get(doc_type, doc_type),
                 "group_label": DOC_GROUP_LABELS.get(group, "Other"),
                 "title": rec.get("title", ""), "pdf_url": rec.get("pdf_url", ""),
                 "provenance": rec.get("provenance", ""),
@@ -191,6 +192,7 @@ def load_corpus(manifest_path: Optional[Path] = None) -> list[dict]:
             rows.append({
                 "doc_id": f.stem, "source": "cb_corpus",
                 "bank_code": bank, "doc_type": doc_type, "doc_group": group,
+                "doc_type_label": DOCTYPE_LABELS.get(doc_type, doc_type),
                 "group_label": DOC_GROUP_LABELS.get(group, "Other"),
                 "title": "", "pdf_url": "", "provenance": "disk",
                 "pub_date": date(year, 1, 1) if year else None,

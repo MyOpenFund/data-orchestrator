@@ -49,7 +49,7 @@ def _to_df(docs: list[dict]) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(docs)
     keep = [
-        "pub_date", "source", "bank_code", "doc_type", "group_label",
+        "pub_date", "source", "bank_code", "doc_type_label", "group_label",
         "title", "in_rag", "n_chunks", "provenance", "pdf_url", "abs_path",
     ]
     df = df[[c for c in keep if c in df.columns]]
@@ -170,6 +170,8 @@ with tab_docs:
             view.drop(columns=["abs_path"], errors="ignore"),
             use_container_width=True, hide_index=True,
             column_config={
+                "doc_type_label": st.column_config.TextColumn("type"),
+                "group_label": st.column_config.TextColumn("category"),
                 "pdf_url": st.column_config.LinkColumn("Source URL", display_text="open"),
                 "in_rag": st.column_config.CheckboxColumn("In RAG"),
             },
@@ -180,7 +182,7 @@ with tab_docs:
         if not view.empty:
             view = view.reset_index(drop=True)
             labels = [
-                f"{r.pub_date} · {r.bank_code}/{r.doc_type} · {str(r.title)[:70]}"
+                f"{r.pub_date} · {r.bank_code} · {r.doc_type_label} · {str(r.title)[:60]}"
                 for r in view.itertuples()
             ]
             idx = st.selectbox("Pick a document", range(len(labels)),
@@ -191,7 +193,7 @@ with tab_docs:
                 st.write({
                     "date": str(chosen.get("pub_date")),
                     "bank": chosen.get("bank_code"),
-                    "type": f"{chosen.get('doc_type')} — {chosen.get('group_label')}",
+                    "type": f"{chosen.get('doc_type_label')} ({chosen.get('group_label')})",
                     "in_rag": bool(chosen.get("in_rag")),
                     "chunks": int(chosen.get("n_chunks", 0)),
                     "provenance": chosen.get("provenance"),
@@ -231,12 +233,13 @@ with tab_qc:
         st.subheader(f"What we have — {sel_bank}, by document type")
         ts = catalog.type_summary(corpus_rows, sel_bank)
         if ts:
-            tdf = pd.DataFrame(ts)[["doc_type", "label", "total", "years",
+            tdf = pd.DataFrame(ts)[["label", "total", "years",
                                     "avg_per_year", "median_per_year",
                                     "calendar_per_year", "last_year"]]
             st.dataframe(
                 tdf, use_container_width=True, hide_index=True,
                 column_config={
+                    "label": st.column_config.TextColumn("document type"),
                     "avg_per_year": st.column_config.NumberColumn("avg/yr"),
                     "median_per_year": st.column_config.NumberColumn("median/yr"),
                     "calendar_per_year": st.column_config.NumberColumn(
@@ -252,11 +255,14 @@ with tab_qc:
         st.subheader(f"Coverage matrix — {sel_bank}: documents per year × type")
         cov = catalog.coverage_matrix(corpus_rows, sel_bank)
         if cov["types"]:
+            years_sorted = sorted(cov["grid"])
+            # rows = document type (full label), columns = year — readable with long labels
             mat = pd.DataFrame(
-                {dt: {y: cov["grid"].get(y, {}).get(dt, 0) for y in sorted(cov["grid"])}
+                {catalog.DOCTYPE_LABELS.get(dt, dt):
+                    {y: cov["grid"].get(y, {}).get(dt, 0) for y in years_sorted}
                  for dt in cov["types"]}
-            )
-            mat.index.name = "year"
+            ).T
+            mat.index.name = "document type"
             st.dataframe(mat, use_container_width=True)
             exp = {f"{t}": v for (b, t), v in catalog.EXPECTED_PER_YEAR.items() if b == sel_bank}
             if exp:
@@ -271,7 +277,8 @@ with tab_qc:
             types_here = sorted({d["doc_type"] for d in bdocs})
             if types_here:
                 cdt, cyr = st.columns(2)
-                pick_t = cdt.selectbox("Type", types_here, key="qc_type")
+                pick_t = cdt.selectbox("Type", types_here, key="qc_type",
+                                       format_func=lambda c: catalog.DOCTYPE_LABELS.get(c, c))
                 yrs = sorted({d["year"] for d in bdocs
                               if d["doc_type"] == pick_t and d.get("year")}, reverse=True)
                 pick_y = cyr.selectbox("Year", yrs, key="qc_year") if yrs else None
@@ -302,6 +309,7 @@ with tab_qc:
         anom = catalog.anomalies(corpus_rows, current_year=current_year)
         if anom:
             adf = pd.DataFrame(anom)
+            adf["type"] = adf["doc_type"].map(lambda c: catalog.DOCTYPE_LABELS.get(c, c))
             cc = st.columns(4)
             cc[0].metric("Flagged", len(anom))
             cc[1].metric("Missing", int((adf["flag"] == "missing").sum()))
@@ -309,7 +317,9 @@ with tab_qc:
             cc[3].metric("Exceptional", int((adf["flag"] == "exceptional").sum()))
             if st.checkbox(f"Only {sel_bank}", value=False, key="anom_bank"):
                 adf = adf[adf["bank_code"] == sel_bank]
-            st.dataframe(adf, use_container_width=True, hide_index=True)
+            st.dataframe(adf[["bank_code", "type", "year", "count", "expected",
+                              "basis", "flag"]],
+                         use_container_width=True, hide_index=True)
             st.caption("`expected` = the type's own **recent median docs/yr** (data-driven, "
                        "within its active span — not the meeting calendar). "
                        "`missing` = 0 in an active year · `low` < 50% · "
@@ -322,10 +332,13 @@ with tab_qc:
         up = catalog.upcoming(corpus_rows, today=date.today())
         if up:
             udf = pd.DataFrame(up)
+            udf["type"] = udf["doc_type"].map(lambda c: catalog.DOCTYPE_LABELS.get(c, c))
             c1u, c2u = st.columns(2)
             c1u.metric("Overdue (>7d past)", int((udf["status"] == "overdue").sum()))
             c2u.metric("Due soon (≤60d)", int((udf["status"] == "soon").sum()))
-            st.dataframe(udf, use_container_width=True, hide_index=True)
+            st.dataframe(udf[["bank_code", "type", "last", "interval_days",
+                              "next_expected", "days_until", "status"]],
+                         use_container_width=True, hide_index=True)
             st.caption("Next release ≈ last date + median recent interval. "
                        "`overdue` often signals a fetch gap rather than a late release.")
         else:
