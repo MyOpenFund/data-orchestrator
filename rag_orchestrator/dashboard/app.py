@@ -97,8 +97,7 @@ docs = catalog.build_documents(corpus_rows, rag, as_of=as_of)
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_docs, tab_qc, tab_graphs, tab_queries = st.tabs(
-    ["📄 Documents", "🔎 Inventory & QC", "🕸️ Graphs", "💬 LLM Queries"])
+tab_docs, tab_qc = st.tabs(["📄 Documents", "🔎 Inventory & QC"])
 
 # === Documents =============================================================
 with tab_docs:
@@ -243,12 +242,13 @@ with tab_qc:
                     "avg_per_year": st.column_config.NumberColumn("avg/yr"),
                     "median_per_year": st.column_config.NumberColumn("median/yr"),
                     "calendar_per_year": st.column_config.NumberColumn(
-                        "calendar/yr",
-                        help="Bank's published meeting count (reference only — the "
-                             "corpus often stores several documents per meeting)"),
+                        "expected/yr",
+                        help="Expected per year — the bank's published meeting/release "
+                             "count (reference only; the corpus often stores several "
+                             "documents per meeting, so avg/median can be higher)"),
                 })
             st.caption("**avg/yr · median/yr** = the corpus's real cadence (what you "
-                       "actually have). **calendar/yr** = the published meeting count, "
+                       "actually have). **expected/yr** = the published meeting count, "
                        "shown as context — it is NOT used to flag anomalies.")
 
         # --- Coverage matrix (per bank) ---
@@ -353,48 +353,3 @@ with tab_qc:
         else:
             st.success("No fetch errors recorded "
                        "(cb_corpus writes data/discovery_errors.jsonl on failures).")
-
-# === Graphs ================================================================
-with tab_graphs:
-    st.header(f"Graph snapshot — as of {as_of}")
-    st.caption(
-        "Time-series-of-graphs: a cognitive/similarity graph built from the "
-        "documents available on the as-of date. v1 reuses the mvp-graph-rag "
-        "spectral layer (singular / hinge / theta nodes)."
-    )
-    in_rag_docs = [d for d in docs if d["in_rag"]]
-    st.metric("Documents available for the graph (in RAG, ≤ as-of)", f"{len(in_rag_docs):,}")
-    if not in_rag_docs:
-        st.info(
-            "No ingested documents yet for this as-of date. Run the orchestrator "
-            "(`rag-orchestrator cb_corpus …`) to populate the RAG, then build the "
-            "graph here."
-        )
-    else:
-        st.button("Build graph snapshot (coming next)", disabled=True)
-        st.caption("Wiring to mvp-graph-rag build_graph/spectral is the next step.")
-    # log of past snapshots
-    snaps = catalog.load_jsonl("graphs")
-    if snaps:
-        st.subheader("Past graph snapshots")
-        st.dataframe(pd.DataFrame(snaps), use_container_width=True, hide_index=True)
-
-# === LLM Queries ===========================================================
-with tab_queries:
-    st.header("LLM queries")
-    st.caption("Each query is logged with the as-of date it was run against.")
-    queries = catalog.load_jsonl("queries")
-    if queries:
-        st.dataframe(pd.DataFrame(queries), use_container_width=True, hide_index=True)
-    else:
-        st.info("No queries logged yet.")
-
-    with st.expander("Log a query manually"):
-        q = st.text_input("Question")
-        a = st.text_area("Answer")
-        if st.button("Save to log") and q:
-            catalog.log_jsonl("queries", {
-                "question": q, "answer": a, "collection": collection,
-                "as_of": str(as_of),
-            })
-            st.success("Logged. Refresh to see it above.")

@@ -14,7 +14,6 @@ corpus-only view.
 from __future__ import annotations
 
 import json
-import os
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
@@ -295,45 +294,6 @@ def build_documents(
         row["n_chunks"] = n
         out.append(row)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Append-only logs (queries / graphs) — state/*.jsonl, no DB
-# ---------------------------------------------------------------------------
-def _state_dir() -> Path:
-    override = os.environ.get("RAGO_STATE_DIR")
-    if override:
-        return Path(override).expanduser()
-    # repo root = two levels above this file (rag_orchestrator/dashboard/..)
-    return Path(__file__).resolve().parents[2] / "state"
-
-
-def log_jsonl(name: str, record: dict) -> None:
-    """Append one record to ``state/<name>.jsonl`` (stamped with ``ts``)."""
-    d = _state_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    rec = {"ts": datetime.now().isoformat(timespec="seconds"), **record}
-    with (d / f"{name}.jsonl").open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-
-
-def load_jsonl(name: str) -> list[dict]:
-    """Read ``state/<name>.jsonl`` (newest first); empty if it doesn't exist."""
-    path = _state_dir() / f"{name}.jsonl"
-    if not path.is_file():
-        return []
-    rows: list[dict] = []
-    with path.open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    rows.reverse()
-    return rows
 
 
 # ---------------------------------------------------------------------------
