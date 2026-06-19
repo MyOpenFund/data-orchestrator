@@ -39,9 +39,15 @@ RAGDataOrchestrator/
     core.py               # engine: walk → load → chunk → embed → upsert + resume ledger
     cli.py                # console entrypoint (`rag-orchestrator`)
     sources/
-      cb_corpus.py        # source #1: the central-bank PDF corpus (cb_corpus project)
+      cb_corpus.py            # source #1: central-bank PDF corpus (cb_corpus project)
+      bottom_up_corpus.py     # source #2: SEC EDGAR filings (bottom_up_corpus project)
   state/                  # resume ledgers (gitignored)
 ```
+
+The corpus family has two layers feeding the same RAG:
+
+- **Macro** — `cb_corpus`: central-bank documents.
+- **Micro** — `bottom_up_corpus`: company filings from SEC EDGAR.
 
 ## Source #1 — `cb_corpus`
 
@@ -69,6 +75,45 @@ Each chunk's Qdrant payload:
 | `year` | `2019` | path |
 | `doc_id` | `ecb/C1/2019/3c03….pdf` | path |
 | `filename`, `page`, `chunk_index`, `text` | — | pipeline |
+
+## Source #2 — `bottom_up_corpus`
+
+The **micro** layer: company filings from SEC EDGAR, produced by the
+[`bottom_up_corpus`](https://github.com/jeulinmarc/bottom_up_corpus) project. That
+project discovers filings, downloads and decomposes the complete submission,
+extracts clean text and renders each filing's primary document to a
+human-readable, **page-anchored PDF** — which flows through the same mvp-graph-rag
+PDF loader with no change. Cleaned text is the fallback when no PDF exists.
+
+This connector is a thin shim over `bottom_up_corpus.rag.iter_items` — all
+discovery/render logic stays in that project; nothing is vendored here. Each
+chunk's Qdrant payload carries at least:
+
+| field | example | source |
+|-------|---------|--------|
+| `source` | `bottom_up_corpus` | connector |
+| `cik` | `320193` | bottom_up_corpus |
+| `company` | `Apple Inc.` | bottom_up_corpus |
+| `doc_type` | `A1` (10-K) | bottom_up_corpus |
+| `year` | `2024` | bottom_up_corpus |
+| `url` | `https://www.sec.gov/...` | bottom_up_corpus |
+| `filename`, `page`, `chunk_index`, `text` | — | pipeline |
+
+Default narrative scope is families **A** (10-K/10-Q/20-F) and **C** (proxy);
+8-K/6-K and ownership forms are high-volume / low-narrative, so down-weight or
+opt-in (see the family-weighting note in `bottom_up_corpus/docs/INGESTION_RAG.md`).
+
+Install the dependency (it is not vendored) and point a root at the rendered
+corpus:
+
+```bash
+pip install -e .[bottom_up]        # pulls bottom_up_corpus from GitHub
+# then, with BOTTOM_UP_CORPUS_ROOT set in .env (or --root):
+rag-orchestrator bottom_up_corpus --ciks 320193 --collection bottom_up_corpus
+```
+
+`bottom_up_corpus` can also be used from a local checkout (`pip install -e .` in
+that repo) or simply put on `PYTHONPATH`.
 
 ## Prerequisites
 
@@ -136,17 +181,19 @@ print(stats.as_dict())
 
 | flag | meaning |
 |------|---------|
-| `--root PATH` | corpus root (folder containing `raw/`) |
-| `--banks a,b` | only these bank codes |
+| `--root PATH` | corpus root (the source's data folder) |
 | `--doctypes C1,A3` | only these doc-type codes |
-| `--groups A,C` | only these doc groups |
 | `--year-min` / `--year-max` | inclusive year bounds |
-| `--collection NAME` | target Qdrant collection (default `cb_corpus`) |
+| `--collection NAME` | target Qdrant collection (default: the source name) |
 | `--limit N` | stop after N newly ingested docs |
 | `--ocr auto\|always\|never` | OCR fallback for scanned pages |
-| `--include-html` | also ingest `.html` with no `.pdf` sibling |
 | `--no-resume` | ignore the ledger, re-ingest everything |
 | `--count-only` | just count matches |
+| `--banks a,b` | *(cb_corpus)* only these bank codes |
+| `--groups A,C` | *(cb_corpus)* only these doc groups |
+| `--include-html` | *(cb_corpus)* also ingest `.html` with no `.pdf` sibling |
+| `--ciks 320193,789019` | *(bottom_up_corpus)* only these SEC CIK numbers |
+| `--prefer pdf\|text` | *(bottom_up_corpus)* rendered PDF (default) or cleaned text |
 
 ## Resume / idempotency
 
