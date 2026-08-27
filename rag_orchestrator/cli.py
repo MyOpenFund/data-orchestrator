@@ -93,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-resume", action="store_true",
                         help="ignore the resume ledger (re-ingest everything)")
     parser.add_argument("--ledger", help="path to the resume ledger JSONL")
+    parser.add_argument("--no-vault", action="store_true",
+                        help="use the local file ledger instead of the vault "
+                             "(no rag_ingestions state is read or written)")
+    parser.add_argument("--corpus", default="central-bank",
+                        help="vault corpus this run belongs to (default: central-bank)")
     parser.add_argument("--count-only", action="store_true",
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
@@ -118,10 +123,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     ledger = None
+    vault_conn = None
     if not args.no_resume:
-        ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{args.collection}.jsonl"
-        ledger = Ledger(ledger_path)
-        print(f"Resume ledger: {ledger_path} ({len(ledger)} docs already done)")
+        if args.no_vault:
+            ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{args.collection}.jsonl"
+            ledger = Ledger(ledger_path)
+            print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
+        else:
+            from . import vault as vault_mod
+            from .routing import EMBEDDING_VERSION, embedding_model_name
+
+            vault_conn = vault_mod.connect()
+            ledger = vault_mod.VaultLedger(
+                vault_conn, collection=args.collection, corpus=args.corpus,
+                embedding_model=embedding_model_name(),
+                embedding_version=EMBEDDING_VERSION,
+            )
+            print(f"Resume ledger (vault): rag_ingestions/{args.collection} "
+                  f"({len(ledger)} docs already done)")
 
     print(f"→ Ingesting source '{args.source}' into collection '{args.collection}' "
           f"(ocr={args.ocr}, limit={args.limit})")
@@ -135,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
         on_progress=_make_progress(args.progress_every),
     )
     elapsed = time.time() - t0
+
+    if vault_conn is not None:
+        vault_conn.close()
 
     print("─" * 60)
     print("Done.")
