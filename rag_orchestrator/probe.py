@@ -5,6 +5,14 @@ Feeds the future facts-driven OCR policy. Only rows with
 construction and re-runs converge to a no-op. The probe is the ONLY writer
 of these two columns (the vault's manifest upsert deliberately never touches
 them).
+
+Each document's UPDATE is wrapped in its own SAVEPOINT so that one row
+failing (a DB error, a trigger, a constraint) cannot poison the surrounding
+batch's transaction: on Postgres, an uncaught error aborts the transaction
+until a ROLLBACK (or ROLLBACK TO SAVEPOINT), so without this isolation every
+statement after the failure would raise ``InFailedSqlTransaction`` and the
+eventual ``commit()`` would silently discard the whole batch — including
+already-"probed" successes that ``stats`` had already counted.
 """
 from __future__ import annotations
 
@@ -64,14 +72,18 @@ def run_probe(conn, corpus: str, *, limit: int | None = None, batch: int = 50) -
             continue
         try:
             with conn.cursor() as cur:
+                cur.execute("SAVEPOINT probe_doc")
                 cur.execute(UPDATE_FACTS_SQL, (has_text, page_count, doc_id))
+                cur.execute("RELEASE SAVEPOINT probe_doc")
             stats["probed"] += 1
             pending += 1
             if pending >= batch:
                 conn.commit()
                 pending = 0
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — one bad row must not poison the batch's transaction
             logger.warning("facts update failed for %s: %s", doc_id, exc)
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT probe_doc")
             stats["errors"] += 1
     conn.commit()
     logger.info("probe(%s): %s", corpus, stats)
