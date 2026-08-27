@@ -5,35 +5,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rag-orchestrator"
 version = "0.1.0"
-description = "Ingestion orchestrator that feeds the mvp-graph-rag vector DB from fixed data sources."
+description = "Ingestion orchestrator: vault-selected documents through the eigenmind engine into Qdrant."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "jeulinmarc", email = "jeulinmarc@gmail.com" }]
 keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 
-# NOTE on the mvp-graph-rag dependency
-# ------------------------------------
-# mvp-graph-rag (https://github.com/jeulinmarc/mvp-graph-rag) is intentionally
-# NOT declared here as an installable dependency: it is a standalone app made of
-# flat scripts under its `src/`, not a published package, and it must keep
-# living entirely on its own. This orchestrator locates that `src/` at runtime
-# (sibling folder, or the MVP_GRAPH_RAG_SRC env var) and drives its pipeline.
-#
-# The dependencies below mirror what that pipeline imports, so the orchestrator
-# can run in its own environment if desired. In practice you can also just reuse
-# the mvp-graph-rag virtualenv, which already provides all of these.
+# NOTE on the eigenmind dependency
+# --------------------------------
+# The ingestion engine is our eigenmind fork (github.com/jeulinmarc/eigenmind),
+# installed separately as an editable checkout because it is consumed at
+# fork-HEAD, not from PyPI:
+#     pip install -e $EIGENMIND_PATH
+# (EIGENMIND_PATH lives in .env; see .env.example.) It provides chunknorris,
+# sentence-transformers, torch and qdrant-client transitively.
 dependencies = [
-    "qdrant-client>=1.18",
-    "sentence-transformers>=5.5",
-    "pypdf>=6.0",
-    "langchain-text-splitters>=1.1",
+    "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]
-# OCR fallback for scanned pages (the mvp load_pdf "auto"/"always" OCR path).
-# Also needs the system binaries `tesseract` and `poppler`.
-ocr = ["pytesseract>=0.3.13", "pdf2image>=1.17", "Pillow>=12.0"]
 # Streamlit dashboard (corpus vs RAG tracking, as-of date, query/graph logs).
 dashboard = ["streamlit>=1.40", "pandas>=2.0"]
 # bottom_up_corpus source connector (SEC EDGAR micro layer). Pulled from GitHub
@@ -45,9 +36,6 @@ bottom_up = [
     "bottom_up_corpus @ git+https://github.com/jeulinmarc/bottom_up_corpus",
 ]
 dev = ["pytest>=8.0"]
-
-[project.urls]
-"mvp-graph-rag" = "https://github.com/jeulinmarc/mvp-graph-rag"
 
 [project.scripts]
 rag-orchestrator = "rag_orchestrator.cli:main"

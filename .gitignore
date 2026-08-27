@@ -1,4 +1,4 @@
-# Local ingestion state (resume ledgers) � do not commit.
+# Local ingestion state (resume ledgers) — do not commit.
 state/
 
 # Per-machine secrets / paths - do not commit. Use .env.example as a template.
@@ -14,3 +14,8 @@ venv/
 
 # macOS
 .DS_Store
+
+# superpowers process artifacts (specs/plans) - live on the `documentation`
+# branch, never on main.
+.superpowers/
+docs/superpowers/

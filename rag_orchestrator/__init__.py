@@ -1,17 +1,22 @@
 """rag_orchestrator.
 
-Ingestion orchestrator that feeds the **mvp-graph-rag** vector database from a
-set of fixed data sources.
+Ingestion orchestrator: a policy layer that moves documents selected by the
+vault (Postgres) through the **eigenmind** engine (chunking, embedding,
+Qdrant upsert) into Qdrant, the derived projection.
 
-Direction of dependency is one-way: this package *uses* mvp-graph-rag (it drives
-its ``load_pdf`` -> chunk -> ``embed`` -> Qdrant pipeline). mvp-graph-rag never
-imports this package and keeps working perfectly on its own — the orchestrator
-is purely an add-on for bulk-ingesting many documents from known sources.
+Direction of dependency is one-way: this package *uses* eigenmind (it drives
+its ``chunk_with_chunknorris`` -> ``EmbeddingModel`` -> ``QdrantStore`` pipeline).
+eigenmind never imports this package and keeps working perfectly on its own —
+the orchestrator is purely an add-on for bulk-ingesting the vault's selection
+(or, as a fallback, a fixed on-disk corpus) into Qdrant.
 
 Layout
 ------
-- ``core``          reusable engine: walk -> load -> chunk -> embed -> upsert + ledger
-- ``sources/``      one module per data source (``cb_corpus`` is source #1)
+- ``core``          reusable engine: chunk -> embed -> upsert + resume ledger
+- ``routing``        per-corpus root/collection-naming rules
+- ``vault``          Postgres connection + the rag_ingestions-backed ledger
+- ``probe``          facts probe (has_text_layer / page_count) for OCR policy
+- ``sources/``      one module per data source (``vault`` and ``cb_corpus``)
 - ``cli``           console entrypoint (``rag-orchestrator``)
 
 Each source yields :class:`core.SourceItem` objects (a file path + a metadata

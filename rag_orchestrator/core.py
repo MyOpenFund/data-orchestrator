@@ -1,72 +1,43 @@
 """Core ingestion engine.
 
-Drives the existing mvp-graph-rag pipeline (``load_pdf`` -> chunk -> ``embed``
--> Qdrant) for an arbitrary stream of documents coming from any source.
+Drives the eigenmind engine (ChunkNorris chunking -> E5 embeddings -> Qdrant)
+for an arbitrary stream of documents coming from any source.
 
 Responsibilities the core owns (so sources don't have to):
-- importing the mvp-graph-rag ``src`` modules,
 - chunking + embedding + idempotent upsert into a *configurable* collection,
 - merging source metadata into every chunk payload,
 - a resume ledger so re-runs skip already-ingested documents,
-- progress + per-document error isolation.
+- progress + per-document error isolation,
+- the Qdrant/vault write protocol: per document, every Qdrant point is
+  upserted BEFORE the ledger record, so a crash can only ever leave the
+  ledger under-claiming (healed by the next resume pass). Batching never
+  spans documents.
 
 A *source* only has to yield :class:`SourceItem` objects.
 """
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
-import os
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Optional
+from typing import Callable, Iterable, Optional
 
-# --- make the mvp-graph-rag ``src`` package importable ----------------------
-# rag_orchestrator is its own repo, *next to* mvp-graph-rag. The mvp pipeline
-# modules use flat imports (``from embed_text import embed``), so the
-# mvp-graph-rag ``src`` directory must be on sys.path.
-#
-# Resolution order:
-#   1. ``MVP_GRAPH_RAG_SRC`` env var (explicit override), else
-#   2. walk up the ancestors of this file looking for a sibling
-#      ``mvp-graph-rag/src`` (works whatever the nesting depth / repo name).
+from chunknorris.exceptions import TextNotFoundException
+from eigenmind.config import BATCH_SIZE
+from eigenmind.core.chunking import chunk_with_chunknorris
+from eigenmind.core.embeddings import EmbeddingModel, detect_device
+from eigenmind.vectordb.store import QdrantStore
+from qdrant_client.models import PointStruct
 
+from .routing import embedding_model_name
 
-def _resolve_mvp_src() -> Path:
-    env = os.environ.get("MVP_GRAPH_RAG_SRC")
-    if env:
-        return Path(env).expanduser().resolve()
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        candidate = ancestor / "mvp-graph-rag" / "src"
-        if candidate.is_dir():
-            return candidate
-    # Fall back to the conventional sibling location for a clear error message.
-    return here.parents[2] / "mvp-graph-rag" / "src"
-
-
-_MVP_SRC = _resolve_mvp_src()
-if not _MVP_SRC.is_dir():
-    raise RuntimeError(
-        f"mvp-graph-rag 'src' not found (looked near {_MVP_SRC}). "
-        "Set the MVP_GRAPH_RAG_SRC environment variable to its path, e.g. "
-        r"set MVP_GRAPH_RAG_SRC=C:\path\to\mvp-graph-rag\src"
-    )
-if str(_MVP_SRC) not in sys.path:
-    sys.path.insert(0, str(_MVP_SRC))
-
-# Imported from mvp-graph-rag/src (resolved via the sys.path insert above).
-from load_pdf import load_and_chunk  # noqa: E402
-from embed_text import embed, EMBEDDING_DIM  # noqa: E402
-from store_chunks import (  # noqa: E402
-    get_client,
-    ensure_collection,
-    BATCH_SIZE,
-)
-from qdrant_client.models import PointStruct  # noqa: E402
-
-import hashlib
+# CLI --ocr mode -> engine use_ocr argument. "auto" defers to the engine's
+# availability check (None), so a machine without tesseract degrades to
+# "never" instead of crashing; "always"/"never" are explicit demands.
+OCR_TO_ENGINE = {"auto": None, "always": "always", "never": "never"}
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +112,9 @@ class Ledger:
     def __len__(self) -> int:
         return len(self._done)
 
-    def mark(self, doc_id: str, chunks: int) -> None:
+    def mark(self, doc_id: str, chunks: int, payload: dict | None = None) -> None:
+        # ``payload`` is part of the shared ledger interface (the vault ledger
+        # uses it for corpus/source_code); the file ledger ignores it.
         self._done[doc_id] = chunks
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as fh:
@@ -165,41 +138,69 @@ def ingest_item(
     item: SourceItem,
     collection: str,
     *,
+    store: QdrantStore,
+    embedder: EmbeddingModel,
     ocr: str = "auto",
     batch_size: int = BATCH_SIZE,
 ) -> int:
-    """Load, chunk, embed and upsert one document. Returns chunks written."""
-    chunks = load_and_chunk(item.path, ocr=ocr)
-    if not chunks:
+    """Chunk, embed and upsert one document. Returns chunks written.
+
+    All of this document's points reach Qdrant before the caller records it
+    in the ledger (write protocol) — batching never spans documents.
+    """
+    try:
+        chunks = chunk_with_chunknorris(str(item.path), use_ocr=OCR_TO_ENGINE[ocr])
+    except TextNotFoundException:
+        # ChunkNorris raises rather than returning [] when a document (e.g. a
+        # PDF with no text layer and OCR off) has no extractable text at all.
+        # That is the "empty document" case, not a per-document error.
+        return 0
+    texts, id_pages, payload_pages = [], [], []
+    for chunk in chunks:
+        text = chunk.get_text()
+        if not text.strip():
+            continue
+        texts.append(text)
+        page = getattr(chunk, "start_page", None)
+        # Point ids always resolve a page (0 for non-paginated formats like
+        # markdown) so ids stay deterministic; the payload, below, keeps the
+        # real None instead of masking it as page 0.
+        id_pages.append(page if page is not None else 0)
+        payload_pages.append(page)
+    if not texts:
         return 0
 
-    texts = [c["text"] for c in chunks]
-    vectors = embed(texts)
-    assert vectors.shape[1] == EMBEDDING_DIM, (
-        f"Embedding dim mismatch: got {vectors.shape[1]}, expected {EMBEDDING_DIM}"
-    )
+    vectors = embedder.encode_passage(texts)
+
+    # One ingestion_date per document: eigenmind's only date axis (see
+    # eigenmind.vectordb.store.make_point / date_range_filter) reads this ISO
+    # string from every point's payload, so all of a document's points must
+    # agree on it rather than drift across the batch's wall-clock time.
+    ingestion_date = datetime.datetime.now().isoformat()
 
     base_payload = {"doc_id": item.doc_id, **item.payload}
-    client = get_client()
-    ensure_collection(client, collection)
-
-    points = [
-        PointStruct(
-            id=_point_id(item.doc_id, c["page"], c["chunk_index"]),
+    points = []
+    for i in range(len(texts)):
+        payload = {
+            **base_payload,
+            "filename": item.path.name,
+            # Payload key is "chunk_number" (not "chunk_index") to match
+            # what the eigenmind engine ecosystem reads everywhere
+            # (vectordb/store.py, pipelines/rag.py, graph/singular.py).
+            "chunk_number": i,
+            "ingestion_date": ingestion_date,
+            "text": texts[i],
+        }
+        if payload_pages[i] is not None:
+            payload["page"] = payload_pages[i]
+        points.append(PointStruct(
+            id=_point_id(item.doc_id, id_pages[i], i),
             vector=vectors[i].tolist(),
-            payload={
-                **base_payload,
-                "filename": c["filename"],
-                "page": c["page"],
-                "chunk_index": c["chunk_index"],
-                "text": c["text"],
-            },
-        )
-        for i, c in enumerate(chunks)
-    ]
+            payload=payload,
+        ))
 
     for start in range(0, len(points), batch_size):
-        client.upsert(collection_name=collection, points=points[start:start + batch_size])
+        store.client.upsert(collection_name=collection, points=points[start:start + batch_size])
 
     return len(points)
 
@@ -208,54 +209,77 @@ def run_ingest(
     items: Iterable[SourceItem],
     *,
     collection: str,
-    ledger: Optional[Ledger] = None,
+    ledger=None,
     ocr: str = "auto",
     batch_size: int = BATCH_SIZE,
     limit: Optional[int] = None,
     on_progress: Optional[Callable[[IngestStats, SourceItem, str], None]] = None,
+    store: QdrantStore | None = None,
+    embedder: EmbeddingModel | None = None,
 ) -> IngestStats:
     """Ingest a stream of items into ``collection``.
 
-    Skips items already recorded in ``ledger``. Isolates per-document errors so
-    one bad PDF never aborts the run. ``limit`` caps the number of *newly*
-    ingested documents (handy for test subsets).
+    Skips items already recorded in ``ledger``. Isolates per-document errors
+    (including ledger write failures) so one bad document never aborts the
+    run. ``limit`` caps the number of *newly* ingested documents. ``store``
+    and ``embedder`` are injectable for tests; by default a QdrantStore and
+    an EmbeddingModel (loaded once, on the best available device) are created
+    and the embedder is released at the end.
     """
     stats = IngestStats()
+    owns_embedder = embedder is None
+    store = store or QdrantStore()
+    embedder = embedder or EmbeddingModel(
+        device=detect_device(), model_name=embedding_model_name()
+    )
+    try:
+        # Inside the try/finally that releases an owned embedder: a raising
+        # ensure_collection must not leak it.
+        store.ensure_collection(collection, embedder.dim)
+        for item in items:
+            stats.docs_seen += 1
 
-    for item in items:
-        stats.docs_seen += 1
+            if ledger is not None and item.doc_id in ledger:
+                stats.docs_skipped_resume += 1
+                if on_progress:
+                    on_progress(stats, item, "skip-resume")
+                continue
 
-        if ledger is not None and item.doc_id in ledger:
-            stats.docs_skipped_resume += 1
+            # The ledger mark is inside this per-document try (both the n > 0
+            # and the n == 0 "empty doc" case) so a ledger write failure
+            # (e.g. an FK violation for a doc_id unknown to the vault) is
+            # isolated as a docs_error for this document rather than
+            # aborting the whole run — matching the "one bad document never
+            # aborts the run" contract for every path, not just n > 0.
+            try:
+                n = ingest_item(
+                    item, collection,
+                    store=store, embedder=embedder,
+                    ocr=ocr, batch_size=batch_size,
+                )
+                if ledger is not None:
+                    ledger.mark(item.doc_id, n, payload=item.payload)
+            except Exception as exc:  # noqa: BLE001 — isolate one bad document
+                stats.docs_error += 1
+                stats.errors.append((str(item.path), f"{type(exc).__name__}: {exc}"))
+                if on_progress:
+                    on_progress(stats, item, "error")
+                continue
+
+            if n == 0:
+                stats.docs_empty += 1
+                if on_progress:
+                    on_progress(stats, item, "empty")
+                continue
+
+            stats.docs_ingested += 1
+            stats.chunks_written += n
             if on_progress:
-                on_progress(stats, item, "skip-resume")
-            continue
+                on_progress(stats, item, "ingested")
 
-        try:
-            n = ingest_item(item, collection, ocr=ocr, batch_size=batch_size)
-        except Exception as exc:  # noqa: BLE001 — isolate one bad document
-            stats.docs_error += 1
-            stats.errors.append((str(item.path), f"{type(exc).__name__}: {exc}"))
-            if on_progress:
-                on_progress(stats, item, "error")
-            continue
-
-        if n == 0:
-            stats.docs_empty += 1
-            if ledger is not None:
-                ledger.mark(item.doc_id, 0)  # don't retry empty docs forever
-            if on_progress:
-                on_progress(stats, item, "empty")
-            continue
-
-        stats.docs_ingested += 1
-        stats.chunks_written += n
-        if ledger is not None:
-            ledger.mark(item.doc_id, n)
-        if on_progress:
-            on_progress(stats, item, "ingested")
-
-        if limit is not None and stats.docs_ingested >= limit:
-            break
-
+            if limit is not None and stats.docs_ingested >= limit:
+                break
+    finally:
+        if owns_embedder:
+            embedder.release()
     return stats
