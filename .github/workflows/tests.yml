@@ -20,7 +20,8 @@ jobs:
         # would otherwise abort the step before the check below ever runs.
         run: |
           rc=0
-          grep -riIE '\bgenerali\b' --exclude-dir=eigenmind --exclude-dir=.git . || rc=$?
+          W="gener""ali"  # split so the guarded word never appears verbatim in this file or in run logs
+          grep -riIE "\b${W}\b" --exclude-dir=eigenmind --exclude-dir=.git . || rc=$?
           if [ "$rc" -ne 1 ]; then
             echo "hygiene gate failed (grep exit code $rc; 1 == clean)" >&2
             exit 1
@@ -51,7 +52,8 @@ jobs:
         # exit-code check rather than bare `! grep`.
         run: |
           rc=0
-          grep -riIE '\bgenerali\b' --exclude-dir=eigenmind --exclude-dir=.git . || rc=$?
+          W="gener""ali"  # split so the guarded word never appears verbatim in this file or in run logs
+          grep -riIE "\b${W}\b" --exclude-dir=eigenmind --exclude-dir=.git . || rc=$?
           if [ "$rc" -ne 1 ]; then
             echo "hygiene gate failed (grep exit code $rc; 1 == clean)" >&2
             exit 1
