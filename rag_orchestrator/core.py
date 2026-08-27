@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from chunknorris.exceptions import TextNotFoundException
 from eigenmind.config import BATCH_SIZE
 from eigenmind.core.chunking import chunk_with_chunknorris
 from eigenmind.core.embeddings import EmbeddingModel, detect_device
@@ -146,7 +147,13 @@ def ingest_item(
     All of this document's points reach Qdrant before the caller records it
     in the ledger (write protocol) — batching never spans documents.
     """
-    chunks = chunk_with_chunknorris(str(item.path), use_ocr=OCR_TO_ENGINE[ocr])
+    try:
+        chunks = chunk_with_chunknorris(str(item.path), use_ocr=OCR_TO_ENGINE[ocr])
+    except TextNotFoundException:
+        # ChunkNorris raises rather than returning [] when a document (e.g. a
+        # PDF with no text layer and OCR off) has no extractable text at all.
+        # That is the "empty document" case, not a per-document error.
+        return 0
     texts, pages = [], []
     for chunk in chunks:
         text = chunk.get_text()
