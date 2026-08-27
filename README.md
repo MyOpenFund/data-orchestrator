@@ -56,7 +56,7 @@ RAGDataOrchestrator/
    |---|---|
    | `EIGENMIND_PATH` | local clone of the eigenmind fork |
    | `DATABASE_URL` | vault Postgres, e.g. `postgresql://user:pass@host:5432/documents` |
-   | `CB_CORPUS_ROOT` | local root of the `cb_corpus` corpus (folder containing `raw/`) — only needed for the `cb_corpus` fallback source |
+   | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
    | `RAGO_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
 
@@ -113,6 +113,8 @@ rag-orchestrator vault --corpus central-bank --ocr always
 | `--languages en,fr` | (vault source) only these language codes |
 | `--year-min` / `--year-max` | inclusive year bounds |
 | `--banks a,b` | (cb_corpus source) only these bank codes |
+| `--groups a,b` | (cb_corpus source) comma list of doc groups, e.g. A,C |
+| `--include-html` | (cb_corpus source) also ingest .html with no .pdf sibling |
 | `--root PATH` | (cb_corpus source) corpus root override |
 | `--limit N` | stop after N newly ingested docs |
 | `--no-resume` | ignore the resume ledger, re-ingest everything |
