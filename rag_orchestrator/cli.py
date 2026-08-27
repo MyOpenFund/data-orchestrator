@@ -71,22 +71,43 @@ def _make_progress(every: int):
     return on_progress
 
 
+def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
+    print("─" * 60)
+    print("Done.")
+    print(f"  docs seen      : {stats.docs_seen}")
+    print(f"  docs ingested  : {stats.docs_ingested}")
+    print(f"  skipped(resume): {stats.docs_skipped_resume}")
+    print(f"  empty          : {stats.docs_empty}")
+    print(f"  errors         : {stats.docs_error}")
+    print(f"  chunks written : {stats.chunks_written}")
+    if elapsed is not None:
+        print(f"  time           : {elapsed:.1f}s")
+    if stats.errors:
+        print(f"  first errors   :")
+        for path, msg in stats.errors[:10]:
+            print(f"    - {path}: {msg}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="RAGDataOrchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
-    parser.add_argument("source", choices=["cb_corpus"], help="data source to ingest")
+    parser.add_argument("source", choices=["cb_corpus", "vault"], help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
     parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3")
     parser.add_argument("--groups", help="comma list of doc groups, e.g. A,C")
+    parser.add_argument("--source-codes", help="comma list of vault source codes, e.g. ecb,fr")
+    parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
     parser.add_argument("--year-min", type=int, help="inclusive lower year bound")
     parser.add_argument("--year-max", type=int, help="inclusive upper year bound")
     parser.add_argument("--include-html", action="store_true",
                         help="also ingest .html with no .pdf sibling")
-    parser.add_argument("--collection", default=DEFAULT_COLLECTION,
-                        help=f"Qdrant collection (default: {DEFAULT_COLLECTION})")
+    parser.add_argument("--collection", default=None,
+                        help="Qdrant collection (default: cb_corpus for the "
+                             "cb_corpus source, {corpus}-{tag}-v1 for the "
+                             "vault source)")
     parser.add_argument("--limit", type=int, help="stop after N newly ingested docs")
     parser.add_argument("--ocr", choices=["auto", "always", "never"], default="auto",
                         help="OCR fallback mode for scanned pages (default: auto)")
@@ -106,8 +127,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.source == "cb_corpus":
         items = _build_cb_corpus_items(args)
-    else:  # pragma: no cover — argparse restricts choices
-        parser.error(f"unknown source: {args.source}")
+
+    if args.source == "vault":
+        if args.no_vault:
+            print("error: the vault source requires the vault (drop --no-vault)",
+                  file=sys.stderr)
+            return 2
+        from .routing import collection_name
+        return _run_vault_source(args, None, args.collection or collection_name(args.corpus))
+
+    collection = args.collection or DEFAULT_COLLECTION
 
     if args.count_only:
         by_bank: dict[str, int] = {}
@@ -126,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     vault_conn = None
     if not args.no_resume:
         if args.no_vault:
-            ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{args.collection}.jsonl"
+            ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{collection}.jsonl"
             ledger = Ledger(ledger_path)
             print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
         else:
@@ -135,44 +164,66 @@ def main(argv: list[str] | None = None) -> int:
 
             vault_conn = vault_mod.connect()
             ledger = vault_mod.VaultLedger(
-                vault_conn, collection=args.collection, corpus=args.corpus,
+                vault_conn, collection=collection, corpus=args.corpus,
                 embedding_model=embedding_model_name(),
                 embedding_version=EMBEDDING_VERSION,
             )
-            print(f"Resume ledger (vault): rag_ingestions/{args.collection} "
+            print(f"Resume ledger (vault): rag_ingestions/{collection} "
                   f"({len(ledger)} docs already done)")
 
     try:
-        print(f"→ Ingesting source '{args.source}' into collection '{args.collection}' "
+        print(f"→ Ingesting source '{args.source}' into collection '{collection}' "
               f"(ocr={args.ocr}, limit={args.limit})")
         t0 = time.time()
         stats = run_ingest(
             items,
-            collection=args.collection,
+            collection=collection,
             ledger=ledger,
             ocr=args.ocr,
             limit=args.limit,
             on_progress=_make_progress(args.progress_every),
         )
         elapsed = time.time() - t0
-
-        print("─" * 60)
-        print("Done.")
-        print(f"  docs seen      : {stats.docs_seen}")
-        print(f"  docs ingested  : {stats.docs_ingested}")
-        print(f"  skipped(resume): {stats.docs_skipped_resume}")
-        print(f"  empty          : {stats.docs_empty}")
-        print(f"  errors         : {stats.docs_error}")
-        print(f"  chunks written : {stats.chunks_written}")
-        print(f"  time           : {elapsed:.1f}s")
-        if stats.errors:
-            print(f"  first errors   :")
-            for path, msg in stats.errors[:10]:
-                print(f"    - {path}: {msg}")
+        _print_summary(stats, elapsed)
     finally:
         if vault_conn is not None:
             vault_conn.close()
 
+    return 0
+
+
+def _run_vault_source(args, _unused, collection: str) -> int:
+    from . import vault as vault_mod
+    from .routing import EMBEDDING_VERSION, embedding_model_name
+    from .sources import vault as vault_source
+
+    conn = vault_mod.connect()
+    try:
+        ledger = None
+        if not args.no_resume:
+            ledger = vault_mod.VaultLedger(
+                conn, collection=collection, corpus=args.corpus,
+                embedding_model=embedding_model_name(),
+                embedding_version=EMBEDDING_VERSION,
+            )
+            print(f"Resume ledger (vault): rag_ingestions/{collection} "
+                  f"({len(ledger)} docs already done)")
+        items = vault_source.iter_items(
+            conn, args.corpus, collection,
+            source_codes=_csv(args.source_codes),
+            doctypes=_csv(args.doctypes),
+            year_min=args.year_min, year_max=args.year_max,
+            languages=_csv(args.languages),
+        )
+        print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
+              f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
+        stats = run_ingest(
+            items, collection=collection, ledger=ledger, ocr=args.ocr,
+            limit=args.limit, on_progress=_make_progress(args.progress_every),
+        )
+    finally:
+        conn.close()
+    _print_summary(stats)
     return 0
 
 
