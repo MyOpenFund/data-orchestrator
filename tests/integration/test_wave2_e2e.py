@@ -93,3 +93,26 @@ def test_cli_vault_filters(clean_state, qdrant_addr, corpus_dir):
         cur.execute("SELECT doc_id FROM rag_ingestions")
         assert [r[0] for r in cur.fetchall()] == ["doc-md"]
     conn.close()
+
+
+def test_cli_vault_count_only_does_not_ingest(clean_state, qdrant_addr, corpus_dir, capsys):
+    """`vault --count-only` must only count (item 3 of the fix wave): no
+    engine work, no ledger writes, no Qdrant collection created."""
+    _seed(clean_state, corpus_dir)
+    rc = _cli(clean_state, qdrant_addr, corpus_dir, ["--count-only"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "Matching documents: 3" in out  # doc-text, doc-md, doc-gone
+    assert "by source_code" in out
+    assert "by doc_type" in out
+
+    conn = psycopg2.connect(clean_state)
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM rag_ingestions")
+        (count,) = cur.fetchone()
+    conn.close()
+    assert count == 0
+
+    client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])
+    assert _coll() not in {c.name for c in client.get_collections().collections}

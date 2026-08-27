@@ -2,6 +2,7 @@ name: tests
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -10,7 +11,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Hygiene gate (no client name leakage)
-        run: '! grep -riIE ''\bgenerali\b'' --exclude-dir=eigenmind --exclude-dir=.git .'
+        # Explicit exit-code check instead of bare `! grep`: grep's exit code
+        # is 0 (match found — leak, must fail), 1 (no match — the only pass
+        # case) or >=2 (grep itself errored, e.g. bad pattern/unreadable
+        # file — must also fail, not be silently swallowed by `!`). `|| rc=$?`
+        # keeps this under bash's default `-e` — a bare non-conditional
+        # command with a non-zero exit (including the desired rc=1 pass case)
+        # would otherwise abort the step before the check below ever runs.
+        run: |
+          rc=0
+          grep -riIE '\bgenerali\b' --exclude-dir=eigenmind --exclude-dir=.git . || rc=$?
+          if [ "$rc" -ne 1 ]; then
+            echo "hygiene gate failed (grep exit code $rc; 1 == clean)" >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           repository: jeulinmarc/eigenmind
@@ -33,7 +47,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Hygiene gate (no client name leakage)
-        run: '! grep -riIE ''\bgenerali\b'' --exclude-dir=eigenmind --exclude-dir=.git .'
+        # See the `unit` job's identical step for why this needs an explicit
+        # exit-code check rather than bare `! grep`.
+        run: |
+          rc=0
+          grep -riIE '\bgenerali\b' --exclude-dir=eigenmind --exclude-dir=.git . || rc=$?
+          if [ "$rc" -ne 1 ]; then
+            echo "hygiene gate failed (grep exit code $rc; 1 == clean)" >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           repository: jeulinmarc/eigenmind

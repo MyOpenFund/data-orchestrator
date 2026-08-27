@@ -5,14 +5,22 @@ drives the eigenmind engine (a separate editable install, see ``README.md``)::
 
     rag-orchestrator vault --corpus central-bank
     rag-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
-    rag-orchestrator cb_corpus --year-min 2015 --collection cb_corpus
+    rag-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
 
 (equivalently ``python -m rag_orchestrator.cli cb_corpus ...``)
 
-The default collection is ``cb_corpus`` (kept separate from the demo
-``documents`` collection). Ingestion is resumable: a JSON-lines ledger under
-``<repo>/state/`` records every ingested document so re-runs skip work already
-done. Use ``--no-resume`` to ignore it.
+The default collection is routed per corpus by
+``routing.collection_name`` — ``{corpus}-{model_tag}-v1``, e.g.
+``central-bank-e5b-v1`` — for every source, never a hard-coded legacy name.
+
+The vault (``rag_ingestions``) is the *default* resume mechanism: a re-run
+skips documents already recorded there. Pass ``--no-vault`` to fall back to a
+local JSON-lines ledger under ``<repo>/state/`` instead (``cb_corpus`` source
+only — the vault source's resume *is* the vault anti-join in
+``sources/vault.py``, so ``--no-vault`` is rejected there). ``--no-resume``
+ignores the ledger and re-ingests everything; it is likewise rejected for the
+vault source (its anti-join always filters on the target collection, so a
+fresh ``--collection`` name is the way to re-ingest, not ``--no-resume``).
 """
 from __future__ import annotations
 
@@ -23,6 +31,7 @@ import time
 from pathlib import Path
 
 from .core import Ledger, SourceItem, run_ingest, IngestStats
+from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
 
 # Ledger lives at the repo root (one level above this package), or wherever
@@ -30,7 +39,6 @@ from .sources import cb_corpus as cb_corpus_source
 STATE_DIR = Path(
     os.environ.get("RAGO_STATE_DIR", Path(__file__).resolve().parents[1] / "state")
 )
-DEFAULT_COLLECTION = "cb_corpus"
 
 
 def _csv(value: str | None) -> list[str] | None:
@@ -105,9 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include-html", action="store_true",
                         help="also ingest .html with no .pdf sibling")
     parser.add_argument("--collection", default=None,
-                        help="Qdrant collection (default: cb_corpus for the "
-                             "cb_corpus source, {corpus}-{tag}-v1 for the "
-                             "vault source)")
+                        help="Qdrant collection (default: {corpus}-{tag}-v1 "
+                             "via routing.collection_name — same resolution "
+                             "for both the cb_corpus and vault sources)")
     parser.add_argument("--limit", type=int, help="stop after N newly ingested docs")
     parser.add_argument("--ocr", choices=["auto", "always", "never"], default="auto",
                         help="OCR fallback mode for scanned pages (default: auto)")
@@ -133,8 +141,20 @@ def main(argv: list[str] | None = None) -> int:
             print("error: the vault source requires the vault (drop --no-vault)",
                   file=sys.stderr)
             return 2
-        from .routing import collection_name
-        return _run_vault_source(args, None, args.collection or collection_name(args.corpus))
+        if args.no_resume:
+            print(
+                "error: --no-resume is not supported for the vault source — "
+                "its resume IS the documents/rag_ingestions anti-join (a doc "
+                "already recorded for the target collection is never "
+                "selected again, --no-resume or not). To re-ingest, use a "
+                "fresh --collection name instead.",
+                file=sys.stderr,
+            )
+            return 2
+        collection = args.collection or collection_name(args.corpus)
+        if args.count_only:
+            return _count_vault_source(args, collection)
+        return _run_vault_source(args, collection)
 
     if args.source == "probe":
         from . import vault as vault_mod
@@ -148,7 +168,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Probe done: {stats}")
         return 0
 
-    collection = args.collection or DEFAULT_COLLECTION
+    # Same routing.collection_name resolution as the vault source (default
+    # args.corpus is "central-bank") — never the legacy hard-coded 384-d
+    # "cb_corpus" collection name, which a 768-d upsert would be rejected
+    # from on any machine that still has it.
+    collection = args.collection or collection_name(args.corpus)
 
     if args.count_only:
         by_bank: dict[str, int] = {}
@@ -204,22 +228,23 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _run_vault_source(args, _unused, collection: str) -> int:
+def _run_vault_source(args, collection: str) -> int:
     from . import vault as vault_mod
     from .routing import EMBEDDING_VERSION, embedding_model_name
     from .sources import vault as vault_source
 
     conn = vault_mod.connect()
     try:
-        ledger = None
-        if not args.no_resume:
-            ledger = vault_mod.VaultLedger(
-                conn, collection=collection, corpus=args.corpus,
-                embedding_model=embedding_model_name(),
-                embedding_version=EMBEDDING_VERSION,
-            )
-            print(f"Resume ledger (vault): rag_ingestions/{collection} "
-                  f"({len(ledger)} docs already done)")
+        # --no-resume is rejected for this source before we ever get here
+        # (main()), so the ledger — and therefore the anti-join's resume
+        # semantics — is always coherent: always on.
+        ledger = vault_mod.VaultLedger(
+            conn, collection=collection, corpus=args.corpus,
+            embedding_model=embedding_model_name(),
+            embedding_version=EMBEDDING_VERSION,
+        )
+        print(f"Resume ledger (vault): rag_ingestions/{collection} "
+              f"({len(ledger)} docs already done)")
         items = vault_source.iter_items(
             conn, args.corpus, collection,
             source_codes=_csv(args.source_codes),
@@ -236,6 +261,42 @@ def _run_vault_source(args, _unused, collection: str) -> int:
     finally:
         conn.close()
     _print_summary(stats)
+    return 0
+
+
+def _count_vault_source(args, collection: str) -> int:
+    """Count vault-selected documents without any engine work or ledger writes.
+
+    Mirrors the cb_corpus ``--count-only`` output format (total + breakdowns),
+    using ``source_code``/``doc_type`` — the vault source's payload columns —
+    in place of cb_corpus's ``bank_code``/``doc_type``.
+    """
+    from . import vault as vault_mod
+    from .sources import vault as vault_source
+
+    conn = vault_mod.connect()
+    try:
+        items = vault_source.iter_items(
+            conn, args.corpus, collection,
+            source_codes=_csv(args.source_codes),
+            doctypes=_csv(args.doctypes),
+            year_min=args.year_min, year_max=args.year_max,
+            languages=_csv(args.languages),
+        )
+        by_source: dict[str, int] = {}
+        by_type: dict[str, int] = {}
+        total = 0
+        for it in items:
+            total += 1
+            source_code = it.payload.get("source_code", "<unknown>")
+            doc_type = it.payload.get("doc_type", "<unknown>")
+            by_source[source_code] = by_source.get(source_code, 0) + 1
+            by_type[doc_type] = by_type.get(doc_type, 0) + 1
+    finally:
+        conn.close()
+    print(f"Matching documents: {total}")
+    print("  by source_code:", dict(sorted(by_source.items(), key=lambda kv: -kv[1])))
+    print("  by doc_type:", dict(sorted(by_type.items())))
     return 0
 
 

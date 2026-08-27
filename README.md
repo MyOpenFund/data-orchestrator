@@ -107,7 +107,7 @@ rag-orchestrator vault --corpus central-bank --ocr always
 | `--corpus NAME` | vault corpus to operate on (default `central-bank`) |
 | `--no-vault` | use the local JSON-lines file ledger instead of the vault's `rag_ingestions` (no vault state is read or written); only valid with the `cb_corpus` source |
 | `--ocr auto\|always\|never` | OCR fallback for scanned pages (default `auto`: defers to the engine's tesseract availability check) |
-| `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` for `vault`, `cb_corpus` for the disk source) |
+| `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` via `routing.collection_name` — the same resolution for both the `vault` and `cb_corpus` sources) |
 | `--source-codes a,b` | (vault source) only these `source_code` values, e.g. `ecb,fr` |
 | `--doctypes C1,A3` | only these doc-type codes |
 | `--languages en,fr` | (vault source) only these language codes |
@@ -117,8 +117,8 @@ rag-orchestrator vault --corpus central-bank --ocr always
 | `--include-html` | (cb_corpus source) also ingest .html with no .pdf sibling |
 | `--root PATH` | (cb_corpus source) corpus root override |
 | `--limit N` | stop after N newly ingested docs |
-| `--no-resume` | ignore the resume ledger, re-ingest everything |
-| `--count-only` | (cb_corpus source) just count matching documents |
+| `--no-resume` | ignore the resume ledger, re-ingest everything; **rejected for the `vault` source** (its resume *is* the `documents`/`rag_ingestions` anti-join — use a fresh `--collection` to re-ingest instead) |
+| `--count-only` | just count matching documents, do not ingest (both sources) |
 
 ## The write protocol
 
@@ -183,8 +183,8 @@ counted as an error, while every other document in the batch still commits.
 ## Testing
 
 ```bash
-./venv/bin/python -m pytest -q                    # 46 unit tests
-./venv/bin/python -m pytest -m integration -q      # 10 integration tests
+./venv/bin/python -m pytest -q                    # 54 unit tests
+./venv/bin/python -m pytest -m integration -q      # 12 integration tests
 ```
 
 Integration tests spin up throwaway Postgres and Qdrant containers via

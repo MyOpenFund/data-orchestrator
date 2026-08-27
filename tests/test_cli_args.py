@@ -18,7 +18,7 @@ def test_vault_rejects_no_vault(capsys):
 def test_default_collection_for_vault_source(monkeypatch):
     seen = {}
 
-    def fake_run(args, items, collection):
+    def fake_run(args, collection):
         seen["collection"] = collection
         return 0
 
@@ -26,3 +26,41 @@ def test_default_collection_for_vault_source(monkeypatch):
     monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     cli.main(["vault", "--corpus", "central-bank"])
     assert seen["collection"] == "central-bank-e5b-v1"
+
+
+def test_default_collection_for_cb_corpus_source_matches_vault_routing(monkeypatch, tmp_path):
+    """The cb_corpus fallback must never default to the legacy 384-d
+    'cb_corpus' collection name — it uses the same routing.collection_name
+    resolution as the vault source (item 5 of the fix wave)."""
+    seen = {}
+
+    def fake_run_ingest(items, *, collection, **kwargs):
+        seen["collection"] = collection
+        from rag_orchestrator.core import IngestStats
+        return IngestStats()
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    (tmp_path / "raw").mkdir()
+    cli.main(["cb_corpus", "--no-vault"])
+    assert seen["collection"] == "central-bank-e5b-v1"
+    assert "cb_corpus" not in seen["collection"]
+
+
+def test_vault_rejects_no_resume(capsys):
+    """The vault source's resume IS the documents/rag_ingestions anti-join —
+    --no-resume there is an incoherent combo (item 4 of the fix wave): reject
+    it with a clear error instead of silently ignoring the ledger while the
+    anti-join still filters."""
+    rc = cli.main(["vault", "--no-resume"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--no-resume" in err
+    assert "vault" in err.lower()
+
+
+def test_vault_no_resume_rejected_even_with_count_only(capsys):
+    rc = cli.main(["vault", "--no-resume", "--count-only"])
+    assert rc == 2
+    assert "--no-resume" in capsys.readouterr().err
