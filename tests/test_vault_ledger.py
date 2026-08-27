@@ -26,12 +26,44 @@ class FakeConn:
         self.resume_rows = list(resume_rows)
         self.executed = []
         self.commits = 0
+        self.rollbacks = 0
 
     def cursor(self):
         return FakeCursor(self)
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+class FailingCursor(FakeCursor):
+    """A cursor whose execute() raises on the INSERT (the upsert), simulating
+    e.g. an FK violation, but behaves normally for the constructor's resume
+    SELECT so a VaultLedger can still be built against it."""
+
+    def __init__(self, conn, exc):
+        super().__init__(conn)
+        self._exc = exc
+
+    def execute(self, sql, params=None):
+        self._conn.executed.append((" ".join(sql.split()), params))
+        if "INSERT INTO" in sql:
+            raise self._exc
+
+
+class FailOnceConn(FakeConn):
+    """Raises ``fail_exc`` from the cursor's INSERT execute(), tracking rollback()."""
+
+    def __init__(self, resume_rows=(), fail_exc=None):
+        super().__init__(resume_rows)
+        self._fail_exc = fail_exc
+
+    def cursor(self):
+        if self._fail_exc is not None:
+            return FailingCursor(self, self._fail_exc)
+        return FakeCursor(self)
 
 
 def _ledger(conn):
@@ -73,6 +105,20 @@ def test_mark_source_code_precedence():
     assert conn.executed[-1][1][3] == "ecb"
     led.mark("d2", 1, payload=None)
     assert conn.executed[-1][1][3] is None
+
+
+def test_mark_rolls_back_and_reraises_on_upsert_failure():
+    """A raising execute (e.g. an FK violation) must leave the shared
+    connection healthy for the *next* mark() call — not aborted — or every
+    later mark on this connection raises InFailedSqlTransaction regardless
+    of that document's own health (item 1 of the fix wave)."""
+    conn = FailOnceConn(fail_exc=RuntimeError("FK violation"))
+    led = _ledger(conn)
+    with pytest.raises(RuntimeError, match="FK violation"):
+        led.mark("poison", 5, payload={"bank_code": "us"})
+    assert conn.rollbacks == 1
+    assert conn.commits == 0
+    assert "poison" not in led  # in-memory resume set untouched by the failure
 
 
 def test_connect_requires_database_url(monkeypatch):

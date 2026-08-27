@@ -103,3 +103,48 @@ def test_e2e_doc_unknown_to_vault_is_isolated_fk_error(clean_state, qdrant_addr,
     stats = _run(clean_state, qdrant_addr, corpus_dir)
     assert stats.docs_error == 1  # doc-md: FK violation isolated, run completed
     assert stats.docs_ingested == 1 and stats.docs_empty == 1
+
+
+def test_e2e_poisoned_doc_first_does_not_block_convergence(clean_state, qdrant_addr, corpus_dir):
+    """Regression for item 1 of the fix wave: a doc_id unknown to the vault
+    (FK violation on VaultLedger.mark) processed FIRST must not poison the
+    shared psycopg2 connection for every document processed after it.
+
+    Without VaultLedger.mark() rolling back on failure, the connection is
+    left in aborted-transaction state, and every later mark() raises
+    InFailedSqlTransaction — even for perfectly healthy documents — so a
+    poison doc early in processing order blocks convergence forever. Seed
+    the vault WITHOUT "doc-a-unknown" (alphabetically/processing-order
+    first) so it FK-fails first, and assert the two later healthy docs still
+    converge: both ingested AND their rag_ingestions rows persisted.
+
+    (Verified this fails without the fix: reverting the vault.py rollback
+    made this test fail with docs_ingested == 0 / docs_error == 3 — see the
+    fix-wave report for the captured evidence.)
+    """
+    insert_documents(clean_state, [
+        {"doc_id": "doc-b-text", "corpus": "central-bank", "source_code": "us"},
+        {"doc_id": "doc-c-md", "corpus": "central-bank", "source_code": "ecb"},
+    ])
+    items = [
+        SourceItem("doc-a-unknown", corpus_dir / "text.pdf", {"bank_code": "us"}),
+        SourceItem("doc-b-text", corpus_dir / "text.pdf", {"bank_code": "us"}),
+        SourceItem("doc-c-md", corpus_dir / "note.md", {"bank_code": "ecb"}),
+    ]
+    stats = _run(clean_state, qdrant_addr, corpus_dir, items=items)
+
+    assert stats.docs_error == 1  # only doc-a-unknown
+    assert stats.docs_ingested == 2  # doc-b-text and doc-c-md still converge
+
+    rows = dict(_rows(clean_state,
+        "SELECT doc_id, chunk_count FROM rag_ingestions ORDER BY doc_id"))
+    assert set(rows) == {"doc-b-text", "doc-c-md"}  # not doc-a-unknown: FK-rejected
+
+    # Qdrant also holds doc-a-unknown's points (the write protocol upserts to
+    # Qdrant *before* the ledger mark, so its points land even though the
+    # mark then fails) — that is expected, not a bug this test is about.
+    # What matters here is that the two healthy docs converged in Qdrant too.
+    client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])
+    pts, _ = client.scroll(COLL, limit=200, with_payload=True)
+    healthy_doc_ids = {p.payload["doc_id"] for p in pts} & {"doc-b-text", "doc-c-md"}
+    assert healthy_doc_ids == {"doc-b-text", "doc-c-md"}

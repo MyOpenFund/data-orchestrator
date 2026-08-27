@@ -66,10 +66,22 @@ class VaultLedger:
     def mark(self, doc_id: str, chunks: int, payload: dict | None = None) -> None:
         payload = payload or {}
         source_code = payload.get("source_code") or payload.get("bank_code")
-        with self._conn.cursor() as cur:
-            cur.execute(UPSERT_INGESTION_SQL, (
-                doc_id, self.collection, self.corpus, source_code,
-                self.embedding_model, self.embedding_version, chunks,
-            ))
-        self._conn.commit()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(UPSERT_INGESTION_SQL, (
+                    doc_id, self.collection, self.corpus, source_code,
+                    self.embedding_model, self.embedding_version, chunks,
+                ))
+            self._conn.commit()
+        except Exception:
+            # A raising execute (e.g. an FK violation for a doc_id unknown to
+            # `documents`) leaves this shared connection in aborted-transaction
+            # state: every later statement on it would raise
+            # InFailedSqlTransaction until the abort is cleared, silently
+            # blocking convergence for every document processed after this
+            # one. Roll back so the connection is healthy again, then
+            # propagate — run_ingest's per-document isolation still counts
+            # this one as a docs_error and moves on cleanly.
+            self._conn.rollback()
+            raise
         self._done.add(doc_id)

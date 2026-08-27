@@ -155,14 +155,18 @@ def ingest_item(
         # PDF with no text layer and OCR off) has no extractable text at all.
         # That is the "empty document" case, not a per-document error.
         return 0
-    texts, pages = [], []
+    texts, id_pages, payload_pages = [], [], []
     for chunk in chunks:
         text = chunk.get_text()
         if not text.strip():
             continue
         texts.append(text)
         page = getattr(chunk, "start_page", None)
-        pages.append(page if page is not None else 0)
+        # Point ids always resolve a page (0 for non-paginated formats like
+        # markdown) so ids stay deterministic; the payload, below, keeps the
+        # real None instead of masking it as page 0.
+        id_pages.append(page if page is not None else 0)
+        payload_pages.append(page)
     if not texts:
         return 0
 
@@ -175,24 +179,25 @@ def ingest_item(
     ingestion_date = datetime.datetime.now().isoformat()
 
     base_payload = {"doc_id": item.doc_id, **item.payload}
-    points = [
-        PointStruct(
-            id=_point_id(item.doc_id, pages[i], i),
+    points = []
+    for i in range(len(texts)):
+        payload = {
+            **base_payload,
+            "filename": item.path.name,
+            # Payload key is "chunk_number" (not "chunk_index") to match
+            # what the eigenmind engine ecosystem reads everywhere
+            # (vectordb/store.py, pipelines/rag.py, graph/singular.py).
+            "chunk_number": i,
+            "ingestion_date": ingestion_date,
+            "text": texts[i],
+        }
+        if payload_pages[i] is not None:
+            payload["page"] = payload_pages[i]
+        points.append(PointStruct(
+            id=_point_id(item.doc_id, id_pages[i], i),
             vector=vectors[i].tolist(),
-            payload={
-                **base_payload,
-                "filename": item.path.name,
-                "page": pages[i],
-                # Payload key is "chunk_number" (not "chunk_index") to match
-                # what the eigenmind engine ecosystem reads everywhere
-                # (vectordb/store.py, pipelines/rag.py, graph/singular.py).
-                "chunk_number": i,
-                "ingestion_date": ingestion_date,
-                "text": texts[i],
-            },
-        )
-        for i in range(len(texts))
-    ]
+            payload=payload,
+        ))
 
     for start in range(0, len(points), batch_size):
         store.client.upsert(collection_name=collection, points=points[start:start + batch_size])
@@ -227,8 +232,10 @@ def run_ingest(
     embedder = embedder or EmbeddingModel(
         device=detect_device(), model_name=embedding_model_name()
     )
-    store.ensure_collection(collection, embedder.dim)
     try:
+        # Inside the try/finally that releases an owned embedder: a raising
+        # ensure_collection must not leak it.
+        store.ensure_collection(collection, embedder.dim)
         for item in items:
             stats.docs_seen += 1
 
@@ -238,13 +245,19 @@ def run_ingest(
                     on_progress(stats, item, "skip-resume")
                 continue
 
+            # The ledger mark is inside this per-document try (both the n > 0
+            # and the n == 0 "empty doc" case) so a ledger write failure
+            # (e.g. an FK violation for a doc_id unknown to the vault) is
+            # isolated as a docs_error for this document rather than
+            # aborting the whole run — matching the "one bad document never
+            # aborts the run" contract for every path, not just n > 0.
             try:
                 n = ingest_item(
                     item, collection,
                     store=store, embedder=embedder,
                     ocr=ocr, batch_size=batch_size,
                 )
-                if n > 0 and ledger is not None:
+                if ledger is not None:
                     ledger.mark(item.doc_id, n, payload=item.payload)
             except Exception as exc:  # noqa: BLE001 — isolate one bad document
                 stats.docs_error += 1
@@ -255,8 +268,6 @@ def run_ingest(
 
             if n == 0:
                 stats.docs_empty += 1
-                if ledger is not None:
-                    ledger.mark(item.doc_id, 0, payload=item.payload)
                 if on_progress:
                     on_progress(stats, item, "empty")
                 continue

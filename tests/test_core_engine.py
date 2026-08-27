@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from rag_orchestrator.core import (
     OCR_TO_ENGINE,
@@ -153,6 +154,111 @@ def test_ledger_failure_is_isolated(tmp_path):
         ledger=ExplodingLedger(log), store=FakeStore(log), embedder=FakeEmbedder(),
     )
     assert stats.docs_error == 1 and stats.docs_ingested == 0
+
+
+def test_ledger_failure_on_empty_doc_is_isolated_and_run_continues(tmp_path, monkeypatch):
+    """The n == 0 ('empty doc') ledger mark must be inside the same
+    per-document isolation as the n > 0 path (item 2 of the fix wave): an
+    empty doc unknown to the vault (FK violation on mark) must count as a
+    docs_error for that one doc and let the run continue, not abort."""
+    from chunknorris.exceptions import TextNotFoundException
+
+    import rag_orchestrator.core as core
+
+    original_chunk = core.chunk_with_chunknorris
+    calls = {"n": 0}
+
+    def flaky_chunk(path, use_ocr=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TextNotFoundException("no text layer")
+        return original_chunk(path, use_ocr=use_ocr)
+
+    monkeypatch.setattr(core, "chunk_with_chunknorris", flaky_chunk)
+
+    log = []
+
+    class ExplodingLedger(RecordingLedger):
+        def mark(self, doc_id, chunks, payload=None):
+            if chunks == 0:
+                raise RuntimeError("FK violation: doc unknown to vault")
+            super().mark(doc_id, chunks, payload)
+
+    empty_item = SourceItem(doc_id="empty-doc", path=tmp_path / "empty.pdf", payload={})
+    ok_item = _md_item(tmp_path, doc_id="doc2")
+    stats = run_ingest(
+        [empty_item, ok_item], collection="coll",
+        ledger=ExplodingLedger(log), store=FakeStore(log), embedder=FakeEmbedder(),
+    )
+    assert stats.docs_error == 1
+    assert stats.docs_empty == 0  # mark() failed -> counted as error, not also empty
+    assert stats.docs_ingested == 1  # run continued past the poisoned doc
+
+
+def test_ensure_collection_failure_still_releases_owned_embedder(tmp_path, monkeypatch):
+    """ensure_collection() must be inside the try/finally that releases an
+    *owned* embedder (item 6 of the fix wave) — otherwise a raising
+    ensure_collection leaks the loaded model."""
+    import rag_orchestrator.core as core
+
+    released = {"n": 0}
+
+    class FakeOwnedEmbedder:
+        dim = 8
+
+        def encode_passage(self, texts):
+            return np.zeros((len(texts), self.dim), dtype="float32")
+
+        def release(self):
+            released["n"] += 1
+
+    monkeypatch.setattr(core, "EmbeddingModel", lambda **kwargs: FakeOwnedEmbedder())
+    monkeypatch.setattr(core, "detect_device", lambda: "cpu")
+
+    class BoomStore:
+        def ensure_collection(self, name, vector_size):
+            raise RuntimeError("qdrant unreachable")
+
+    with pytest.raises(RuntimeError, match="qdrant unreachable"):
+        run_ingest([_md_item(tmp_path)], collection="coll", store=BoomStore())
+
+    assert released["n"] == 1  # not leaked despite ensure_collection raising
+
+
+def test_ingest_item_omits_page_key_when_start_page_is_none(tmp_path):
+    """Non-paginated formats (e.g. markdown) must not fake a 'page': 0 in the
+    payload (item 7 of the fix wave) — the point id still resolves the
+    missing page to 0 for determinism, but the payload key is absent."""
+    log = []
+    store, embedder = FakeStore(log), FakeEmbedder()
+    item = _md_item(tmp_path)
+    ingest_item(item, "coll", store=store, embedder=embedder)
+    payload = store.client.points[0].payload
+    assert "page" not in payload
+    assert store.client.points[0].id == _point_id("doc1", 0, 0)
+
+
+def test_ingest_item_includes_page_key_when_start_page_present(tmp_path, monkeypatch):
+    import rag_orchestrator.core as core
+
+    class FakeChunk:
+        def __init__(self, text, start_page):
+            self._text = text
+            self.start_page = start_page
+
+        def get_text(self):
+            return self._text
+
+    monkeypatch.setattr(
+        core, "chunk_with_chunknorris",
+        lambda path, use_ocr=None: [FakeChunk("hello world " * 10, 3)],
+    )
+    log = []
+    store, embedder = FakeStore(log), FakeEmbedder()
+    item = SourceItem(doc_id="doc-pdf", path=tmp_path / "f.pdf", payload={})
+    n = ingest_item(item, "coll", store=store, embedder=embedder)
+    assert n == 1
+    assert store.client.points[0].payload["page"] == 3
 
 
 def test_file_ledger_accepts_payload_kwarg(tmp_path):
