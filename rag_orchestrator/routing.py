@@ -53,10 +53,24 @@ class CorpusRoute:
 
     corpus: str
     root_env_key: str  # .env key holding this machine's corpus data root
+    # Leading prefix stripped from the vault's local_path before joining with
+    # corpus_root(). Only ever a leading-prefix strip (never a substring
+    # removal anywhere in the path) — see resolve_local_path().
+    local_path_strip: str = ""
 
 
 ROUTING: dict[str, CorpusRoute] = {
-    "central-bank": CorpusRoute(corpus="central-bank", root_env_key="CB_CORPUS_ROOT"),
+    "central-bank": CorpusRoute(
+        corpus="central-bank",
+        root_env_key="CB_CORPUS_ROOT",
+        # cb_corpus manifest rows store local_path relative to the cb_corpus
+        # REPO root (e.g. "data/raw/us/C1/2010/<doc_id>.pdf"), but
+        # CB_CORPUS_ROOT is documented (.env.example, sources/cb_corpus.py)
+        # as the folder that already CONTAINS raw/ — i.e. the data dir
+        # itself. Without stripping "data/" first, root / local_path would
+        # double-nest into <CB_CORPUS_ROOT>/data/raw/... and find nothing.
+        local_path_strip="data/",
+    ),
 }
 
 
@@ -70,3 +84,19 @@ def corpus_root(corpus: str) -> Path:
             f"to resolve local files for corpus '{corpus}'"
         )
     return root
+
+
+def resolve_local_path(corpus: str, local_path: str) -> Path:
+    """Join a vault ``local_path`` with its corpus root.
+
+    Strips the route's ``local_path_strip`` prefix first, when present, to
+    reconcile manifest-relative local_paths with a root that already points
+    past that prefix (see ``ROUTING["central-bank"]`` for the concrete case).
+    The strip is a leading-prefix match only — a "data/" occurring anywhere
+    else in the path is left untouched.
+    """
+    root = corpus_root(corpus)
+    route = ROUTING[corpus]
+    strip = route.local_path_strip
+    remainder = local_path[len(strip):] if strip and local_path.startswith(strip) else local_path
+    return root / remainder

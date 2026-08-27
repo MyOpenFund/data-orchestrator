@@ -6,9 +6,28 @@ from qdrant_client import QdrantClient
 from rag_orchestrator import cli
 from rag_orchestrator.routing import collection_name
 
-from .conftest import insert_documents
+from .conftest import insert_documents, write_note_md, write_text_pdf
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture()
+def corpus_dir(tmp_path):
+    """Vault-realistic corpus root, overriding conftest's flat wave-1 fixture.
+
+    Real vault rows have local_path values like "data/raw/us/C1/2010/<doc_id>.pdf"
+    (relative to the cb_corpus REPO root), while CB_CORPUS_ROOT points at the
+    data dir that already contains raw/ — so fixtures must live under
+    <corpus_dir>/raw/... with CB_CORPUS_ROOT=<corpus_dir> to actually exercise
+    the CB_CORPUS_ROOT/local_path join (F6), instead of masking it with bare
+    filenames.
+    """
+    d = tmp_path / "corpus"
+    d.mkdir()
+    write_text_pdf(d / "raw" / "us" / "C1" / "2015" / "text.pdf")
+    write_note_md(d / "raw" / "ecb" / "A3" / "2020" / "note.md")
+    # "data/raw/fr/C1/2019/missing.pdf" deliberately left absent (doc-gone).
+    return d
 
 
 def _coll():
@@ -19,13 +38,13 @@ def _coll():
 def _seed(pg_url, corpus_dir):
     insert_documents(pg_url, [
         {"doc_id": "doc-text", "corpus": "central-bank", "source_code": "us",
-         "doc_type": "C1", "year": 2015, "local_path": "text.pdf"},
+         "doc_type": "C1", "year": 2015, "local_path": "data/raw/us/C1/2015/text.pdf"},
         {"doc_id": "doc-md", "corpus": "central-bank", "source_code": "ecb",
-         "doc_type": "A3", "year": 2020, "local_path": "note.md"},
+         "doc_type": "A3", "year": 2020, "local_path": "data/raw/ecb/A3/2020/note.md"},
         {"doc_id": "doc-gone", "corpus": "central-bank", "source_code": "fr",
-         "doc_type": "C1", "year": 2019, "local_path": "missing.pdf"},
+         "doc_type": "C1", "year": 2019, "local_path": "data/raw/fr/C1/2019/missing.pdf"},
         {"doc_id": "doc-other-corpus", "corpus": "company", "source_code": "edgar",
-         "local_path": "text.pdf"},
+         "local_path": "data/raw/text.pdf"},
     ])
 
 

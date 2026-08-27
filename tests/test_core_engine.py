@@ -1,4 +1,5 @@
 """Unit tests for the rewired engine internals (fake store/embedder, real chunking on .md)."""
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -88,8 +89,22 @@ def test_ingest_item_md_yields_points_with_deterministic_ids(tmp_path):
     payload = store.client.points[0].payload
     assert payload["doc_id"] == "doc1"
     assert payload["bank_code"] == "us"
-    assert payload["chunk_index"] == 0
+    assert payload["chunk_number"] == 0
+    assert "chunk_index" not in payload  # eigenmind reads "chunk_number", not this
     assert "text" in payload and payload["filename"] == item.path.name
+
+
+def test_ingest_item_payload_has_ingestion_date_constant_across_doc(tmp_path):
+    log = []
+    store, embedder = FakeStore(log), FakeEmbedder()
+    item = _md_item(tmp_path)
+    n = ingest_item(item, "coll", store=store, embedder=embedder)
+    assert n >= 1
+    dates = {pt.payload["ingestion_date"] for pt in store.client.points}
+    assert len(dates) == 1  # every point of the same document agrees
+    (ingestion_date,) = dates
+    # ISO-parseable string, as eigenmind's date_range_filter expects.
+    datetime.fromisoformat(ingestion_date)
 
 
 def test_vectors_come_from_encode_passage(tmp_path):

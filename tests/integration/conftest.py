@@ -151,28 +151,58 @@ def insert_documents(pg_url, rows):
     conn.close()
 
 
-@pytest.fixture()
-def corpus_dir(tmp_path):
-    """Adversarial mini-corpus: 2-page text PDF, empty PDF, markdown note."""
+def write_text_pdf(path):
+    """A 2-page PDF with a real text layer (has_text_layer=True, page_count=2)."""
     import fitz  # pymupdf, via the eigenmind dependency tree
 
-    d = tmp_path / "corpus"
-    d.mkdir()
+    path.parent.mkdir(parents=True, exist_ok=True)
     doc = fitz.open()
     for i in (1, 2):
         page = doc.new_page()
         page.insert_text((72, 72), f"Monetary policy page {i}. " * 30)
-    doc.save(d / "text.pdf"); doc.close()
+    doc.save(path)
+    doc.close()
 
-    doc = fitz.open(); doc.new_page(); doc.save(d / "empty.pdf"); doc.close()
 
-    # MarkdownChunker enforces a minimum chunk word count (15), so this needs
-    # enough real prose to survive chunking as a non-empty document.
-    (d / "note.md").write_text(
+def write_empty_pdf(path):
+    """A 1-page PDF with no text layer (has_text_layer=False, page_count=1)."""
+    import fitz
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+
+
+def write_note_md(path):
+    """A markdown note with enough prose to survive chunking as non-empty.
+
+    MarkdownChunker enforces a minimum chunk word count (15).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         "# Note\n\n"
         "A markdown paragraph about inflation. Central banks track consumer "
         "prices closely and adjust policy rates when inflation drifts away "
         "from target. This note discusses how inflation expectations feed "
         "back into wage negotiations and long-run price stability.\n"
     )
+
+
+@pytest.fixture()
+def corpus_dir(tmp_path):
+    """Adversarial mini-corpus: 2-page text PDF, empty PDF, markdown note.
+
+    Files sit flat at the corpus root — this fixture backs wave-1 tests,
+    which build SourceItem paths directly and never go through the vault's
+    local_path/CB_CORPUS_ROOT resolver. Wave-2 and probe end-to-end tests
+    override this fixture locally with a realistic nested "raw/..." layout
+    (see their own conftest-shadowing corpus_dir) to exercise that resolver.
+    """
+    d = tmp_path / "corpus"
+    d.mkdir()
+    write_text_pdf(d / "text.pdf")
+    write_empty_pdf(d / "empty.pdf")
+    write_note_md(d / "note.md")
     return d

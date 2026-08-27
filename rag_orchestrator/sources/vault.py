@@ -9,11 +9,10 @@ fields (columns always win). File paths join the per-machine corpus root
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
 from ..core import SourceItem
-from ..routing import corpus_root
+from ..routing import resolve_local_path
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +68,7 @@ def build_selection_sql(
     return sql, params
 
 
-def row_to_item(row: dict, root: Path) -> SourceItem | None:
+def row_to_item(row: dict, corpus: str) -> SourceItem | None:
     """Map one selection row to a SourceItem. None when local_path is NULL."""
     local_path = row.get("local_path")
     if not local_path:
@@ -82,19 +81,18 @@ def row_to_item(row: dict, root: Path) -> SourceItem | None:
             payload.pop(col, None)
             continue
         payload[col] = value.isoformat() if hasattr(value, "isoformat") else value
-    return SourceItem(doc_id=row["doc_id"], path=root / local_path, payload=payload)
+    return SourceItem(doc_id=row["doc_id"], path=resolve_local_path(corpus, local_path), payload=payload)
 
 
 def iter_items(conn, corpus: str, collection: str, **filters) -> Iterator[SourceItem]:
     """Yield SourceItems for every vault doc not yet in ``collection``."""
-    root = corpus_root(corpus)
     sql, params = build_selection_sql(corpus, collection, **filters)
     skipped = 0
     with conn.cursor() as cur:
         cur.execute(sql, params)
         columns = [d[0] for d in cur.description]
         for raw in cur:
-            item = row_to_item(dict(zip(columns, raw)), root)
+            item = row_to_item(dict(zip(columns, raw)), corpus)
             if item is None:
                 skipped += 1
                 continue

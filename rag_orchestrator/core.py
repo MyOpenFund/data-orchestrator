@@ -17,6 +17,7 @@ A *source* only has to yield :class:`SourceItem` objects.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import time
@@ -167,6 +168,12 @@ def ingest_item(
 
     vectors = embedder.encode_passage(texts)
 
+    # One ingestion_date per document: eigenmind's only date axis (see
+    # eigenmind.vectordb.store.make_point / date_range_filter) reads this ISO
+    # string from every point's payload, so all of a document's points must
+    # agree on it rather than drift across the batch's wall-clock time.
+    ingestion_date = datetime.datetime.now().isoformat()
+
     base_payload = {"doc_id": item.doc_id, **item.payload}
     points = [
         PointStruct(
@@ -176,7 +183,11 @@ def ingest_item(
                 **base_payload,
                 "filename": item.path.name,
                 "page": pages[i],
-                "chunk_index": i,
+                # Payload key is "chunk_number" (not "chunk_index") to match
+                # what the eigenmind engine ecosystem reads everywhere
+                # (vectordb/store.py, pipelines/rag.py, graph/singular.py).
+                "chunk_number": i,
+                "ingestion_date": ingestion_date,
                 "text": texts[i],
             },
         )

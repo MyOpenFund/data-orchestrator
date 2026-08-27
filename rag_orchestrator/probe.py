@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .routing import corpus_root
+from .routing import resolve_local_path
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,6 @@ def probe_file(path: Path) -> tuple[bool | None, int | None]:
 
 def run_probe(conn, corpus: str, *, limit: int | None = None, batch: int = 50) -> dict:
     """Probe every unprobed document of ``corpus``. Returns counters."""
-    root = corpus_root(corpus)
     with conn.cursor() as cur:
         cur.execute(SELECT_UNPROBED_SQL, (corpus,))
         rows = cur.fetchall()
@@ -66,7 +65,7 @@ def run_probe(conn, corpus: str, *, limit: int | None = None, batch: int = 50) -
     stats = {"probed": 0, "skipped": 0, "errors": 0}
     pending = 0
     for doc_id, local_path in rows:
-        has_text, page_count = probe_file(root / local_path)
+        has_text, page_count = probe_file(resolve_local_path(corpus, local_path))
         if has_text is None and page_count is None:
             stats["skipped"] += 1
             continue

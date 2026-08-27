@@ -1,6 +1,5 @@
 """Unit tests for the vault selection source (pure SQL builder + row mapping)."""
 from datetime import date
-from pathlib import Path
 
 from rag_orchestrator.sources.vault import build_selection_sql, row_to_item
 
@@ -46,25 +45,32 @@ def _row(**over):
     return row
 
 
-def test_row_to_item_maps_payload_and_path():
-    item = row_to_item(_row(), Path("/corpus"))
+def test_row_to_item_maps_payload_and_path(monkeypatch, tmp_path):
+    # local_path is repo-root-relative ("data/raw/..."); resolve_local_path
+    # (routing) strips "data/" for central-bank before joining with the root.
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(), "central-bank")
     assert item.doc_id == "d1"
-    assert item.path == Path("/corpus/data/raw/us/C1/2015/d1.pdf")
+    assert item.path == tmp_path / "raw" / "us" / "C1" / "2015" / "d1.pdf"
     assert item.payload["source_code"] == "us"
     assert item.payload["date"] == "2015-01-13"      # isoformat string
     assert item.payload["cik"] == "0001"             # extra merged
     assert item.payload["corpus"] == "central-bank"  # column wins over extra
 
 
-def test_row_to_item_extra_never_overrides_columns():
-    item = row_to_item(_row(extra={"source_code": "evil"}), Path("/c"))
+def test_row_to_item_extra_never_overrides_columns(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(extra={"source_code": "evil"}), "central-bank")
     assert item.payload["source_code"] == "us"
 
 
-def test_row_to_item_null_fields_dropped():
-    item = row_to_item(_row(date=None, extra=None, title=None), Path("/c"))
+def test_row_to_item_null_fields_dropped(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(date=None, extra=None, title=None), "central-bank")
     assert "date" not in item.payload and "title" not in item.payload
 
 
 def test_row_to_item_null_local_path_is_none():
-    assert row_to_item(_row(local_path=None), Path("/c")) is None
+    # No CB_CORPUS_ROOT needed: local_path is NULL, so the function returns
+    # before resolving anything.
+    assert row_to_item(_row(local_path=None), "central-bank") is None
