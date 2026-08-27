@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="RAGDataOrchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
-    parser.add_argument("source", choices=["cb_corpus", "vault"], help="data source to ingest")
+    parser.add_argument("source", choices=["cb_corpus", "vault", "probe"], help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
     parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3")
@@ -135,6 +135,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         from .routing import collection_name
         return _run_vault_source(args, None, args.collection or collection_name(args.corpus))
+
+    if args.source == "probe":
+        from . import vault as vault_mod
+        from .probe import run_probe
+
+        conn = vault_mod.connect()
+        try:
+            stats = run_probe(conn, args.corpus, limit=args.limit)
+        finally:
+            conn.close()
+        print(f"Probe done: {stats}")
+        return 0
 
     collection = args.collection or DEFAULT_COLLECTION
 
