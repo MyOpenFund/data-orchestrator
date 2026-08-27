@@ -142,35 +142,37 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Resume ledger (vault): rag_ingestions/{args.collection} "
                   f"({len(ledger)} docs already done)")
 
-    print(f"→ Ingesting source '{args.source}' into collection '{args.collection}' "
-          f"(ocr={args.ocr}, limit={args.limit})")
-    t0 = time.time()
-    stats = run_ingest(
-        items,
-        collection=args.collection,
-        ledger=ledger,
-        ocr=args.ocr,
-        limit=args.limit,
-        on_progress=_make_progress(args.progress_every),
-    )
-    elapsed = time.time() - t0
+    try:
+        print(f"→ Ingesting source '{args.source}' into collection '{args.collection}' "
+              f"(ocr={args.ocr}, limit={args.limit})")
+        t0 = time.time()
+        stats = run_ingest(
+            items,
+            collection=args.collection,
+            ledger=ledger,
+            ocr=args.ocr,
+            limit=args.limit,
+            on_progress=_make_progress(args.progress_every),
+        )
+        elapsed = time.time() - t0
 
-    if vault_conn is not None:
-        vault_conn.close()
+        print("─" * 60)
+        print("Done.")
+        print(f"  docs seen      : {stats.docs_seen}")
+        print(f"  docs ingested  : {stats.docs_ingested}")
+        print(f"  skipped(resume): {stats.docs_skipped_resume}")
+        print(f"  empty          : {stats.docs_empty}")
+        print(f"  errors         : {stats.docs_error}")
+        print(f"  chunks written : {stats.chunks_written}")
+        print(f"  time           : {elapsed:.1f}s")
+        if stats.errors:
+            print(f"  first errors   :")
+            for path, msg in stats.errors[:10]:
+                print(f"    - {path}: {msg}")
+    finally:
+        if vault_conn is not None:
+            vault_conn.close()
 
-    print("─" * 60)
-    print("Done.")
-    print(f"  docs seen      : {stats.docs_seen}")
-    print(f"  docs ingested  : {stats.docs_ingested}")
-    print(f"  skipped(resume): {stats.docs_skipped_resume}")
-    print(f"  empty          : {stats.docs_empty}")
-    print(f"  errors         : {stats.docs_error}")
-    print(f"  chunks written : {stats.chunks_written}")
-    print(f"  time           : {elapsed:.1f}s")
-    if stats.errors:
-        print(f"  first errors   :")
-        for path, msg in stats.errors[:10]:
-            print(f"    - {path}: {msg}")
     return 0
 
 

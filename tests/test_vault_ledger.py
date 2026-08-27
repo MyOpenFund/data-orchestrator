@@ -79,3 +79,31 @@ def test_connect_requires_database_url(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(RuntimeError):
         connect()
+
+
+def test_cli_closes_vault_connection_on_run_failure(monkeypatch, tmp_path):
+    """Verify vault connection is closed even if run_ingest raises."""
+    from rag_orchestrator import cli
+    import rag_orchestrator.vault as vault_mod
+
+    class ClosableConn(FakeConn):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    conn = ClosableConn()
+    monkeypatch.setattr(vault_mod, "connect", lambda: conn)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("engine init failed")
+
+    monkeypatch.setattr(cli, "run_ingest", boom)
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="engine init failed"):
+        cli.main(["cb_corpus", "--root", str(tmp_path)])
+
+    assert conn.closed
