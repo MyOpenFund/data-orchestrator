@@ -22,13 +22,9 @@ DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 EMBEDDING_VERSION = "e5-prefixes-v1"
 
 # Short tags for collection names. Unknown models fall back to a sanitized
-# last path segment. The integration-test tiny model (swapped in for speed via
-# RAGO_EMBEDDING_MODEL, see tests/integration/conftest.py) is pinned to the
-# same "e5b" tag as its production stand-in so collection names stay stable
-# between prod and CI runs of the same corpus.
+# last path segment (e.g. paraphrase-albert-small-v2 -> paraphrase-albert-small-v2).
 MODEL_TAGS = {
     "intfloat/multilingual-e5-base": "e5b",
-    "sentence-transformers/paraphrase-albert-small-v2": "e5b",
 }
 
 

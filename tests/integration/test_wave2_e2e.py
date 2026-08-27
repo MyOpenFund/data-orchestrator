@@ -4,12 +4,16 @@ import pytest
 from qdrant_client import QdrantClient
 
 from rag_orchestrator import cli
+from rag_orchestrator.routing import collection_name
 
 from .conftest import insert_documents
 
 pytestmark = pytest.mark.integration
 
-COLL = "central-bank-e5b-v1"
+
+def _coll():
+    """Derive collection name at test runtime from RAGO_EMBEDDING_MODEL."""
+    return collection_name("central-bank")
 
 
 def _seed(pg_url, corpus_dir):
@@ -48,16 +52,16 @@ def test_cli_vault_ingests_selection_and_records_state(
     # doc-gone errored (missing file), doc-other-corpus filtered out by corpus.
     assert done == ["doc-md", "doc-text"]
     client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])
-    assert client.count(COLL).count > 0
+    assert client.count(_coll()).count > 0
 
 
 def test_cli_vault_second_run_selects_nothing(clean_state, qdrant_addr, corpus_dir):
     _seed(clean_state, corpus_dir)
     _cli(clean_state, qdrant_addr, corpus_dir)
-    before = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(COLL).count
+    before = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(_coll()).count
     rc = _cli(clean_state, qdrant_addr, corpus_dir)
     assert rc == 0
-    after = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(COLL).count
+    after = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(_coll()).count
     assert after == before  # anti-join found nothing new (doc-gone re-errors)
 
 
