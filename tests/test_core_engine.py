@@ -154,3 +154,19 @@ def test_limit_stops_after_n_newly_ingested(tmp_path):
         store=FakeStore(log), embedder=FakeEmbedder(), limit=2,
     )
     assert stats.docs_ingested == 2 and stats.docs_seen == 2
+
+
+def test_text_not_found_maps_to_empty_doc(tmp_path, monkeypatch):
+    from chunknorris.exceptions import TextNotFoundException
+
+    import rag_orchestrator.core as core
+
+    def raise_tnf(path, use_ocr=None):
+        raise TextNotFoundException("no text layer")
+
+    monkeypatch.setattr(core, "chunk_with_chunknorris", raise_tnf)
+    log = []
+    item = _md_item(tmp_path)
+    n = ingest_item(item, "coll", store=FakeStore(log), embedder=FakeEmbedder())
+    assert n == 0
+    assert not log  # nothing reached Qdrant
