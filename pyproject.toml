@@ -27,6 +27,14 @@ dependencies = [
 [project.optional-dependencies]
 # Streamlit dashboard (corpus vs RAG tracking, as-of date, query/graph logs).
 dashboard = ["streamlit>=1.40", "pandas>=2.0"]
+# bottom_up_corpus source connector (SEC EDGAR micro layer). Pulled from GitHub
+# rather than vendored: it owns all discovery/download/render logic and exposes
+# `bottom_up_corpus.rag.iter_items`. Heavy + has its own system needs (Chrome for
+# PDF rendering), hence an opt-in extra. Equivalent to a local checkout installed
+# with `pip install -e .`, or simply put on PYTHONPATH.
+bottom_up = [
+    "bottom_up_corpus @ git+https://github.com/jeulinmarc/bottom_up_corpus",
+]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

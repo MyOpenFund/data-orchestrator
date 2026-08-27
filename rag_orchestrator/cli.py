@@ -7,20 +7,28 @@ drives the eigenmind engine (a separate editable install, see ``README.md``)::
     rag-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
     rag-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
 
-(equivalently ``python -m rag_orchestrator.cli cb_corpus ...``)
+    rag-orchestrator bottom_up_corpus --ciks 320193 --collection company-e5b-v1
+    rag-orchestrator bottom_up_corpus --ciks 320193 --doctypes A1 --year-min 2024
+
+(equivalently ``python -m rag_orchestrator.cli <source> ...``)
 
 The default collection is routed per corpus by
 ``routing.collection_name`` — ``{corpus}-{model_tag}-v1``, e.g.
-``central-bank-e5b-v1`` — for every source, never a hard-coded legacy name.
+``central-bank-e5b-v1`` for the ``cb_corpus``/``vault`` sources or
+``company-e5b-v1`` for ``bottom_up_corpus`` — for every source, never a
+hard-coded legacy name. Each disk source implies its own vault corpus
+(``cb_corpus`` -> ``central-bank``, ``bottom_up_corpus`` -> ``company``), so
+``--corpus`` defaults per-source; an explicit ``--corpus`` always wins.
 
 The vault (``rag_ingestions``) is the *default* resume mechanism: a re-run
 skips documents already recorded there. Pass ``--no-vault`` to fall back to a
-local JSON-lines ledger under ``<repo>/state/`` instead (``cb_corpus`` source
-only — the vault source's resume *is* the vault anti-join in
-``sources/vault.py``, so ``--no-vault`` is rejected there). ``--no-resume``
-ignores the ledger and re-ingests everything; it is likewise rejected for the
-vault source (its anti-join always filters on the target collection, so a
-fresh ``--collection`` name is the way to re-ingest, not ``--no-resume``).
+local JSON-lines ledger under ``<repo>/state/`` instead (disk sources —
+``cb_corpus``, ``bottom_up_corpus`` — only; the vault source's resume *is*
+the vault anti-join in ``sources/vault.py``, so ``--no-vault`` is rejected
+there). ``--no-resume`` ignores the ledger and re-ingests everything; it is
+likewise rejected for the vault source (its anti-join always filters on the
+target collection, so a fresh ``--collection`` name is the way to re-ingest,
+not ``--no-resume``).
 """
 from __future__ import annotations
 
@@ -33,12 +41,31 @@ from pathlib import Path
 from .core import Ledger, SourceItem, run_ingest, IngestStats
 from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
+from .sources import bottom_up_corpus as bottom_up_corpus_source
 
 # Ledger lives at the repo root (one level above this package), or wherever
 # ``RAGO_STATE_DIR`` points (useful once installed site-wide).
 STATE_DIR = Path(
     os.environ.get("RAGO_STATE_DIR", Path(__file__).resolve().parents[1] / "state")
 )
+# Selectable sources.
+SOURCES = ("cb_corpus", "bottom_up_corpus", "vault", "probe")
+
+# For ``--count-only``: the two payload fields each disk source is summarised
+# by (the vault source has its own count path — source_code/doc_type — in
+# _count_vault_source).
+COUNT_KEYS = {
+    "cb_corpus": ("bank_code", "doc_type"),
+    "bottom_up_corpus": ("cik", "doc_type"),
+}
+
+# Each disk source implies its own vault corpus, so --corpus can default
+# per-source instead of one hard-coded value; an explicit --corpus always
+# wins. Sources absent here (vault, probe) keep the "central-bank" default.
+IMPLIED_CORPUS = {
+    "cb_corpus": "central-bank",
+    "bottom_up_corpus": "company",
+}
 
 
 def _csv(value: str | None) -> list[str] | None:
@@ -56,6 +83,17 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         year_min=args.year_min,
         year_max=args.year_max,
         include_html=args.include_html,
+    )
+
+
+def _build_bottom_up_corpus_items(args: argparse.Namespace):
+    return bottom_up_corpus_source.iter_items(
+        root=Path(args.root) if args.root else None,
+        ciks=_csv(args.ciks),
+        doctypes=_csv(args.doctypes),
+        year_min=args.year_min,
+        year_max=args.year_max,
+        prefer=args.prefer,
     )
 
 
@@ -101,11 +139,15 @@ def main(argv: list[str] | None = None) -> int:
         prog="RAGDataOrchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
-    parser.add_argument("source", choices=["cb_corpus", "vault", "probe"], help="data source to ingest")
-    parser.add_argument("--root", help="corpus root (folder containing raw/)")
+    parser.add_argument("source", choices=list(SOURCES), help="data source to ingest")
+    parser.add_argument("--root", help="corpus root (folder containing raw/, or the source's data dir)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
-    parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3")
+    parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3 (cb_corpus) or A1 (bottom_up_corpus)")
     parser.add_argument("--groups", help="comma list of doc groups, e.g. A,C")
+    parser.add_argument("--ciks", help="comma list of SEC CIK numbers, e.g. 320193,789019 (bottom_up_corpus source)")
+    parser.add_argument("--prefer", choices=["pdf", "text"], default="pdf",
+                        help="(bottom_up_corpus source) artifact to ingest: rendered PDF "
+                             "(default) or cleaned text")
     parser.add_argument("--source-codes", help="comma list of vault source codes, e.g. ecb,fr")
     parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
     parser.add_argument("--year-min", type=int, help="inclusive lower year bound")
@@ -115,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--collection", default=None,
                         help="Qdrant collection (default: {corpus}-{tag}-v1 "
                              "via routing.collection_name — same resolution "
-                             "for both the cb_corpus and vault sources)")
+                             "for every source, using --corpus or the "
+                             "source's implied corpus)")
     parser.add_argument("--limit", type=int, help="stop after N newly ingested docs")
     parser.add_argument("--ocr", choices=["auto", "always", "never"], default="auto",
                         help="OCR fallback mode for scanned pages (default: auto)")
@@ -125,16 +168,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-vault", action="store_true",
                         help="use the local file ledger instead of the vault "
                              "(no rag_ingestions state is read or written)")
-    parser.add_argument("--corpus", default="central-bank",
-                        help="vault corpus this run belongs to (default: central-bank)")
+    parser.add_argument("--corpus", default=None,
+                        help="vault corpus this run belongs to (default: per-source — "
+                             "central-bank for cb_corpus/vault/probe, company for "
+                             "bottom_up_corpus)")
     parser.add_argument("--count-only", action="store_true",
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
 
+    # Each disk source implies its own vault corpus; an explicit --corpus
+    # always wins. Never a source-name collection fallback (item 3/4 of the
+    # bottom_up_corpus integration) — collection routing is always
+    # routing.collection_name(args.corpus) below.
+    if args.corpus is None:
+        args.corpus = IMPLIED_CORPUS.get(args.source, "central-bank")
+
     if args.source == "cb_corpus":
         items = _build_cb_corpus_items(args)
+    elif args.source == "bottom_up_corpus":
+        items = _build_bottom_up_corpus_items(args)
 
     if args.source == "vault":
         if args.no_vault:
@@ -175,16 +229,19 @@ def main(argv: list[str] | None = None) -> int:
     collection = args.collection or collection_name(args.corpus)
 
     if args.count_only:
-        by_bank: dict[str, int] = {}
-        by_type: dict[str, int] = {}
+        key1, key2 = COUNT_KEYS[args.source]
+        by_key1: dict[str, int] = {}
+        by_key2: dict[str, int] = {}
         total = 0
         for it in items:
             total += 1
-            by_bank[it.payload["bank_code"]] = by_bank.get(it.payload["bank_code"], 0) + 1
-            by_type[it.payload["doc_type"]] = by_type.get(it.payload["doc_type"], 0) + 1
+            v1 = it.payload.get(key1)
+            v2 = it.payload.get(key2)
+            by_key1[v1] = by_key1.get(v1, 0) + 1
+            by_key2[v2] = by_key2.get(v2, 0) + 1
         print(f"Matching documents: {total}")
-        print("  by bank:", dict(sorted(by_bank.items(), key=lambda kv: -kv[1])))
-        print("  by doc_type:", dict(sorted(by_type.items())))
+        print(f"  by {key1}:", dict(sorted(by_key1.items(), key=lambda kv: -kv[1])))
+        print(f"  by {key2}:", dict(sorted(by_key2.items(), key=lambda kv: (str(kv[0])))))
         return 0
 
     ledger = None

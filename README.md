@@ -37,8 +37,16 @@ RAGDataOrchestrator/
     sources/
       vault.py                # source #1: vault-selected documents (any corpus)
       cb_corpus.py              # source #2: the central-bank PDF corpus (disk fallback)
+      bottom_up_corpus.py       # source #3: SEC EDGAR company filings (disk fallback)
   state/                   # resume ledgers when running with --no-vault (gitignored)
 ```
+
+The corpus family has two disk layers feeding the same RAG, each selectable
+through the `vault` source once onboarded there, and both usable disk-only
+via their own connector (`--no-vault`) in the meantime:
+
+- **Macro** — `cb_corpus` (vault corpus `central-bank`): central-bank documents.
+- **Micro** — `bottom_up_corpus` (vault corpus `company`): company filings from SEC EDGAR.
 
 ## Setup
 
@@ -57,10 +65,88 @@ RAGDataOrchestrator/
    | `EIGENMIND_PATH` | local clone of the eigenmind fork |
    | `DATABASE_URL` | vault Postgres, e.g. `postgresql://user:pass@host:5432/documents` |
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
+   | `BOTTOM_UP_CORPUS_ROOT` | local root of the bottom_up_corpus (SEC EDGAR) data dir — optional, only needed for the `bottom_up_corpus` disk fallback; unset falls back to bottom_up_corpus's own default data dir |
    | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
    | `RAGO_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
+
+## Disk sources
+
+Both disk sources below are selectable through the `vault` source once their
+corpus is onboarded there (recommended — see [Usage](#usage)); each also has
+its own disk-fallback connector (`--no-vault`) for use before that onboarding,
+or standalone. Neither hard-codes a collection name: the default is always the
+routed `{corpus}-{model_tag}-v1` (`central-bank-e5b-v1` / `company-e5b-v1`),
+via `routing.collection_name`.
+
+### `cb_corpus` — the central-bank corpus
+
+Reads the corpus produced by the [`cb_corpus`](https://github.com/jeulinmarc/cb_corpus)
+project, laid out on disk as:
+
+```
+<root>/raw/<bank>/<doctype>/<year>/<doc_id>.pdf
+```
+
+`bank`, `doctype` and `year` are parsed from the path and attached to **every
+chunk's payload**, so the vector DB can be filtered and cited per bank /
+document-type / year.
+
+| field | example | source |
+|-------|---------|--------|
+| `source` | `cb_corpus` | connector |
+| `bank_code` | `ecb` | path |
+| `doc_type` | `C1` | path |
+| `doc_group` | `C` | path |
+| `year` | `2019` | path |
+| `doc_id` | `ecb/C1/2019/3c03….pdf` | path |
+| `filename`, `page`, `chunk_number`, `text` | — | pipeline |
+
+### `bottom_up_corpus` — the company (SEC EDGAR) corpus
+
+The **micro** layer: company filings from SEC EDGAR, produced by the
+[`bottom_up_corpus`](https://github.com/jeulinmarc/bottom_up_corpus) project. That
+project discovers filings, downloads and decomposes the complete submission,
+extracts clean text and renders each filing's primary document to a
+human-readable, **page-anchored PDF** — which flows through the same eigenmind
+PDF loader with no change. Cleaned text is the fallback when no PDF exists.
+
+This connector is a thin shim over `bottom_up_corpus.rag.iter_items` — all
+discovery/render logic stays in that project; nothing is vendored here. Each
+chunk's Qdrant payload carries at least:
+
+| field | example | source |
+|-------|---------|--------|
+| `source` | `bottom_up_corpus` | connector |
+| `cik` | `320193` | bottom_up_corpus |
+| `company` | `Apple Inc.` | bottom_up_corpus |
+| `doc_type` | `A1` (10-K) | bottom_up_corpus |
+| `year` | `2024` | bottom_up_corpus |
+| `url` | `https://www.sec.gov/...` | bottom_up_corpus |
+| `filename`, `page`, `chunk_number`, `text` | — | pipeline |
+
+Default narrative scope is families **A** (10-K/10-Q/20-F) and **C** (proxy);
+8-K/6-K and ownership forms are high-volume / low-narrative, so down-weight or
+opt-in (see the family-weighting note in `bottom_up_corpus/docs/INGESTION_RAG.md`).
+
+Install the dependency (it is not vendored) and point a root at the rendered
+corpus:
+
+```bash
+pip install -e .[bottom_up]        # pulls bottom_up_corpus from GitHub
+# then, with BOTTOM_UP_CORPUS_ROOT set in .env (or --root):
+rag-orchestrator vault --corpus company                       # recommended, once onboarded
+rag-orchestrator bottom_up_corpus --ciks 320193 --no-vault    # disk fallback, routes to company-e5b-v1
+```
+
+`bottom_up_corpus` can also be used from a local checkout (`pip install -e .` in
+that repo) or simply put on `PYTHONPATH`.
+
+Its vault `local_path` convention isn't settled yet (no `company`-corpus
+manifests feed the vault at the time of writing), so `ROUTING["company"]` in
+`routing.py` currently carries an empty `local_path_strip` — revisit once
+that lands (see the comment there).
 
 ### Path resolution convention
 
@@ -90,6 +176,10 @@ rag-orchestrator vault --corpus central-bank
 # no rag_ingestions read/write) — useful before a corpus is vault-onboarded.
 rag-orchestrator cb_corpus --banks ecb --no-vault
 
+# The company (SEC EDGAR) corpus, disk fallback — routes to company-e5b-v1
+# via routing.collection_name(--corpus), not a "bottom_up_corpus"-named one.
+rag-orchestrator bottom_up_corpus --ciks 320193 --no-vault
+
 # Facts probe: fills has_text_layer / page_count for a corpus's documents
 # (feeds the OCR policy; safe to re-run, only unprobed rows are touched).
 rag-orchestrator probe --corpus central-bank
@@ -104,21 +194,23 @@ rag-orchestrator vault --corpus central-bank --ocr always
 
 | flag | meaning |
 |---|---|
-| `--corpus NAME` | vault corpus to operate on (default `central-bank`) |
-| `--no-vault` | use the local JSON-lines file ledger instead of the vault's `rag_ingestions` (no vault state is read or written); only valid with the `cb_corpus` source |
+| `--corpus NAME` | vault corpus to operate on (default: per-source — `central-bank` for `vault`/`cb_corpus`/`probe`, `company` for `bottom_up_corpus`) |
+| `--no-vault` | use the local JSON-lines file ledger instead of the vault's `rag_ingestions` (no vault state is read or written); only valid with the `cb_corpus`/`bottom_up_corpus` disk sources |
 | `--ocr auto\|always\|never` | OCR fallback for scanned pages (default `auto`: defers to the engine's tesseract availability check) |
-| `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` via `routing.collection_name` — the same resolution for both the `vault` and `cb_corpus` sources) |
+| `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` via `routing.collection_name` — the same resolution for every source, using `--corpus` or the source's implied corpus) |
 | `--source-codes a,b` | (vault source) only these `source_code` values, e.g. `ecb,fr` |
-| `--doctypes C1,A3` | only these doc-type codes |
+| `--doctypes C1,A3` | only these doc-type codes (cb_corpus); `A1` etc. for bottom_up_corpus |
 | `--languages en,fr` | (vault source) only these language codes |
 | `--year-min` / `--year-max` | inclusive year bounds |
 | `--banks a,b` | (cb_corpus source) only these bank codes |
 | `--groups a,b` | (cb_corpus source) comma list of doc groups, e.g. A,C |
 | `--include-html` | (cb_corpus source) also ingest .html with no .pdf sibling |
-| `--root PATH` | (cb_corpus source) corpus root override |
+| `--ciks 320193,789019` | (bottom_up_corpus source) only these SEC CIK numbers |
+| `--prefer pdf\|text` | (bottom_up_corpus source) rendered PDF (default) or cleaned text |
+| `--root PATH` | (cb_corpus/bottom_up_corpus sources) corpus root override |
 | `--limit N` | stop after N newly ingested docs |
 | `--no-resume` | ignore the resume ledger, re-ingest everything; **rejected for the `vault` source** (its resume *is* the `documents`/`rag_ingestions` anti-join — use a fresh `--collection` to re-ingest instead) |
-| `--count-only` | just count matching documents, do not ingest (both sources) |
+| `--count-only` | just count matching documents, do not ingest (every source) |
 
 ## The write protocol
 
@@ -183,7 +275,7 @@ counted as an error, while every other document in the batch still commits.
 ## Testing
 
 ```bash
-./venv/bin/python -m pytest -q                    # 54 unit tests
+./venv/bin/python -m pytest -q                    # 61 unit tests
 ./venv/bin/python -m pytest -m integration -q      # 12 integration tests
 ```
 
