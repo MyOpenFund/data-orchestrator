@@ -1,0 +1,55 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hygiene gate (no client name leakage)
+        run: '! grep -riIE ''\bgenerali\b'' --exclude-dir=eigenmind --exclude-dir=.git .'
+      - uses: actions/checkout@v4
+        with:
+          repository: jeulinmarc/eigenmind
+          path: eigenmind
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install -e ./eigenmind
+          pip install -e ".[dev]"
+      - name: Unit tests
+        run: pytest -q
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      RAGO_EMBEDDING_MODEL: sentence-transformers/paraphrase-albert-small-v2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hygiene gate (no client name leakage)
+        run: '! grep -riIE ''\bgenerali\b'' --exclude-dir=eigenmind --exclude-dir=.git .'
+      - uses: actions/checkout@v4
+        with:
+          repository: jeulinmarc/eigenmind
+          path: eigenmind
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Cache the tiny embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ env.RAGO_EMBEDDING_MODEL }}
+      - name: Install
+        run: |
+          pip install -e ./eigenmind
+          pip install -e ".[dev]"
+      - name: Integration tests (throwaway postgres + qdrant)
+        run: pytest -m integration -q

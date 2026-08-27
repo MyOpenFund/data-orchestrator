@@ -1,9 +1,9 @@
 """rag_orchestrator CLI.
 
-Installed as the ``rag-orchestrator`` console script. Standalone repo, sitting
-next to ``mvp-graph-rag``::
+Installed as the ``rag-orchestrator`` console script. Standalone repo that
+drives the eigenmind engine (a separate editable install, see ``README.md``)::
 
-    rag-orchestrator cb_corpus --count-only
+    rag-orchestrator vault --corpus central-bank
     rag-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
     rag-orchestrator cb_corpus --year-min 2015 --collection cb_corpus
 
