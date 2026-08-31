@@ -33,9 +33,12 @@ not ``--no-resume``).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import Ledger, SourceItem, run_ingest, IngestStats
@@ -134,6 +137,77 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
             print(f"    - {path}: {msg}")
 
 
+# ---------------------------------------------------------------------------
+# Run reports — the shared contract shape written to the vault's ``runs``
+# table (or, with --no-vault, appended to STATE_DIR/runs.jsonl).
+#
+# Doctrine (fixed): degraded/exit 3 iff docs_ingested == 0 and docs_error > 0
+# (a run that touched documents and got none of them in); otherwise ok/0. A
+# fatal exception is reported separately as failed/exit 1 (_fatal_report).
+# ---------------------------------------------------------------------------
+def _build_report(command: str, stats: IngestStats, started_at: str) -> dict:
+    totals = {
+        "docs_seen": stats.docs_seen,
+        "docs_new": stats.docs_ingested,
+        "docs_failed": stats.docs_error,
+    }
+    sources = [
+        {"source_code": code, **counts}
+        for code, counts in sorted(stats.by_source.items())
+    ]
+    degraded = stats.docs_ingested == 0 and stats.docs_error > 0
+    return {
+        "run_id": str(uuid.uuid4()),
+        "tool": "rag-orchestrator",
+        "command": command,
+        "started_at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "outcome": "degraded" if degraded else "ok",
+        "exit_code": 3 if degraded else 0,
+        "totals": totals,
+        "sources": sources,
+    }
+
+
+def _fatal_report(command: str, started_at: str, exc: Exception) -> dict:
+    """Best-effort report for a run that never reached a normal IngestStats
+    outcome (e.g. the vault connection or the engine itself failed)."""
+    rep = _build_report(command, IngestStats(), started_at)
+    rep["outcome"] = "failed"
+    rep["exit_code"] = 1
+    rep["error"] = f"{type(exc).__name__}: {exc}"
+    return rep
+
+
+def _append_report_jsonl(report: dict) -> None:
+    """--no-vault fallback: a single atomic append to STATE_DIR/runs.jsonl."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with (STATE_DIR / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(report) + "\n")
+
+
+def _validate_corpus_root(corpus: str) -> int | None:
+    """Eagerly resolve ``routing.corpus_root(corpus)`` before any ledger/engine
+    work starts. Prints an ``error:`` line to stderr and returns the exit code
+    the caller should return on failure; returns ``None`` on success.
+
+    Kept separate from the ``--root`` override check (a disk source's explicit
+    ``--root`` bypasses the env/routing lookup entirely — see its dispatch).
+    """
+    from .routing import corpus_root, ROUTING
+
+    try:
+        corpus_root(corpus)
+        return None
+    except KeyError:
+        known = ", ".join(sorted(ROUTING))
+        print(f"error: unknown corpus '{corpus}' (known: {known})", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="RAGDataOrchestrator",
@@ -178,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
 
+    # Guard against invalid --progress-every early, before any engine/DB work.
+    if getattr(args, "progress_every", 1) <= 0:
+        print("error: --progress-every must be >= 1", file=sys.stderr)
+        return 2
+
     # Each disk source implies its own vault corpus; an explicit --corpus
     # always wins. Never a source-name collection fallback (item 3/4 of the
     # bottom_up_corpus integration) — collection routing is always
@@ -186,6 +265,22 @@ def main(argv: list[str] | None = None) -> int:
         args.corpus = IMPLIED_CORPUS.get(args.source, "central-bank")
 
     if args.source == "cb_corpus":
+        # Eager pre-flight: cb_corpus's iter_items() is a generator, so a
+        # missing/misconfigured root only surfaces at its first next() —
+        # after the ledger/vault connection and engine are already spun up
+        # and an orphan collection may have been created (issue #7). Fail
+        # here instead, before any of that. An explicit --root overrides the
+        # env entirely (see _build_cb_corpus_items), so it gets its own
+        # existence check rather than the routing/env lookup.
+        if args.root:
+            if not Path(args.root).is_dir():
+                print(f"error: --root {args.root} does not exist or is not a directory",
+                      file=sys.stderr)
+                return 1
+        else:
+            err = _validate_corpus_root(args.corpus)
+            if err is not None:
+                return err
         items = _build_cb_corpus_items(args)
     elif args.source == "bottom_up_corpus":
         items = _build_bottom_up_corpus_items(args)
@@ -205,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        # Validate corpus root BEFORE any engine/DB work.
+        err = _validate_corpus_root(args.corpus)
+        if err is not None:
+            return err
         collection = args.collection or collection_name(args.corpus)
         if args.count_only:
             return _count_vault_source(args, collection)
@@ -246,25 +345,26 @@ def main(argv: list[str] | None = None) -> int:
 
     ledger = None
     vault_conn = None
-    if not args.no_resume:
-        if args.no_vault:
-            ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{collection}.jsonl"
-            ledger = Ledger(ledger_path)
-            print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
-        else:
-            from . import vault as vault_mod
-            from .routing import EMBEDDING_VERSION, embedding_model_name
-
-            vault_conn = vault_mod.connect()
-            ledger = vault_mod.VaultLedger(
-                vault_conn, collection=collection, corpus=args.corpus,
-                embedding_model=embedding_model_name(),
-                embedding_version=EMBEDDING_VERSION,
-            )
-            print(f"Resume ledger (vault): rag_ingestions/{collection} "
-                  f"({len(ledger)} docs already done)")
-
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
+        if not args.no_resume:
+            if args.no_vault:
+                ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{collection}.jsonl"
+                ledger = Ledger(ledger_path)
+                print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
+            else:
+                from . import vault as vault_mod
+                from .routing import EMBEDDING_VERSION, embedding_model_name
+
+                vault_conn = vault_mod.connect()
+                ledger = vault_mod.VaultLedger(
+                    vault_conn, collection=collection, corpus=args.corpus,
+                    embedding_model=embedding_model_name(),
+                    embedding_version=EMBEDDING_VERSION,
+                )
+                print(f"Resume ledger (vault): rag_ingestions/{collection} "
+                      f"({len(ledger)} docs already done)")
+
         print(f"→ Ingesting source '{args.source}' into collection '{collection}' "
               f"(ocr={args.ocr}, limit={args.limit})")
         t0 = time.time()
@@ -278,11 +378,70 @@ def main(argv: list[str] | None = None) -> int:
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
+
+        rep = _build_report(args.source, stats, started_at)
+        if args.no_vault:
+            try:
+                _append_report_jsonl(rep)
+            except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+                print(f"warning: failed to append run report: {exc}", file=sys.stderr)
+        elif vault_conn is not None:
+            try:
+                vault_mod.insert_run_report(vault_conn, rep)
+            except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+                print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+        else:
+            # Vault mode (not --no-vault) but no ledger connection was ever
+            # opened (--no-resume skips the "if not args.no_resume" block
+            # above) — open a short-lived one just for the report insert so
+            # the run isn't silently unreported. Same warn-only contract: a
+            # report failure must never mask the run's own outcome.
+            from . import vault as vault_mod
+
+            report_conn = None
+            try:
+                report_conn = vault_mod.connect()
+                vault_mod.insert_run_report(report_conn, rep)
+            except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+                print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+            finally:
+                if report_conn is not None:
+                    report_conn.close()
+        return rep["exit_code"]
+    except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
+        rep = _fatal_report(args.source, started_at, exc)
+        if args.no_vault:
+            try:
+                _append_report_jsonl(rep)
+            except Exception:
+                pass
+        elif vault_conn is not None:
+            try:
+                vault_mod.insert_run_report(vault_conn, rep)
+            except Exception:
+                pass
+        else:
+            # Same short-lived-connection pattern as the success path above:
+            # vault mode, but no ledger connection was ever opened (e.g. a
+            # crash before/under --no-resume). Best-effort connect just for
+            # the report insert, warn-only — a report failure must never
+            # mask the run's own (fatal) outcome or exit code.
+            from . import vault as vault_mod
+
+            report_conn = None
+            try:
+                report_conn = vault_mod.connect()
+                vault_mod.insert_run_report(report_conn, rep)
+            except Exception as report_exc:  # noqa: BLE001
+                print(f"warning: failed to write run report to vault: {report_exc}", file=sys.stderr)
+            finally:
+                if report_conn is not None:
+                    report_conn.close()
+        print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return rep["exit_code"]
     finally:
         if vault_conn is not None:
             vault_conn.close()
-
-    return 0
 
 
 def _run_vault_source(args, collection: str) -> int:
@@ -290,8 +449,10 @@ def _run_vault_source(args, collection: str) -> int:
     from .routing import EMBEDDING_VERSION, embedding_model_name
     from .sources import vault as vault_source
 
-    conn = vault_mod.connect()
+    started_at = datetime.now(timezone.utc).isoformat()
+    conn = None
     try:
+        conn = vault_mod.connect()
         # --no-resume is rejected for this source before we ever get here
         # (main()), so the ledger — and therefore the anti-join's resume
         # semantics — is always coherent: always on.
@@ -315,10 +476,26 @@ def _run_vault_source(args, collection: str) -> int:
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
         )
+        _print_summary(stats)
+
+        rep = _build_report("vault", stats, started_at)
+        try:
+            vault_mod.insert_run_report(conn, rep)
+        except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+            print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+        return rep["exit_code"]
+    except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
+        rep = _fatal_report("vault", started_at, exc)
+        if conn is not None:
+            try:
+                vault_mod.insert_run_report(conn, rep)
+            except Exception:
+                pass
+        print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return rep["exit_code"]
     finally:
-        conn.close()
-    _print_summary(stats)
-    return 0
+        if conn is not None:
+            conn.close()
 
 
 def _count_vault_source(args, collection: str) -> int:

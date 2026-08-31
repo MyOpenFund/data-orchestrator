@@ -225,6 +225,12 @@ resume is a pure retry, not a special code path. A `reconcile` command
 (drift audit + soft-deleted cleanup) is a specified future addition, not
 built here.
 
+Every run writes a telemetry row to the vault's `runs` table (or appends
+`state/runs.jsonl` with `--no-vault`): run id, per-source counters and the
+outcome. Exit codes are honest: `0` clean, `1` fatal, `3` degraded (zero
+documents ingested while attempts errored — e.g. an embedding-dimension
+mismatch). A run that did no useful work never exits 0.
+
 ## Collections & embedding model
 
 Collections are named by the orchestrator, one per `(corpus, embedding
