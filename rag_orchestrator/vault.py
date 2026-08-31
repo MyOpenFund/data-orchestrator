@@ -8,6 +8,7 @@ which the next resume pass heals (deterministic point ids overwrite in place).
 """
 from __future__ import annotations
 
+import json
 import os
 
 import psycopg2
@@ -15,6 +16,13 @@ import psycopg2
 from .config import load_dotenv
 
 RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
+
+INSERT_RUN_SQL = """
+INSERT INTO runs (run_id, tool, command, started_at, finished_at,
+                  outcome, exit_code, totals, sources)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (run_id) DO NOTHING
+"""
 
 UPSERT_INGESTION_SQL = """
 INSERT INTO rag_ingestions (
@@ -41,6 +49,23 @@ def connect():
             "with --no-vault to use the local file ledger without vault state."
         )
     return psycopg2.connect(url)
+
+
+def insert_run_report(conn, report: dict) -> None:
+    """Write one run-report row to the vault's ``runs`` table.
+
+    Best-effort by contract: the caller (cli._build_report's consumers)
+    tolerates a raising insert with a warning rather than letting it mask
+    the run's own outcome.
+    """
+    with conn.cursor() as cur:
+        cur.execute(INSERT_RUN_SQL, (
+            report["run_id"], report["tool"], report["command"],
+            report["started_at"], report["finished_at"],
+            report["outcome"], report["exit_code"],
+            json.dumps(report["totals"]), json.dumps(report["sources"]),
+        ))
+    conn.commit()
 
 
 class VaultLedger:

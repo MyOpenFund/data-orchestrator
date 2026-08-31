@@ -73,13 +73,22 @@ def test_cli_vault_ingests_selection_and_records_state(
     client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])
     assert client.count(_coll()).count > 0
 
+    with psycopg2.connect(clean_state) as conn2, conn2.cursor() as cur:
+        cur.execute("SELECT tool, outcome FROM runs")
+        runs = cur.fetchall()
+    assert runs and runs[0][0] == "rag-orchestrator"
+
 
 def test_cli_vault_second_run_selects_nothing(clean_state, qdrant_addr, corpus_dir):
     _seed(clean_state, corpus_dir)
     _cli(clean_state, qdrant_addr, corpus_dir)
     before = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(_coll()).count
     rc = _cli(clean_state, qdrant_addr, corpus_dir)
-    assert rc == 0
+    # Honest exit code (item 9/C1): the anti-join leaves only doc-gone as a
+    # candidate on the second run, and it re-errors (missing file), so this
+    # run has docs_ingested == 0 and docs_error > 0 — degraded, exit 3 — not
+    # the old always-0 behavior.
+    assert rc == 3
     after = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(_coll()).count
     assert after == before  # anti-join found nothing new (doc-gone re-errors)
 

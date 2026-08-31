@@ -128,7 +128,13 @@ def test_connect_requires_database_url(monkeypatch):
 
 
 def test_cli_closes_vault_connection_on_run_failure(monkeypatch, tmp_path):
-    """Verify vault connection is closed even if run_ingest raises."""
+    """Verify vault connection is closed even if run_ingest raises.
+
+    Per the run-report doctrine, a fatal exception no longer propagates out
+    of cli.main: it is caught, turned into a best-effort "failed" report
+    (exit 1), and the vault connection is still closed via the same
+    try/finally as every other path.
+    """
     from rag_orchestrator import cli
     import rag_orchestrator.vault as vault_mod
 
@@ -149,7 +155,11 @@ def test_cli_closes_vault_connection_on_run_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "run_ingest", boom)
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
 
-    with pytest.raises(RuntimeError, match="engine init failed"):
-        cli.main(["cb_corpus", "--root", str(tmp_path)])
+    rc = cli.main(["cb_corpus", "--root", str(tmp_path)])
 
+    assert rc == 1
     assert conn.closed
+    # Best-effort failed report was written to the (fake) vault connection.
+    sql, params = conn.executed[-1]
+    assert "INSERT INTO runs" in sql
+    assert params[5] == "failed" and params[6] == 1

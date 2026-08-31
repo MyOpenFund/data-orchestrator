@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS rag_ingestions (
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (doc_id, collection)
 );
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    tool TEXT NOT NULL,
+    command TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    outcome TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    totals JSONB,
+    sources JSONB,
+    extra JSONB,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -127,7 +140,8 @@ def clean_state(pg_url, qdrant_addr):
     conn = psycopg2.connect(pg_url)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS rag_ingestions; DROP TABLE IF EXISTS documents;")
+        cur.execute("DROP TABLE IF EXISTS rag_ingestions; DROP TABLE IF EXISTS documents; "
+                    "DROP TABLE IF EXISTS runs;")
         cur.execute(SCHEMA_SQL)
     conn.close()
     client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])

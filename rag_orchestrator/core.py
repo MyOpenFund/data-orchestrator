@@ -73,6 +73,10 @@ class IngestStats:
     docs_error: int = 0
     chunks_written: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # Per-source_code counters (docs_seen/docs_new/docs_failed), populated by
+    # ``_bump`` on every terminal path of run_ingest's loop — the shared shape
+    # the run-report's "sources" breakdown is built from (see cli._build_report).
+    by_source: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -120,6 +124,18 @@ class Ledger:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"doc_id": doc_id, "chunks": chunks,
                                  "ts": int(time.time())}) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Per-source_code stats — feeds the run-report's "sources" breakdown
+# ---------------------------------------------------------------------------
+def _bump(stats: IngestStats, item: SourceItem, *, new: int = 0, failed: int = 0) -> None:
+    code = (item.payload.get("source_code") or item.payload.get("bank_code")
+            or item.payload.get("corpus", "unknown"))
+    entry = stats.by_source.setdefault(code, {"docs_seen": 0, "docs_new": 0, "docs_failed": 0})
+    entry["docs_seen"] += 1
+    entry["docs_new"] += new
+    entry["docs_failed"] += failed
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +257,7 @@ def run_ingest(
 
             if ledger is not None and item.doc_id in ledger:
                 stats.docs_skipped_resume += 1
+                _bump(stats, item)
                 if on_progress:
                     on_progress(stats, item, "skip-resume")
                 continue
@@ -262,18 +279,21 @@ def run_ingest(
             except Exception as exc:  # noqa: BLE001 — isolate one bad document
                 stats.docs_error += 1
                 stats.errors.append((str(item.path), f"{type(exc).__name__}: {exc}"))
+                _bump(stats, item, failed=1)
                 if on_progress:
                     on_progress(stats, item, "error")
                 continue
 
             if n == 0:
                 stats.docs_empty += 1
+                _bump(stats, item)
                 if on_progress:
                     on_progress(stats, item, "empty")
                 continue
 
             stats.docs_ingested += 1
             stats.chunks_written += n
+            _bump(stats, item, new=1)
             if on_progress:
                 on_progress(stats, item, "ingested")
 
