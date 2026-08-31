@@ -15,7 +15,7 @@ def test_vault_rejects_no_vault(capsys):
     assert "--no-vault" in capsys.readouterr().err
 
 
-def test_default_collection_for_vault_source(monkeypatch):
+def test_default_collection_for_vault_source(monkeypatch, tmp_path):
     seen = {}
 
     def fake_run(args, collection):
@@ -24,6 +24,7 @@ def test_default_collection_for_vault_source(monkeypatch):
 
     monkeypatch.setattr(cli, "_run_vault_source", fake_run)
     monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     cli.main(["vault", "--corpus", "central-bank"])
     assert seen["collection"] == "central-bank-e5b-v1"
 
@@ -88,3 +89,21 @@ def test_vault_source_connect_failure_returns_fatal_report_not_exception(
     err = capsys.readouterr().err
     assert "error:" in err or "fatal:" in err
     assert "DATABASE_URL" in err
+
+
+def test_vault_missing_root_fails_before_any_engine_work(monkeypatch, capsys):
+    monkeypatch.delenv("CB_CORPUS_ROOT", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nope")
+    called = {"connect": False}
+    import rag_orchestrator.vault as vault_mod
+    monkeypatch.setattr(vault_mod, "connect", lambda: called.__setitem__("connect", True))
+    rc = cli.main(["vault", "--corpus", "central-bank"])
+    assert rc == 1
+    assert called["connect"] is False  # failed before touching the DB/engine
+    assert "CB_CORPUS_ROOT" in capsys.readouterr().err
+
+
+def test_progress_every_zero_is_rejected(capsys):
+    rc = cli.main(["cb_corpus", "--progress-every", "0"])
+    assert rc == 2
+    assert "progress-every" in capsys.readouterr().err

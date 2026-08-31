@@ -230,6 +230,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
 
+    # Guard against invalid --progress-every early, before any engine/DB work.
+    if getattr(args, "progress_every", 1) <= 0:
+        print("error: --progress-every must be >= 1", file=sys.stderr)
+        return 2
+
     # Each disk source implies its own vault corpus; an explicit --corpus
     # always wins. Never a source-name collection fallback (item 3/4 of the
     # bottom_up_corpus integration) — collection routing is always
@@ -257,6 +262,13 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        # Validate corpus root BEFORE any engine/DB work.
+        from .routing import corpus_root
+        try:
+            corpus_root(args.corpus)
+        except (RuntimeError, KeyError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         collection = args.collection or collection_name(args.corpus)
         if args.count_only:
             return _count_vault_source(args, collection)
