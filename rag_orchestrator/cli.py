@@ -186,6 +186,28 @@ def _append_report_jsonl(report: dict) -> None:
         fh.write(json.dumps(report) + "\n")
 
 
+def _validate_corpus_root(corpus: str) -> int | None:
+    """Eagerly resolve ``routing.corpus_root(corpus)`` before any ledger/engine
+    work starts. Prints an ``error:`` line to stderr and returns the exit code
+    the caller should return on failure; returns ``None`` on success.
+
+    Kept separate from the ``--root`` override check (a disk source's explicit
+    ``--root`` bypasses the env/routing lookup entirely — see its dispatch).
+    """
+    from .routing import corpus_root, ROUTING
+
+    try:
+        corpus_root(corpus)
+        return None
+    except KeyError:
+        known = ", ".join(sorted(ROUTING))
+        print(f"error: unknown corpus '{corpus}' (known: {known})", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="RAGDataOrchestrator",
@@ -243,6 +265,22 @@ def main(argv: list[str] | None = None) -> int:
         args.corpus = IMPLIED_CORPUS.get(args.source, "central-bank")
 
     if args.source == "cb_corpus":
+        # Eager pre-flight: cb_corpus's iter_items() is a generator, so a
+        # missing/misconfigured root only surfaces at its first next() —
+        # after the ledger/vault connection and engine are already spun up
+        # and an orphan collection may have been created (issue #7). Fail
+        # here instead, before any of that. An explicit --root overrides the
+        # env entirely (see _build_cb_corpus_items), so it gets its own
+        # existence check rather than the routing/env lookup.
+        if args.root:
+            if not Path(args.root).is_dir():
+                print(f"error: --root {args.root} does not exist or is not a directory",
+                      file=sys.stderr)
+                return 1
+        else:
+            err = _validate_corpus_root(args.corpus)
+            if err is not None:
+                return err
         items = _build_cb_corpus_items(args)
     elif args.source == "bottom_up_corpus":
         items = _build_bottom_up_corpus_items(args)
@@ -263,12 +301,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         # Validate corpus root BEFORE any engine/DB work.
-        from .routing import corpus_root
-        try:
-            corpus_root(args.corpus)
-        except (RuntimeError, KeyError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+        err = _validate_corpus_root(args.corpus)
+        if err is not None:
+            return err
         collection = args.collection or collection_name(args.corpus)
         if args.count_only:
             return _count_vault_source(args, collection)
@@ -346,7 +381,10 @@ def main(argv: list[str] | None = None) -> int:
 
         rep = _build_report(args.source, stats, started_at)
         if args.no_vault:
-            _append_report_jsonl(rep)
+            try:
+                _append_report_jsonl(rep)
+            except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+                print(f"warning: failed to append run report: {exc}", file=sys.stderr)
         elif vault_conn is not None:
             try:
                 vault_mod.insert_run_report(vault_conn, rep)
@@ -372,13 +410,33 @@ def main(argv: list[str] | None = None) -> int:
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
         rep = _fatal_report(args.source, started_at, exc)
-        try:
-            if args.no_vault:
+        if args.no_vault:
+            try:
                 _append_report_jsonl(rep)
-            elif vault_conn is not None:
+            except Exception:
+                pass
+        elif vault_conn is not None:
+            try:
                 vault_mod.insert_run_report(vault_conn, rep)
-        except Exception:
-            pass
+            except Exception:
+                pass
+        else:
+            # Same short-lived-connection pattern as the success path above:
+            # vault mode, but no ledger connection was ever opened (e.g. a
+            # crash before/under --no-resume). Best-effort connect just for
+            # the report insert, warn-only — a report failure must never
+            # mask the run's own (fatal) outcome or exit code.
+            from . import vault as vault_mod
+
+            report_conn = None
+            try:
+                report_conn = vault_mod.connect()
+                vault_mod.insert_run_report(report_conn, rep)
+            except Exception as report_exc:  # noqa: BLE001
+                print(f"warning: failed to write run report to vault: {report_exc}", file=sys.stderr)
+            finally:
+                if report_conn is not None:
+                    report_conn.close()
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:

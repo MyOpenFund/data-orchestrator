@@ -107,3 +107,77 @@ def test_progress_every_zero_is_rejected(capsys):
     rc = cli.main(["cb_corpus", "--progress-every", "0"])
     assert rc == 2
     assert "progress-every" in capsys.readouterr().err
+
+
+def test_cb_corpus_missing_root_fails_before_any_engine_work(monkeypatch, capsys):
+    """issue #7's own scenario: a missing/misconfigured CB_CORPUS_ROOT must
+    fail before the vault connection or the ingest engine are ever touched.
+    cb_corpus's iter_items() is a generator, so without this eager
+    pre-flight the root is only validated at its first next() — by then the
+    ledger/vault connection is already open and an orphan collection may
+    already have been created (item 1 of the fix wave)."""
+    monkeypatch.delenv("CB_CORPUS_ROOT", raising=False)
+    called = {"connect": False, "run_ingest": False}
+    import rag_orchestrator.vault as vault_mod
+
+    def fake_connect():
+        called["connect"] = True
+
+    def fake_run_ingest(*args, **kwargs):
+        called["run_ingest"] = True
+        from rag_orchestrator.core import IngestStats
+        return IngestStats()
+
+    monkeypatch.setattr(vault_mod, "connect", fake_connect)
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+
+    rc = cli.main(["cb_corpus"])
+
+    assert rc == 1
+    assert called["connect"] is False
+    assert called["run_ingest"] is False
+    assert "CB_CORPUS_ROOT" in capsys.readouterr().err
+
+
+def test_cb_corpus_explicit_missing_root_fails_before_any_engine_work(
+    monkeypatch, tmp_path, capsys
+):
+    """An explicit --root overrides the env lookup entirely (see
+    _build_cb_corpus_items), so a nonexistent --root needs its own eager
+    existence check rather than falling through to routing.corpus_root()
+    (which would happily resolve a *different*, possibly unset, env var)."""
+    missing = tmp_path / "does-not-exist"
+    called = {"connect": False, "run_ingest": False}
+    import rag_orchestrator.vault as vault_mod
+
+    def fake_connect():
+        called["connect"] = True
+
+    def fake_run_ingest(*args, **kwargs):
+        called["run_ingest"] = True
+        from rag_orchestrator.core import IngestStats
+        return IngestStats()
+
+    monkeypatch.setattr(vault_mod, "connect", fake_connect)
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+
+    rc = cli.main(["cb_corpus", "--root", str(missing)])
+
+    assert rc == 1
+    assert called["connect"] is False
+    assert called["run_ingest"] is False
+    assert str(missing) in capsys.readouterr().err
+
+
+def test_unknown_corpus_error_message_lists_known_corpora(capsys):
+    """MINOR (item 2 of the fix wave): an unknown --corpus must not surface
+    as a bare KeyError repr — catch it separately and derive the known list
+    from routing.ROUTING rather than hardcoding it."""
+    from rag_orchestrator.routing import ROUTING
+
+    rc = cli.main(["vault", "--corpus", "not-a-real-corpus"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    known = ", ".join(sorted(ROUTING))
+    assert f"error: unknown corpus 'not-a-real-corpus' (known: {known})" in err

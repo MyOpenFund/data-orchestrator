@@ -91,3 +91,34 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     assert rc == 0
     inserts = [sql for sql, _params in conn.executed if "INSERT INTO runs" in sql]
     assert inserts, "run report was never inserted for --no-resume vault mode"
+
+
+def test_no_vault_report_append_failure_does_not_mask_clean_run(
+    monkeypatch, tmp_path, capsys
+):
+    """MINOR (item 4 of the fix wave): on the --no-vault success path,
+    _append_report_jsonl() was unguarded — a failed append cascaded into the
+    fatal handler and flipped a clean run's exit code, contradicting the
+    "report write never masks the run's outcome" contract that already
+    applies to every vault insert. It must be warn-only, same as those."""
+    from rag_orchestrator import cli
+    from rag_orchestrator.core import IngestStats
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    (tmp_path / "raw").mkdir()
+
+    def fake_run_ingest(items, *, collection, **kwargs):
+        return IngestStats(docs_seen=1, docs_ingested=1,
+                            by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
+
+    def boom(report):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    monkeypatch.setattr(cli, "_append_report_jsonl", boom)
+
+    rc = cli.main(["cb_corpus", "--no-vault"])
+
+    assert rc == 0
+    assert "warning" in capsys.readouterr().err.lower()
