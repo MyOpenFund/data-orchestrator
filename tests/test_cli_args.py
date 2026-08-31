@@ -64,3 +64,27 @@ def test_vault_no_resume_rejected_even_with_count_only(capsys):
     rc = cli.main(["vault", "--no-resume", "--count-only"])
     assert rc == 2
     assert "--no-resume" in capsys.readouterr().err
+
+
+def test_vault_source_connect_failure_returns_fatal_report_not_exception(
+    monkeypatch, capsys, tmp_path
+):
+    """A vault.connect() failure inside _run_vault_source (e.g. DATABASE_URL
+    unset) must not escape cli.main() as an uncaught exception — it must
+    produce the best-effort failed/1 report, same as every other fatal path
+    (finding 1 of the fix wave)."""
+    import rag_orchestrator.vault as vault_mod
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+
+    def boom():
+        raise RuntimeError("DATABASE_URL is not set")
+
+    monkeypatch.setattr(vault_mod, "connect", boom)
+
+    rc = cli.main(["vault", "--corpus", "central-bank"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "error:" in err or "fatal:" in err
+    assert "DATABASE_URL" in err

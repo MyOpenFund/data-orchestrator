@@ -56,3 +56,38 @@ def test_insert_run_report_sql_contract():
     assert "INSERT INTO runs" in sql and "ON CONFLICT (run_id) DO NOTHING" in sql
     assert params[0] == "r1"
     assert conn.commits == 1
+
+
+def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_path):
+    """cb_corpus + --no-resume, vault mode (no --no-vault): the resume-ledger
+    vault_conn stays None because --no-resume skips the "if not
+    args.no_resume" block entirely, so the success-path report write must
+    open its own short-lived connection rather than silently doing nothing
+    (finding 2 of the fix wave)."""
+    from rag_orchestrator import cli
+    from rag_orchestrator.core import IngestStats
+    import rag_orchestrator.vault as vault_mod
+    from tests.test_vault_ledger import FakeConn
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    (tmp_path / "raw").mkdir()
+
+    def fake_run_ingest(items, *, collection, **kwargs):
+        return IngestStats(docs_seen=1, docs_ingested=1,
+                            by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+
+    class ClosableFakeConn(FakeConn):
+        def close(self):
+            pass
+
+    conn = ClosableFakeConn()
+    monkeypatch.setattr(vault_mod, "connect", lambda: conn)
+
+    rc = cli.main(["cb_corpus", "--no-resume"])
+
+    assert rc == 0
+    inserts = [sql for sql, _params in conn.executed if "INSERT INTO runs" in sql]
+    assert inserts, "run report was never inserted for --no-resume vault mode"

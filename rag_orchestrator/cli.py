@@ -340,6 +340,23 @@ def main(argv: list[str] | None = None) -> int:
                 vault_mod.insert_run_report(vault_conn, rep)
             except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
                 print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+        else:
+            # Vault mode (not --no-vault) but no ledger connection was ever
+            # opened (--no-resume skips the "if not args.no_resume" block
+            # above) — open a short-lived one just for the report insert so
+            # the run isn't silently unreported. Same warn-only contract: a
+            # report failure must never mask the run's own outcome.
+            from . import vault as vault_mod
+
+            report_conn = None
+            try:
+                report_conn = vault_mod.connect()
+                vault_mod.insert_run_report(report_conn, rep)
+            except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+                print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+            finally:
+                if report_conn is not None:
+                    report_conn.close()
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
         rep = _fatal_report(args.source, started_at, exc)
@@ -363,8 +380,9 @@ def _run_vault_source(args, collection: str) -> int:
     from .sources import vault as vault_source
 
     started_at = datetime.now(timezone.utc).isoformat()
-    conn = vault_mod.connect()
+    conn = None
     try:
+        conn = vault_mod.connect()
         # --no-resume is rejected for this source before we ever get here
         # (main()), so the ledger — and therefore the anti-join's resume
         # semantics — is always coherent: always on.
@@ -398,14 +416,16 @@ def _run_vault_source(args, collection: str) -> int:
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
         rep = _fatal_report("vault", started_at, exc)
-        try:
-            vault_mod.insert_run_report(conn, rep)
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                vault_mod.insert_run_report(conn, rep)
+            except Exception:
+                pass
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _count_vault_source(args, collection: str) -> int:
