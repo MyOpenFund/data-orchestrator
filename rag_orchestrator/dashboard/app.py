@@ -19,7 +19,7 @@ try:
 except ImportError:  # pragma: no cover - direct-file launch
     import sys
 
-    # parents[2] == the RAGDataOrchestrator repo root (which contains the
+    # parents[2] == the data-orchestrator repo root (which contains the
     # ``rag_orchestrator`` package). parents: [dashboard, rag_orchestrator, repo].
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from rag_orchestrator.dashboard import catalog

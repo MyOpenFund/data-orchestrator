@@ -76,7 +76,7 @@ def test_cli_vault_ingests_selection_and_records_state(
     with psycopg2.connect(clean_state) as conn2, conn2.cursor() as cur:
         cur.execute("SELECT tool, outcome FROM runs")
         runs = cur.fetchall()
-    assert runs and runs[0][0] == "rag-orchestrator"
+    assert runs and runs[0][0] == "data-orchestrator"
 
 
 def test_cli_vault_second_run_selects_nothing(clean_state, qdrant_addr, corpus_dir):

@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rag-orchestrator"
+name = "data-orchestrator"
 version = "0.1.0"
 description = "Ingestion orchestrator: vault-selected documents through the eigenmind engine into Qdrant."
 readme = "README.md"
@@ -14,7 +14,7 @@ keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 
 # NOTE on the eigenmind dependency
 # --------------------------------
-# The ingestion engine is our eigenmind fork (github.com/jeulinmarc/eigenmind),
+# The ingestion engine is our eigenmind fork (github.com/MyOpenFund/eigenmind),
 # installed separately as an editable checkout because it is consumed at
 # fork-HEAD, not from PyPI:
 #     pip install -e $EIGENMIND_PATH
@@ -38,7 +38,8 @@ bottom_up = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-rag-orchestrator = "rag_orchestrator.cli:main"
+data-orchestrator = "rag_orchestrator.cli:main"
+rag-orchestrator = "rag_orchestrator.cli:main"  # compat alias for the pre-rename command — remove after one release
 rag-dashboard = "rag_orchestrator.dashboard.__main__:main"
 
 [tool.setuptools.packages.find]

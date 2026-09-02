@@ -17,7 +17,7 @@ Layout
 - ``vault``          Postgres connection + the rag_ingestions-backed ledger
 - ``probe``          facts probe (has_text_layer / page_count) for OCR policy
 - ``sources/``      one module per data source (``vault`` and ``cb_corpus``)
-- ``cli``           console entrypoint (``rag-orchestrator``)
+- ``cli``           console entrypoint (``data-orchestrator``)
 
 Each source yields :class:`core.SourceItem` objects (a file path + a metadata
 payload). The core handles everything else.

@@ -1,4 +1,4 @@
-"""Data-source connectors for RAGDataOrchestrator.
+"""Data-source connectors for data-orchestrator.
 
 Each module here exposes a function that yields :class:`..core.SourceItem`
 objects describing the documents to ingest (a local file path + a metadata

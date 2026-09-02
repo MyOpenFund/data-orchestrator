@@ -1,14 +1,15 @@
 """rag_orchestrator CLI.
 
-Installed as the ``rag-orchestrator`` console script. Standalone repo that
-drives the eigenmind engine (a separate editable install, see ``README.md``)::
+Installed as the ``data-orchestrator`` console script (``rag-orchestrator``
+remains as a compat alias). Standalone repo that drives the eigenmind engine
+(a separate editable install, see ``README.md``)::
 
-    rag-orchestrator vault --corpus central-bank
-    rag-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
-    rag-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
+    data-orchestrator vault --corpus central-bank
+    data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
+    data-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
 
-    rag-orchestrator bottom_up_corpus --ciks 320193 --collection company-e5b-v1
-    rag-orchestrator bottom_up_corpus --ciks 320193 --doctypes A1 --year-min 2024
+    data-orchestrator bottom_up_corpus --ciks 320193 --collection company-e5b-v1
+    data-orchestrator bottom_up_corpus --ciks 320193 --doctypes A1 --year-min 2024
 
 (equivalently ``python -m rag_orchestrator.cli <source> ...``)
 
@@ -158,7 +159,7 @@ def _build_report(command: str, stats: IngestStats, started_at: str) -> dict:
     degraded = stats.docs_ingested == 0 and stats.docs_error > 0
     return {
         "run_id": str(uuid.uuid4()),
-        "tool": "rag-orchestrator",
+        "tool": "data-orchestrator",
         "command": command,
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -210,7 +211,7 @@ def _validate_corpus_root(corpus: str) -> int | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="RAGDataOrchestrator",
+        prog="data-orchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
     parser.add_argument("source", choices=list(SOURCES), help="data source to ingest")
