@@ -1,7 +1,7 @@
 """Packaging identity tests for the MyOpenFund/data-orchestrator rename.
 
-The repo was renamed and transferred (jeulinmarc/RAGDataOrchestrator ->
-MyOpenFund/data-orchestrator) but the Python import package stays
+The repo was renamed and transferred to the MyOpenFund org (see README) but
+the Python import package stays
 ``rag_orchestrator`` (out of scope). These tests pin the two things that
 *do* change: the distribution/console-script identity in ``pyproject.toml``
 (new ``data-orchestrator`` command, ``rag-orchestrator`` kept one release as
