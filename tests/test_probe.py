@@ -1,7 +1,10 @@
 """Unit tests for the facts probe (pymupdf-generated fixtures, fake conn)."""
+import logging
 from pathlib import Path
 
 from rag_orchestrator.probe import probe_file, run_probe
+
+from .conftest import DescribedFakeConn
 
 
 def _pdf(tmp_path, name, with_text):
@@ -159,3 +162,72 @@ def test_run_probe_isolates_failing_doc_with_savepoint(tmp_path, monkeypatch):
 
     # Failure: SAVEPOINT before, ROLLBACK TO SAVEPOINT after.
     assert surrounding("b") == ("SAVEPOINT probe_doc", "ROLLBACK TO SAVEPOINT probe_doc")
+
+
+def _notes(tmp_path, count):
+    """`count` probeable non-PDF documents, as (doc_id, local_path) rows."""
+    rows = []
+    for i in range(count):
+        name = f"n{i:03d}.md"
+        (tmp_path / name).write_text("note")
+        rows.append((f"doc-{i:03d}", name))
+    return rows
+
+
+def _statement_stream(conn):
+    """The UPDATEs and COMMITs in the order the connection saw them."""
+    return [sql for sql, _ in conn.executed
+            if sql.startswith("UPDATE documents") or sql == "COMMIT"]
+
+
+def test_run_probe_commits_at_every_batch_boundary(tmp_path, monkeypatch):
+    """A pass over a real corpus is tens of thousands of documents: it must
+    commit every `batch` rows, so an interrupted run keeps the facts it already
+    probed instead of throwing the whole transaction away."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(rows=_notes(tmp_path, 120))
+
+    stats = run_probe(conn, "central-bank")
+
+    assert stats == {"probed": 120, "skipped": 0, "errors": 0}
+    stream = _statement_stream(conn)
+    assert stream.index("COMMIT") == 50           # the first 50 updates, then a commit
+    assert stream.count("COMMIT") == 3            # at 50, at 100, and the final flush
+    assert stream[-1] == "COMMIT"                 # the tail of the batch is never lost
+
+
+def test_run_probe_batch_size_is_configurable(tmp_path, monkeypatch):
+    """The batch size is a knob, not a constant baked into the loop."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(rows=_notes(tmp_path, 6))
+
+    run_probe(conn, "central-bank", batch=2)
+
+    assert _statement_stream(conn).count("COMMIT") == 4  # at 2, 4, 6, then the final
+
+
+def test_run_probe_limit_truncates_the_probed_rows(tmp_path, monkeypatch):
+    """`--limit` is how the pass is tried out on a live corpus without
+    committing to a full sweep, so it must cap the work actually done."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(rows=_notes(tmp_path, 10))
+
+    stats = run_probe(conn, "central-bank", limit=3)
+
+    assert stats == {"probed": 3, "skipped": 0, "errors": 0}
+    updates = [params for sql, params in conn.executed if sql.startswith("UPDATE documents")]
+    assert [params[-1] for params in updates] == ["doc-000", "doc-001", "doc-002"]
+
+
+def test_probe_file_survives_a_corrupt_pdf(tmp_path, caplog):
+    """Corpora contain truncated downloads. One unreadable PDF must be reported
+    as "unknown facts" (and logged), never raise: the alternative is a probe
+    pass that dies partway through a 30k-document corpus."""
+    corrupt = tmp_path / "truncated.pdf"
+    corrupt.write_bytes(b"%PDF-1.4\n" + b"\xde\xad\xbe\xef" * 40 + b"\ntrailer\n")
+
+    with caplog.at_level(logging.WARNING, logger="rag_orchestrator.probe"):
+        assert probe_file(corrupt) == (None, None)
+
+    assert "probe failed for" in caplog.text
+    assert "truncated.pdf" in caplog.text
