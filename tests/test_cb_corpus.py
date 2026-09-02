@@ -101,6 +101,82 @@ def test_prefer_manifest_false_ignores_an_existing_manifest(tmp_path):
     assert item.payload["title"] == ""
 
 
+def _legacy_manifest(root, *rows):
+    """Write the single-file manifest layout this connector still looks for.
+
+    ``_find_manifest`` searches ``<root>/manifest.jsonl`` and
+    ``<root>/data/manifest.jsonl`` — see the issue-#5 test below.
+    """
+    (root / "manifest.jsonl").write_text("".join(r + "\n" for r in rows), encoding="utf-8")
+
+
+def test_manifest_hit_carries_the_exact_publication_date(tmp_path):
+    """The manifest is the source of truth for metadata: an indexed document
+    must get its real publication date and title, flagged as coming from the
+    manifest so the point-in-time layer can trust the date."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    _legacy_manifest(root, '{"doc_id": "a", "date": "2015-06-30", "title": "A speech",'
+                           ' "pdf_url": "https://example.org/a.pdf", "sha256": "ab12",'
+                           ' "provenance": "bis"}')
+    (item,) = iter_items(root)
+    assert item.payload["metadata_source"] == "manifest"
+    assert item.payload["publication_date"] == "2015-06-30"
+    assert item.payload["date_granularity"] == "source"
+    assert item.payload["title"] == "A speech"
+    assert item.payload["url"] == "https://example.org/a.pdf"
+    assert item.payload["sha256"] == "ab12"
+
+
+def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
+    """A file the manifest has not indexed yet must still be yielded — with a
+    conservative <year>-01-01 date flagged as path-derived, so a later reindex
+    can upgrade it instead of the document being silently dropped."""
+    root = _corpus(tmp_path, "us/C1/2015/indexed.pdf", "us/C1/2015/fresh.pdf")
+    _legacy_manifest(root, '{"doc_id": "indexed", "date": "2015-06-30"}')
+    payloads = {i.doc_id: i.payload for i in iter_items(root)}
+    assert payloads["fresh"]["metadata_source"] == "path"
+    assert payloads["fresh"]["publication_date"] == "2015-01-01"
+    assert payloads["fresh"]["date_granularity"] == "year"
+    assert payloads["fresh"]["provenance"] == "disk"
+    assert payloads["indexed"]["metadata_source"] == "manifest"
+
+
+def test_malformed_manifest_line_does_not_cost_its_neighbours(tmp_path):
+    """A torn line (a crashed writer) must cost exactly the document it
+    describes: the rows around it stay indexed instead of the whole corpus
+    degrading to path-derived metadata."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
+    _legacy_manifest(
+        root,
+        '{"doc_id": "a", "date": "2015-06-30"}',
+        '{"doc_id": "b", "date": "2015-0',  # torn tail
+        '{"doc_id": "b", "date": "2015-07-31"}',
+    )
+    payloads = {i.doc_id: i.payload for i in iter_items(root)}
+    assert payloads["a"]["publication_date"] == "2015-06-30"
+    assert payloads["b"]["publication_date"] == "2015-07-31"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #5: _find_manifest only looks for the extinct single-file "
+           "manifest.jsonl, so with cb_corpus's per-bank manifest/<bank>.jsonl "
+           "layout every document silently degrades to path-derived metadata",
+)
+def test_per_bank_manifest_layout_is_read(tmp_path):
+    """cb_corpus splits its manifest per bank (``manifest/<bank>.jsonl``); the
+    connector must read that layout, or every real corpus document loses its
+    exact publication date without any error being raised."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    (root / "manifest").mkdir()
+    (root / "manifest" / "us.jsonl").write_text(
+        '{"doc_id": "a", "date": "2015-06-30"}\n', encoding="utf-8"
+    )
+    (item,) = iter_items(root)
+    assert item.payload["metadata_source"] == "manifest"
+    assert item.payload["publication_date"] == "2015-06-30"
+
+
 def test_unconfigured_root_raises_an_actionable_value_error(tmp_path, monkeypatch):
     """With no root argument and no CB_CORPUS_ROOT, the error must name the key
     and the two ways to set it — this is the first thing a new machine hits."""
