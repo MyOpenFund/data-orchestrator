@@ -35,7 +35,7 @@ dashboard = ["streamlit>=1.40", "pandas>=2.0"]
 bottom_up = [
     "bottom_up_corpus @ git+https://github.com/jeulinmarc/bottom_up_corpus",
 ]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 
 [project.scripts]
 rag-orchestrator = "rag_orchestrator.cli:main"
