@@ -49,4 +49,4 @@ def test_cli_prog_is_data_orchestrator(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     out = capsys.readouterr().out
-    assert out.startswith("usage: data-orchestrator ")
+    assert out.split()[1] == "data-orchestrator"

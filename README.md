@@ -281,7 +281,7 @@ counted as an error, while every other document in the batch still commits.
 ## Testing
 
 ```bash
-./venv/bin/python -m pytest -q                    # 61 unit tests
+./venv/bin/python -m pytest -q                    # 76 unit tests
 ./venv/bin/python -m pytest -m integration -q      # 12 integration tests
 ```
 
