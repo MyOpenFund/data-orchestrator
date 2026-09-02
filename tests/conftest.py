@@ -14,6 +14,16 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# eigenmind runs python-dotenv at ``import eigenmind.config`` time, with its own
+# CWD/frame-based search rule. Importing it HERE, at collection, pins that
+# injection to a single deterministic moment before any fixture or test runs —
+# otherwise it happens at whatever point the first test happens to import the
+# engine, and what a test sees depends on collection order.
+try:
+    import eigenmind.config  # noqa: F401
+except ImportError:  # eigenmind is an optional editable checkout
+    pass
+
 # Keys a ``.env`` (this repo's, or the eigenmind fork's, which python-dotenv
 # loads at ``import eigenmind.config`` time) can inject into the process before
 # any test runs. Unit tests must see none of them: each either points code at a
@@ -31,24 +41,28 @@ DOTENV_KEYS = (
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(request, monkeypatch):
-    """Cut every unit test off from any ``.env`` on disk, whatever the run order.
+def isolated_env(request):
+    """Guarantee, for every unit test:
 
-    Two loaders can populate ``os.environ`` behind a test's back:
+    1. none of ``DOTENV_KEYS`` is set when the test body starts, whatever a
+       ``.env`` on disk or eigenmind's python-dotenv put in the environment;
+    2. ``config.load_dotenv()`` called from inside production code
+       (``vault.connect``, ``get_path``) finds no file and reads none —
+       ``find_dotenv`` and the process-wide ``_LOADED`` flag are both pinned, so
+       the outcome does not depend on which test file ran first (that
+       order-dependence is what made issue #8 intermittent);
+    3. ``os.environ`` is byte-for-byte what it was before the test, once the
+       test AND its own fixtures are done — including keys written directly by
+       ``config.load_dotenv``, which bypasses monkeypatch by design.
 
-    * ``rag_orchestrator.config.load_dotenv()``, called from inside production
-      code (``vault.connect``, ``get_path``). It is process-idempotent via the
-      module-level ``_LOADED`` flag, which is exactly what made issue #8
-      order-dependent: whether a test was protected depended on whether an
-      earlier test file had already flipped ``_LOADED``. Pinning both the flag
-      and the file finder makes the loader a no-op for every test, first or last.
-    * python-dotenv, fired at ``import eigenmind.config`` time — i.e. before any
-      fixture can run — so the only cure is to drop the keys it may have
-      injected, per test.
-
-    The whole environment is snapshotted and restored, so a test that writes to
-    ``os.environ`` directly (``config.load_dotenv`` does, by design) cannot leak
-    into its neighbours either.
+    Guarantee 3 is why this fixture must NOT request the shared ``monkeypatch``
+    fixture. Doing so makes monkeypatch a dependency, so it is set up first and
+    torn down LAST: a test's own ``monkeypatch.setenv("CB_CORPUS_ROOT", ...)``
+    recorded the key as absent (this fixture had just dropped it), and its undo
+    then deleted the value the restore below had just put back. With a private
+    ``MonkeyPatch`` instance, this fixture is set up before the test's
+    ``monkeypatch`` and torn down after it, so the restore is always the last
+    word.
 
     Integration tests are exempt: they configure their own environment against
     throwaway containers (``tests/integration/conftest.py``).
@@ -60,13 +74,15 @@ def isolated_env(request, monkeypatch):
     from rag_orchestrator import config
 
     saved = dict(os.environ)
-    monkeypatch.setattr(config, "find_dotenv", lambda: None)
-    monkeypatch.setattr(config, "_LOADED", False)
-    for key in DOTENV_KEYS:
-        os.environ.pop(key, None)
+    patch = pytest.MonkeyPatch()
     try:
+        patch.setattr(config, "find_dotenv", lambda: None)
+        patch.setattr(config, "_LOADED", False)
+        for key in DOTENV_KEYS:
+            patch.delenv(key, raising=False)
         yield
     finally:
+        patch.undo()
         os.environ.clear()
         os.environ.update(saved)
 

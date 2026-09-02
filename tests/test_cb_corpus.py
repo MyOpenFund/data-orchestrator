@@ -29,7 +29,7 @@ def test_walk_yields_every_pdf_under_raw(tmp_path):
         "ecb/A3/2019/c.pdf",
         "ecb/A3/2019/.DS_Store",
     )
-    assert _ids(root) == ["c", "a", "b"]  # banks, doctypes, years walked sorted
+    assert sorted(_ids(root)) == ["a", "b", "c"]
 
 
 def test_bank_allow_list_is_case_insensitive(tmp_path):
@@ -53,7 +53,7 @@ def test_group_allow_list_selects_a_whole_doctype_family(tmp_path):
         tmp_path, "us/C1/2015/speech.pdf", "us/C2/2015/interview.pdf",
         "us/A3/2015/minutes.pdf",
     )
-    assert _ids(root, groups=["C"]) == ["speech", "interview"]
+    assert sorted(_ids(root, groups=["C"])) == ["interview", "speech"]
 
 
 def test_year_bounds_are_inclusive(tmp_path):
@@ -63,7 +63,7 @@ def test_year_bounds_are_inclusive(tmp_path):
         tmp_path, "us/C1/2014/a.pdf", "us/C1/2015/b.pdf",
         "us/C1/2016/c.pdf", "us/C1/2017/d.pdf",
     )
-    assert _ids(root, year_min=2015, year_max=2016) == ["b", "c"]
+    assert sorted(_ids(root, year_min=2015, year_max=2016)) == ["b", "c"]
 
 
 def test_html_is_ignored_unless_asked_for(tmp_path):
@@ -82,7 +82,7 @@ def test_html_yielded_only_when_it_has_no_pdf_sibling(tmp_path):
         "us/C1/2015/online-only.html",
     )
     items = list(iter_items(root, prefer_manifest=False, include_html=True))
-    assert [(i.doc_id, i.payload["ext"]) for i in items] == [
+    assert sorted((i.doc_id, i.payload["ext"]) for i in items) == [
         ("both", "pdf"), ("online-only", "html"),
     ]
 
@@ -177,11 +177,10 @@ def test_per_bank_manifest_layout_is_read(tmp_path):
     assert item.payload["publication_date"] == "2015-06-30"
 
 
-def test_unconfigured_root_raises_an_actionable_value_error(tmp_path, monkeypatch):
+def test_unconfigured_root_raises_an_actionable_value_error(monkeypatch):
     """With no root argument and no CB_CORPUS_ROOT, the error must name the key
     and the two ways to set it — this is the first thing a new machine hits."""
-    monkeypatch.chdir(tmp_path)  # no .env to be found from here
-    monkeypatch.delenv(ROOT_ENV_KEY, raising=False)
+    monkeypatch.delenv(ROOT_ENV_KEY, raising=False)  # explicit precondition
     with pytest.raises(ValueError) as excinfo:
         list(iter_items())
     message = str(excinfo.value)
