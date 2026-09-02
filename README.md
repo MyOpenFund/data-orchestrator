@@ -1,6 +1,6 @@
-# rag-orchestrator
+# data-orchestrator
 
-Installable Python package (repo: `RAGDataOrchestrator`). It is the **policy
+Installable Python package (repo: `MyOpenFund/data-orchestrator`). It is the **policy
 layer** that sits between three systems, each owning one thing:
 
 | system | owns | this repo... |
@@ -12,7 +12,7 @@ layer** that sits between three systems, each owning one thing:
 > read whatever the vault says is new → drive it through eigenmind → land it in Qdrant
 
 The orchestrator carries **no RAG logic of its own** — chunking, embedding and
-the Qdrant client all live in [eigenmind](https://github.com/jeulinmarc/eigenmind),
+the Qdrant client all live in [eigenmind](https://github.com/MyOpenFund/eigenmind),
 consumed as a normal (editable) dependency. What this repo owns is orchestration
 policy: which documents to pick up next, per-corpus path routing, resumability,
 and the write protocol that keeps Qdrant and the vault consistent.
@@ -25,15 +25,15 @@ migrates it — the vault's own ingestion service runs that DDL.
 ## Layout
 
 ```
-RAGDataOrchestrator/
-  pyproject.toml          # packaging — installs the `rag-orchestrator` CLI
+data-orchestrator/
+  pyproject.toml          # packaging — installs the `data-orchestrator` CLI (`rag-orchestrator` kept as a compat alias for one release)
   rag_orchestrator/
     __init__.py            # public API: SourceItem, run_ingest, Ledger, …
     core.py                # engine: chunk -> embed -> upsert + resume ledger
     routing.py              # per-corpus root/local_path routing + collection naming
     vault.py                 # Postgres connection + the rag_ingestions-backed ledger
     probe.py                 # facts probe (has_text_layer / page_count) for OCR policy
-    cli.py                    # console entrypoint (`rag-orchestrator`)
+    cli.py                    # console entrypoint (`data-orchestrator`)
     sources/
       vault.py                # source #1: vault-selected documents (any corpus)
       cb_corpus.py              # source #2: the central-bank PDF corpus (disk fallback)
@@ -50,7 +50,7 @@ via their own connector (`--no-vault`) in the meantime:
 
 ## Setup
 
-1. **The eigenmind engine.** Clone [jeulinmarc/eigenmind](https://github.com/jeulinmarc/eigenmind)
+1. **The eigenmind engine.** Clone [MyOpenFund/eigenmind](https://github.com/MyOpenFund/eigenmind)
    locally and install it editable — it is consumed at fork-HEAD, not from PyPI:
 
    ```bash
@@ -136,8 +136,8 @@ corpus:
 ```bash
 pip install -e .[bottom_up]        # pulls bottom_up_corpus from GitHub
 # then, with BOTTOM_UP_CORPUS_ROOT set in .env (or --root):
-rag-orchestrator vault --corpus company                       # recommended, once onboarded
-rag-orchestrator bottom_up_corpus --ciks 320193 --no-vault    # disk fallback, routes to company-e5b-v1
+data-orchestrator vault --corpus company                       # recommended, once onboarded
+data-orchestrator bottom_up_corpus --ciks 320193 --no-vault    # disk fallback, routes to company-e5b-v1
 ```
 
 `bottom_up_corpus` can also be used from a local checkout (`pip install -e .` in
@@ -170,22 +170,22 @@ layout needs no strip at all (the default is `""`).
 ```bash
 # Vault-selected ingestion (recommended): whatever the vault knows for a
 # corpus that the target collection hasn't ingested yet.
-rag-orchestrator vault --corpus central-bank
+data-orchestrator vault --corpus central-bank
 
 # Disk-fallback ingestion, bypassing the vault entirely (its own file ledger,
 # no rag_ingestions read/write) — useful before a corpus is vault-onboarded.
-rag-orchestrator cb_corpus --banks ecb --no-vault
+data-orchestrator cb_corpus --banks ecb --no-vault
 
 # The company (SEC EDGAR) corpus, disk fallback — routes to company-e5b-v1
 # via routing.collection_name(--corpus), not a "bottom_up_corpus"-named one.
-rag-orchestrator bottom_up_corpus --ciks 320193 --no-vault
+data-orchestrator bottom_up_corpus --ciks 320193 --no-vault
 
 # Facts probe: fills has_text_layer / page_count for a corpus's documents
 # (feeds the OCR policy; safe to re-run, only unprobed rows are touched).
-rag-orchestrator probe --corpus central-bank
+data-orchestrator probe --corpus central-bank
 
 # Force OCR handling explicitly instead of the engine's auto-detection.
-rag-orchestrator vault --corpus central-bank --ocr always
+data-orchestrator vault --corpus central-bank --ocr always
 ```
 
 > Equivalent module form: `python -m rag_orchestrator.cli vault --corpus central-bank`
@@ -269,7 +269,7 @@ against a database that has never seen the vault service fails at
 
 ## Facts probe
 
-`rag-orchestrator probe --corpus <corpus>` fills `has_text_layer` and
+`data-orchestrator probe --corpus <corpus>` fills `has_text_layer` and
 `page_count` for every document with `has_text_layer IS NULL`, feeding the
 facts-driven OCR policy. It is the **only** writer of those two columns.
 Only unprobed rows are selected, so the pass is resumable by construction and
@@ -289,7 +289,7 @@ Integration tests spin up throwaway Postgres and Qdrant containers via
 `docker run` (skipped automatically if Docker is unavailable) and use a tiny
 embedding model (`RAGO_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`)
 to keep CI fast. CI (`.github/workflows/tests.yml`) runs both suites on every
-push/PR, checking out this repo and the public `jeulinmarc/eigenmind` fork
+push/PR, checking out this repo and the public `MyOpenFund/eigenmind` fork
 side by side.
 
 ## Adding a new corpus

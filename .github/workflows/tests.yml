@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          repository: jeulinmarc/eigenmind
+          repository: MyOpenFund/eigenmind
           path: eigenmind
       - uses: actions/setup-python@v5
         with:
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          repository: jeulinmarc/eigenmind
+          repository: MyOpenFund/eigenmind
           path: eigenmind
       - uses: actions/setup-python@v5
         with:
