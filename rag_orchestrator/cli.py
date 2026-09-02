@@ -159,7 +159,7 @@ def _build_report(command: str, stats: IngestStats, started_at: str) -> dict:
     degraded = stats.docs_ingested == 0 and stats.docs_error > 0
     return {
         "run_id": str(uuid.uuid4()),
-        "tool": "rag-orchestrator",
+        "tool": "data-orchestrator",
         "command": command,
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),

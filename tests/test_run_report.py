@@ -15,7 +15,7 @@ def test_report_shape_and_ok_outcome():
     s = _stats(docs_seen=5, docs_ingested=4, docs_error=1,
                by_source={"us": {"docs_seen": 5, "docs_new": 4, "docs_failed": 1}})
     rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00")
-    assert rep["tool"] == "rag-orchestrator" and rep["command"] == "vault"
+    assert rep["tool"] == "data-orchestrator" and rep["command"] == "vault"
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
     assert rep["totals"] == {"docs_seen": 5, "docs_new": 4, "docs_failed": 1}
     assert rep["sources"][0]["source_code"] == "us"
@@ -48,7 +48,7 @@ def test_insert_run_report_sql_contract():
     from tests.test_vault_ledger import FakeConn
 
     conn = FakeConn()
-    insert_run_report(conn, {"run_id": "r1", "tool": "rag-orchestrator",
+    insert_run_report(conn, {"run_id": "r1", "tool": "data-orchestrator",
                              "command": "vault", "started_at": "s", "finished_at": "f",
                              "outcome": "ok", "exit_code": 0,
                              "totals": {}, "sources": []})
