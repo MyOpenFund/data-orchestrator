@@ -48,20 +48,26 @@ def _seed(pg_url, corpus_dir):
     ])
 
 
-def _cli(pg_url, qdrant_addr, corpus_dir, extra_args=()):
-    import os
-    os.environ["DATABASE_URL"] = pg_url
-    os.environ["CB_CORPUS_ROOT"] = str(corpus_dir)
-    os.environ["QDRANT_HOST"] = qdrant_addr[0]
-    os.environ["QDRANT_PORT"] = str(qdrant_addr[1])
+def _cli(monkeypatch, pg_url, qdrant_addr, corpus_dir, extra_args=()):
+    """Run the CLI against this test's containers.
+
+    The CLI reads its targets from the process environment, so they are set
+    through ``monkeypatch`` rather than ``os.environ`` directly: a bare
+    assignment survives the test and leaves a live DATABASE_URL / corpus root
+    behind for whatever runs next (issue #8).
+    """
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(corpus_dir))
+    monkeypatch.setenv("QDRANT_HOST", qdrant_addr[0])
+    monkeypatch.setenv("QDRANT_PORT", str(qdrant_addr[1]))
     return cli.main(["vault", "--corpus", "central-bank", *extra_args])
 
 
 def test_cli_vault_ingests_selection_and_records_state(
-    clean_state, qdrant_addr, corpus_dir
+    clean_state, qdrant_addr, corpus_dir, monkeypatch
 ):
     _seed(clean_state, corpus_dir)
-    rc = _cli(clean_state, qdrant_addr, corpus_dir)
+    rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
     assert rc == 0
     conn = psycopg2.connect(clean_state)
     with conn.cursor() as cur:
@@ -79,11 +85,13 @@ def test_cli_vault_ingests_selection_and_records_state(
     assert runs and runs[0][0] == "rag-orchestrator"
 
 
-def test_cli_vault_second_run_selects_nothing(clean_state, qdrant_addr, corpus_dir):
+def test_cli_vault_second_run_selects_nothing(
+    clean_state, qdrant_addr, corpus_dir, monkeypatch
+):
     _seed(clean_state, corpus_dir)
-    _cli(clean_state, qdrant_addr, corpus_dir)
+    _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
     before = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(_coll()).count
-    rc = _cli(clean_state, qdrant_addr, corpus_dir)
+    rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
     # Honest exit code (item 9/C1): the anti-join leaves only doc-gone as a
     # candidate on the second run, and it re-errors (missing file), so this
     # run has docs_ingested == 0 and docs_error > 0 — degraded, exit 3 — not
@@ -93,9 +101,9 @@ def test_cli_vault_second_run_selects_nothing(clean_state, qdrant_addr, corpus_d
     assert after == before  # anti-join found nothing new (doc-gone re-errors)
 
 
-def test_cli_vault_filters(clean_state, qdrant_addr, corpus_dir):
+def test_cli_vault_filters(clean_state, qdrant_addr, corpus_dir, monkeypatch):
     _seed(clean_state, corpus_dir)
-    rc = _cli(clean_state, qdrant_addr, corpus_dir, ["--doctypes", "A3"])
+    rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir, ["--doctypes", "A3"])
     assert rc == 0
     conn = psycopg2.connect(clean_state)
     with conn.cursor() as cur:
@@ -104,11 +112,13 @@ def test_cli_vault_filters(clean_state, qdrant_addr, corpus_dir):
     conn.close()
 
 
-def test_cli_vault_count_only_does_not_ingest(clean_state, qdrant_addr, corpus_dir, capsys):
+def test_cli_vault_count_only_does_not_ingest(
+    clean_state, qdrant_addr, corpus_dir, capsys, monkeypatch
+):
     """`vault --count-only` must only count (item 3 of the fix wave): no
     engine work, no ledger writes, no Qdrant collection created."""
     _seed(clean_state, corpus_dir)
-    rc = _cli(clean_state, qdrant_addr, corpus_dir, ["--count-only"])
+    rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir, ["--count-only"])
     assert rc == 0
 
     out = capsys.readouterr().out
