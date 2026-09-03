@@ -23,7 +23,7 @@ def test_default_collection_for_vault_source(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(cli, "_run_vault_source", fake_run)
-    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     cli.main(["vault", "--corpus", "central-bank"])
     assert seen["collection"] == "central-bank-e5b-v1"
@@ -41,7 +41,7 @@ def test_default_collection_for_cb_corpus_source_matches_vault_routing(monkeypat
         return IngestStats()
 
     monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
-    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     cli.main(["cb_corpus", "--no-vault"])

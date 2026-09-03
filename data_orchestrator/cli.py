@@ -1,8 +1,7 @@
 """data_orchestrator CLI.
 
-Installed as the ``data-orchestrator`` console script (``rag-orchestrator``
-remains as a compat alias). Standalone repo that drives the eigenmind engine
-(a separate editable install, see ``README.md``)::
+Installed as the ``data-orchestrator`` console script. Standalone repo that
+drives the eigenmind engine (a separate editable install, see ``README.md``)::
 
     data-orchestrator vault --corpus central-bank
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
@@ -48,9 +47,11 @@ from .sources import cb_corpus as cb_corpus_source
 from .sources import bottom_up_corpus as bottom_up_corpus_source
 
 # Ledger lives at the repo root (one level above this package), or wherever
-# ``RAGO_STATE_DIR`` points (useful once installed site-wide).
+# ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide).
 STATE_DIR = Path(
-    os.environ.get("RAGO_STATE_DIR", Path(__file__).resolve().parents[1] / "state")
+    os.environ.get(
+        "DATA_ORCHESTRATOR_STATE_DIR", Path(__file__).resolve().parents[1] / "state"
+    )
 )
 # Selectable sources.
 SOURCES = ("cb_corpus", "bottom_up_corpus", "vault", "probe")

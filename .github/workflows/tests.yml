@@ -28,7 +28,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     env:
-      RAGO_EMBEDDING_MODEL: sentence-transformers/paraphrase-albert-small-v2
+      DATA_ORCHESTRATOR_EMBEDDING_MODEL: sentence-transformers/paraphrase-albert-small-v2
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-${{ env.RAGO_EMBEDDING_MODEL }}
+          key: hf-${{ env.DATA_ORCHESTRATOR_EMBEDDING_MODEL }}
       - name: Install
         run: |
           pip install -e ./eigenmind

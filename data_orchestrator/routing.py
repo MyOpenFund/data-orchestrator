@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .config import get_path
 
-EMBEDDING_MODEL_ENV = "RAGO_EMBEDDING_MODEL"
+EMBEDDING_MODEL_ENV = "DATA_ORCHESTRATOR_EMBEDDING_MODEL"
 DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 
 # Policy tag recorded in rag_ingestions.embedding_version: bump when the
