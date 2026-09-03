@@ -228,8 +228,9 @@ def test_empty_manifest_dir_is_the_same_error(tmp_path):
     """An existing but empty ``manifest/`` (no ``*.jsonl``) is just as wrong."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
     (root / "manifest").mkdir()
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileNotFoundError) as excinfo:
         list(iter_items(root))
+    assert str(root / "manifest") in str(excinfo.value)
 
 
 def test_prefer_manifest_false_needs_no_manifest_at_all(tmp_path):

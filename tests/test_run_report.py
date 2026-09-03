@@ -73,6 +73,8 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
 
     def fake_run_ingest(items, *, collection, **kwargs):
         return IngestStats(docs_seen=1, docs_ingested=1,
@@ -108,6 +110,8 @@ def test_no_vault_report_append_failure_does_not_mask_clean_run(
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
 
     def fake_run_ingest(items, *, collection, **kwargs):
         return IngestStats(docs_seen=1, docs_ingested=1,

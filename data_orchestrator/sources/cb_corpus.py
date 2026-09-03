@@ -102,13 +102,33 @@ def _manifest_files(root: Path) -> list[Path]:
     return sorted(p for p in manifest_dir.glob("*.jsonl") if p.is_file())
 
 
+def require_manifest(root: Path) -> list[Path]:
+    """Per-bank manifest files for ``root``, raising if none exist.
+
+    Same result as :func:`_manifest_files`, but raises the actionable
+    ``FileNotFoundError`` used by both :func:`iter_items` (its default
+    ``prefer_manifest=True`` path) and the CLI's eager pre-flight (cli.py),
+    so the two call sites can never drift on the error message.
+    """
+    files = _manifest_files(Path(root))
+    if not files:
+        raise FileNotFoundError(
+            f"cb_corpus manifest dir not found or empty: {Path(root) / 'manifest'} "
+            "(expected one <bank>.jsonl per bank; Python API: pass "
+            "prefer_manifest=False for a disk-only walk)"
+        )
+    return files
+
+
 def _load_manifest_index(files: Sequence[Path]) -> dict[str, dict]:
     """Build a ``doc_id -> manifest row`` index across all per-bank files.
 
     Keyed by the manifest ``doc_id``, which equals the on-disk filename stem
     (files are stored as ``<doc_id>.<ext>``), so the join with the disk walk is
     exact. Blank and malformed lines (torn appends) are skipped so one bad row
-    costs only its own document.
+    costs only its own document. A ``doc_id`` appearing in two bank files is
+    last-file-wins (doc_ids are corpus-unique in practice — verified 0
+    duplicates over 39,449 real rows on 2026-09-03).
     """
     index: dict[str, dict] = {}
     for manifest in files:
@@ -196,8 +216,19 @@ def iter_items(
         (the PDF is the canonical artifact when both exist).
     prefer_manifest:
         If True (default) on-disk files are enriched with manifest metadata when
-        their ``doc_id`` is indexed. If False the manifest is ignored entirely
-        (pure path-derived metadata) — mostly useful for testing.
+        their ``doc_id`` is indexed, and a missing/empty ``manifest/`` is a
+        configuration error (see Raises below). If False the manifest is
+        ignored entirely (pure path-derived metadata) and the manifest-required
+        check is disabled — a disk-only walk, Python API only (there is no CLI
+        flag for it); mostly useful for testing.
+
+    Raises
+    ------
+    ValueError
+        ``root`` is not configured (no argument and no ``CB_CORPUS_ROOT``).
+    FileNotFoundError
+        ``<root>/raw`` does not exist, or (when ``prefer_manifest`` is True)
+        ``<root>/manifest`` has no ``*.jsonl`` files.
     """
     if root is None:
         root = default_root()
@@ -213,19 +244,13 @@ def iter_items(
     bank_set = {b.lower() for b in banks} if banks else None
     doctype_set = {d.upper() for d in doctypes} if doctypes else None
     group_set = {g.upper() for g in groups} if groups else None
+    bounded = year_min is not None or year_max is not None
 
     # Walk the disk for completeness; enrich from the per-bank manifest index.
     # No manifest at all is a configuration error (mis-pointed root, unsynced
     # share), not a corpus of undated documents — fail loudly, like raw/.
     if prefer_manifest:
-        files = _manifest_files(Path(root))
-        if not files:
-            raise FileNotFoundError(
-                f"cb_corpus manifest dir not found or empty: {Path(root) / 'manifest'} "
-                "(expected one <bank>.jsonl per bank; pass prefer_manifest=False "
-                "for a disk-only walk)"
-            )
-        index = _load_manifest_index(files)
+        index = _load_manifest_index(require_manifest(Path(root)))
     else:
         index = {}
 
@@ -244,7 +269,6 @@ def iter_items(
 
             for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
                 year = _parse_year(year_dir.name)
-                bounded = year_min is not None or year_max is not None
                 if year is None:
                     if bounded:
                         continue  # an unknown year cannot satisfy a bound
