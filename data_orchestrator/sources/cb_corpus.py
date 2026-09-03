@@ -6,7 +6,7 @@ and yields :class:`..core.SourceItem` objects for the orchestrator.
 On-disk layout (produced by cb_corpus ``storage.py``)::
 
     <root>/raw/<bank>/<doctype>/<year>/<doc_id>.<ext>
-    <root>/manifest.jsonl          # rich index, one JSON row per document
+    <root>/manifest/<bank>.jsonl    # rich index, one JSON row per document, per bank
 
 Hybrid strategy
 ---------------
@@ -83,34 +83,41 @@ def _has_pdf_sibling(html_path: Path) -> bool:
     return html_path.with_suffix(".pdf").exists()
 
 
-def _find_manifest(root: Path) -> Optional[Path]:
-    """Locate ``manifest.jsonl`` for a corpus root (``<root>`` or ``<root>/data``)."""
-    for cand in (root / "manifest.jsonl", root / "data" / "manifest.jsonl"):
-        if cand.is_file():
-            return cand
-    return None
+def _manifest_files(root: Path) -> list[Path]:
+    """Per-bank manifest files ``<root>/manifest/<bank>.jsonl`` (sorted).
+
+    cb_corpus writes one JSON-lines file per bank; the pre-split single
+    ``manifest.jsonl`` no longer exists and is deliberately not read.
+    Returns ``[]`` when the directory is absent or holds no ``.jsonl``.
+    """
+    manifest_dir = root / "manifest"
+    if not manifest_dir.is_dir():
+        return []
+    return sorted(p for p in manifest_dir.glob("*.jsonl") if p.is_file())
 
 
-def _load_manifest_index(manifest: Path) -> dict[str, dict]:
-    """Build a ``doc_id -> manifest row`` index for enriching on-disk files.
+def _load_manifest_index(files: Sequence[Path]) -> dict[str, dict]:
+    """Build a ``doc_id -> manifest row`` index across all per-bank files.
 
     Keyed by the manifest ``doc_id``, which equals the on-disk filename stem
     (files are stored as ``<doc_id>.<ext>``), so the join with the disk walk is
-    exact.
+    exact. Blank and malformed lines (torn appends) are skipped so one bad row
+    costs only its own document.
     """
     index: dict[str, dict] = {}
-    with manifest.open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            doc_id = rec.get("doc_id")
-            if doc_id:
-                index[doc_id] = rec
+    for manifest in files:
+        with manifest.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                doc_id = rec.get("doc_id")
+                if doc_id:
+                    index[doc_id] = rec
     return index
 
 
@@ -201,9 +208,8 @@ def iter_items(
     doctype_set = {d.upper() for d in doctypes} if doctypes else None
     group_set = {g.upper() for g in groups} if groups else None
 
-    # Walk the disk for completeness; enrich from the manifest index when present.
-    manifest = _find_manifest(Path(root)) if prefer_manifest else None
-    index = _load_manifest_index(manifest) if manifest is not None else {}
+    # Walk the disk for completeness; enrich from the per-bank manifest index.
+    index = _load_manifest_index(_manifest_files(Path(root))) if prefer_manifest else {}
 
     for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
         bank_code = bank_dir.name
