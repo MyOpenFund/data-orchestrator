@@ -181,3 +181,26 @@ def test_unknown_corpus_error_message_lists_known_corpora(capsys):
     err = capsys.readouterr().err
     known = ", ".join(sorted(ROUTING))
     assert f"error: unknown corpus 'not-a-real-corpus' (known: {known})" in err
+
+
+def test_summary_warns_on_stderr_when_path_metadata_was_ingested(capsys):
+    """Path-derived metadata is a designed fallback, but it must never be
+    silent: the summary names the count and the remedy on stderr."""
+    from data_orchestrator.cli import _print_summary
+    from data_orchestrator.core import IngestStats
+
+    _print_summary(IngestStats(docs_seen=3, docs_ingested=3, docs_path_metadata=2))
+    captured = capsys.readouterr()
+    assert "path-metadata  : 2" in captured.out
+    assert "warning" in captured.err and "2 document(s)" in captured.err
+    assert "reindex-from-disk" in captured.err
+
+
+def test_summary_is_silent_on_stderr_when_no_path_metadata(capsys):
+    from data_orchestrator.cli import _print_summary
+    from data_orchestrator.core import IngestStats
+
+    _print_summary(IngestStats(docs_seen=3, docs_ingested=3))
+    captured = capsys.readouterr()
+    assert "path-metadata  : 0" in captured.out
+    assert captured.err == ""

@@ -71,6 +71,11 @@ class IngestStats:
     docs_skipped_resume: int = 0
     docs_empty: int = 0
     docs_error: int = 0
+    # Documents whose payload says metadata_source == "path": the source could
+    # not enrich them from its manifest (year-only dates, no title/sha256).
+    # Counted on every item seen, resumed or not — it describes the source's
+    # metadata quality, not the ingestion outcome, and never drives exit codes.
+    docs_path_metadata: int = 0
     chunks_written: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
     # Per-source_code counters (docs_seen/docs_new/docs_failed), populated by
@@ -254,6 +259,9 @@ def run_ingest(
         store.ensure_collection(collection, embedder.dim)
         for item in items:
             stats.docs_seen += 1
+
+            if item.payload.get("metadata_source") == "path":
+                stats.docs_path_metadata += 1
 
             if ledger is not None and item.doc_id in ledger:
                 stats.docs_skipped_resume += 1
