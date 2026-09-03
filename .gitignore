@@ -5,6 +5,11 @@ state/
 .env
 .env.local
 
+# Coverage artifacts (pytest-cov, in the `dev` extra) - never committed.
+.coverage
+coverage.xml
+htmlcov/
+
 __pycache__/
 *.egg-info/
 build/

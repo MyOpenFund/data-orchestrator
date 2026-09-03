@@ -267,6 +267,42 @@ def test_file_ledger_accepts_payload_kwarg(tmp_path):
     assert "d1" in led
 
 
+def test_file_ledger_resumes_from_disk_despite_a_corrupt_line(tmp_path):
+    """A ledger is appended to after every document, so a crash mid-write
+    leaves a torn last line. Restarting must resume from the lines that ARE
+    intact instead of raising and forcing a full re-ingest of the corpus."""
+    state = tmp_path / "state" / "central-bank-e5b-v1.jsonl"
+    state.parent.mkdir()
+    state.write_text(
+        '{"doc_id": "done", "chunks": 12, "ts": 1}\n'
+        '{"doc_id": "torn", "chunks":\n'          # crashed mid-append
+        '\n',                                     # trailing blank line
+        encoding="utf-8",
+    )
+
+    led = Ledger(state)
+
+    assert "done" in led
+    assert "torn" not in led
+    assert len(led) == 1
+
+
+def test_file_ledger_ignores_a_line_without_a_doc_id(tmp_path):
+    """Well-formed JSON is not enough: a row from an older/other writer that
+    carries no doc_id must be dropped, not crash the resume with a KeyError."""
+    state = tmp_path / "ledger.jsonl"
+    state.write_text(
+        '{"chunks": 3, "ts": 1}\n'
+        '{"doc_id": "done", "chunks": 12, "ts": 2}\n',
+        encoding="utf-8",
+    )
+
+    led = Ledger(state)
+
+    assert "done" in led
+    assert len(led) == 1
+
+
 def test_limit_stops_after_n_newly_ingested(tmp_path):
     log = []
     items = [_md_item(tmp_path, doc_id=f"doc{i}") for i in range(3)]

@@ -1,7 +1,12 @@
 """Unit tests for the vault selection source (pure SQL builder + row mapping)."""
+import logging
 from datetime import date
 
-from rag_orchestrator.sources.vault import build_selection_sql, row_to_item
+from rag_orchestrator.sources.vault import (
+    _SELECT_COLUMNS, build_selection_sql, iter_items, row_to_item,
+)
+
+from .conftest import DescribedFakeConn
 
 
 def test_sql_is_the_anti_join():
@@ -74,3 +79,45 @@ def test_row_to_item_null_local_path_is_none():
     # No CB_CORPUS_ROOT needed: local_path is NULL, so the function returns
     # before resolving anything.
     assert row_to_item(_row(local_path=None), "central-bank") is None
+
+
+def _tuple_row(**over):
+    """One selection row as the driver returns it: a tuple in _SELECT_COLUMNS order."""
+    row = _row(**over)
+    return tuple(row[col] for col in _SELECT_COLUMNS)
+
+
+def test_iter_items_skips_null_local_path_rows_and_says_how_many(
+    monkeypatch, tmp_path, caplog
+):
+    """A vault row can be known but not yet downloaded (local_path NULL). Those
+    rows must be dropped rather than yielded as items with a broken path — and
+    the count must be logged, because a silent drop looks exactly like a corpus
+    that is simply smaller than expected."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(
+        rows=[_tuple_row(doc_id="downloaded"),
+              _tuple_row(doc_id="not-downloaded", local_path=None)],
+        columns=_SELECT_COLUMNS,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="rag_orchestrator.sources.vault"):
+        items = list(iter_items(conn, "central-bank", "central-bank-e5b-v1"))
+
+    assert [item.doc_id for item in items] == ["downloaded"]
+    assert items[0].path == tmp_path / "raw" / "us" / "C1" / "2015" / "d1.pdf"
+    assert "1 row(s) without local_path skipped" in caplog.text
+
+
+def test_iter_items_stays_quiet_when_every_row_has_a_path(
+    monkeypatch, tmp_path, caplog
+):
+    """The warning must mean something: a healthy selection must not log one,
+    or operators learn to ignore it."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS)
+
+    with caplog.at_level(logging.WARNING, logger="rag_orchestrator.sources.vault"):
+        assert len(list(iter_items(conn, "central-bank", "central-bank-e5b-v1"))) == 1
+
+    assert caplog.text == ""
