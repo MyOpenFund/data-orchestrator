@@ -238,3 +238,13 @@ def test_prefer_manifest_false_needs_no_manifest_at_all(tmp_path):
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
     (item,) = iter_items(root, prefer_manifest=False)
     assert item.payload["metadata_source"] == "path"
+
+
+def test_non_numeric_year_dir_is_excluded_only_when_a_bound_is_set(tmp_path):
+    """``raw/<bank>/<type>/undated/`` has no year: without bounds it is walked
+    like today, but a --year-min/--year-max slice must not smuggle it in
+    (issue #5, third checkbox) — an unknown year cannot satisfy a bound."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/undated/u.pdf")
+    assert sorted(_ids(root)) == ["a", "u"]
+    assert _ids(root, year_min=2000) == ["a"]
+    assert _ids(root, year_max=2020) == ["a"]

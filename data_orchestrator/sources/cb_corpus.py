@@ -238,7 +238,11 @@ def iter_items(
 
             for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
                 year = _parse_year(year_dir.name)
-                if year is not None:
+                bounded = year_min is not None or year_max is not None
+                if year is None:
+                    if bounded:
+                        continue  # an unknown year cannot satisfy a bound
+                else:
                     if year_min is not None and year < year_min:
                         continue
                     if year_max is not None and year > year_max:
