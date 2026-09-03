@@ -17,7 +17,8 @@ def test_report_shape_and_ok_outcome():
     rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00")
     assert rep["tool"] == "data-orchestrator" and rep["command"] == "vault"
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
-    assert rep["totals"] == {"docs_seen": 5, "docs_new": 4, "docs_failed": 1}
+    assert rep["totals"] == {"docs_seen": 5, "docs_new": 4, "docs_failed": 1,
+                             "docs_path_metadata": 0}
     assert rep["sources"][0]["source_code"] == "us"
     assert set(rep) >= {"run_id", "started_at", "finished_at"}
 
@@ -72,6 +73,8 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
 
     def fake_run_ingest(items, *, collection, **kwargs):
         return IngestStats(docs_seen=1, docs_ingested=1,
@@ -107,6 +110,8 @@ def test_no_vault_report_append_failure_does_not_mask_clean_run(
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
 
     def fake_run_ingest(items, *, collection, **kwargs):
         return IngestStats(docs_seen=1, docs_ingested=1,
@@ -122,3 +127,14 @@ def test_no_vault_report_append_failure_does_not_mask_clean_run(
 
     assert rc == 0
     assert "warning" in capsys.readouterr().err.lower()
+
+
+def test_report_totals_carry_the_path_metadata_counter():
+    """runs.totals is the vault's only trace of how many documents went in with
+    path-derived (year-only) metadata; the key is always present so a Metabase
+    card can chart it without null-handling, and it never affects the outcome."""
+    s = _stats(docs_seen=5, docs_ingested=5, docs_path_metadata=5,
+               by_source={"us": {"docs_seen": 5, "docs_new": 5, "docs_failed": 0}})
+    rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00")
+    assert rep["totals"]["docs_path_metadata"] == 5
+    assert rep["outcome"] == "ok" and rep["exit_code"] == 0

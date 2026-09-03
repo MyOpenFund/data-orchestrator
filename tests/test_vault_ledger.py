@@ -154,6 +154,9 @@ def test_cli_closes_vault_connection_on_run_failure(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "run_ingest", boom)
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
 
     rc = cli.main(["cb_corpus", "--root", str(tmp_path)])
 

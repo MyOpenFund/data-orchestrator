@@ -130,6 +130,7 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
     print(f"  skipped(resume): {stats.docs_skipped_resume}")
     print(f"  empty          : {stats.docs_empty}")
     print(f"  errors         : {stats.docs_error}")
+    print(f"  path-metadata  : {stats.docs_path_metadata}")
     print(f"  chunks written : {stats.chunks_written}")
     if elapsed is not None:
         print(f"  time           : {elapsed:.1f}s")
@@ -137,6 +138,14 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
         print(f"  first errors   :")
         for path, msg in stats.errors[:10]:
             print(f"    - {path}: {msg}")
+    if stats.docs_path_metadata:
+        print(
+            f"warning: {stats.docs_path_metadata} document(s) were not indexed in the "
+            "cb_corpus manifest and carry path-derived metadata (year-only dates, no "
+            "title/sha256). Run 'reindex-from-disk' in cb_corpus, then re-ingest them "
+            "with --no-resume (disk source) or into a fresh --collection.",
+            file=sys.stderr,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +161,7 @@ def _build_report(command: str, stats: IngestStats, started_at: str) -> dict:
         "docs_seen": stats.docs_seen,
         "docs_new": stats.docs_ingested,
         "docs_failed": stats.docs_error,
+        "docs_path_metadata": stats.docs_path_metadata,
     }
     sources = [
         {"source_code": code, **counts}
@@ -275,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
         # env entirely (see _build_cb_corpus_items), so it gets its own
         # existence check rather than the routing/env lookup.
         if args.root:
-            if not Path(args.root).is_dir():
+            resolved_root = Path(args.root)
+            if not resolved_root.is_dir():
                 print(f"error: --root {args.root} does not exist or is not a directory",
                       file=sys.stderr)
                 return 1
@@ -283,6 +294,18 @@ def main(argv: list[str] | None = None) -> int:
             err = _validate_corpus_root(args.corpus)
             if err is not None:
                 return err
+            from .routing import corpus_root
+
+            resolved_root = corpus_root(args.corpus)
+        # Same eager-pre-flight reasoning as the root check above:
+        # _build_cb_corpus_items() never passes prefer_manifest, so
+        # iter_items() always requires the per-bank manifest. Check for it
+        # now too, before the ledger/vault connection and engine spin up.
+        try:
+            cb_corpus_source.require_manifest(resolved_root)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         items = _build_cb_corpus_items(args)
     elif args.source == "bottom_up_corpus":
         items = _build_bottom_up_corpus_items(args)

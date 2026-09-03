@@ -327,3 +327,26 @@ def test_text_not_found_maps_to_empty_doc(tmp_path, monkeypatch):
     n = ingest_item(item, "coll", store=FakeStore(log), embedder=FakeEmbedder())
     assert n == 0
     assert not log  # nothing reached Qdrant
+
+
+def test_run_ingest_counts_path_derived_metadata_items(tmp_path):
+    """The cb_corpus connector flags documents the manifest has not indexed
+    with metadata_source="path" (year-only dates). The run must count them —
+    including ones skipped by the resume ledger — so the summary and the run
+    report can say how much of the corpus carries degraded metadata."""
+    log = []
+
+    class SkipSecond(RecordingLedger):
+        def __contains__(self, doc_id):
+            return doc_id == "d2"
+
+    items = [
+        _md_item(tmp_path, doc_id="d1", payload={"bank_code": "us", "metadata_source": "manifest"}),
+        _md_item(tmp_path, doc_id="d2", payload={"bank_code": "us", "metadata_source": "path"}),
+        _md_item(tmp_path, doc_id="d3", payload={"bank_code": "us", "metadata_source": "path"}),
+        _md_item(tmp_path, doc_id="d4", payload={"bank_code": "us"}),  # no flag at all
+    ]
+    stats = run_ingest(items, collection="c", ledger=SkipSecond(log),
+                       store=FakeStore(log), embedder=FakeEmbedder())
+    assert stats.docs_path_metadata == 2
+    assert stats.docs_skipped_resume == 1

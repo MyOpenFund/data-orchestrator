@@ -87,27 +87,24 @@ def test_html_yielded_only_when_it_has_no_pdf_sibling(tmp_path):
     ]
 
 
+def _manifest(root, bank, *rows):
+    """Write ``<root>/manifest/<bank>.jsonl`` — the per-bank layout cb_corpus
+    produces (the single-file ``manifest.jsonl`` no longer exists upstream)."""
+    d = root / "manifest"
+    d.mkdir(exist_ok=True)
+    (d / f"{bank}.jsonl").write_text("".join(r + "\n" for r in rows), encoding="utf-8")
+
+
 def test_prefer_manifest_false_ignores_an_existing_manifest(tmp_path):
     """Opting out of the manifest must yield purely path-derived metadata even
     when a manifest sits right next to raw/ — otherwise the flag cannot be used
     to test (or reproduce) the disk-only view of the corpus."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    (root / "manifest.jsonl").write_text(
-        '{"doc_id": "a", "date": "2015-06-30", "title": "Speech"}\n', encoding="utf-8"
-    )
+    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "Speech"}')
     (item,) = iter_items(root, prefer_manifest=False)
     assert item.payload["metadata_source"] == "path"
     assert item.payload["publication_date"] == "2015-01-01"
     assert item.payload["title"] == ""
-
-
-def _legacy_manifest(root, *rows):
-    """Write the single-file manifest layout this connector still looks for.
-
-    ``_find_manifest`` searches ``<root>/manifest.jsonl`` and
-    ``<root>/data/manifest.jsonl`` — see the issue-#5 test below.
-    """
-    (root / "manifest.jsonl").write_text("".join(r + "\n" for r in rows), encoding="utf-8")
 
 
 def test_manifest_hit_carries_the_exact_publication_date(tmp_path):
@@ -115,9 +112,9 @@ def test_manifest_hit_carries_the_exact_publication_date(tmp_path):
     must get its real publication date and title, flagged as coming from the
     manifest so the point-in-time layer can trust the date."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    _legacy_manifest(root, '{"doc_id": "a", "date": "2015-06-30", "title": "A speech",'
-                           ' "pdf_url": "https://example.org/a.pdf", "sha256": "ab12",'
-                           ' "provenance": "bis"}')
+    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "A speech",'
+                          ' "pdf_url": "https://example.org/a.pdf", "sha256": "ab12",'
+                          ' "provenance": "bis"}')
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
     assert item.payload["publication_date"] == "2015-06-30"
@@ -132,7 +129,7 @@ def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
     conservative <year>-01-01 date flagged as path-derived, so a later reindex
     can upgrade it instead of the document being silently dropped."""
     root = _corpus(tmp_path, "us/C1/2015/indexed.pdf", "us/C1/2015/fresh.pdf")
-    _legacy_manifest(root, '{"doc_id": "indexed", "date": "2015-06-30"}')
+    _manifest(root, "us", '{"doc_id": "indexed", "date": "2015-06-30"}')
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
     assert payloads["fresh"]["metadata_source"] == "path"
     assert payloads["fresh"]["publication_date"] == "2015-01-01"
@@ -146,8 +143,8 @@ def test_malformed_manifest_line_does_not_cost_its_neighbours(tmp_path):
     describes: the rows around it stay indexed instead of the whole corpus
     degrading to path-derived metadata."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
-    _legacy_manifest(
-        root,
+    _manifest(
+        root, "us",
         '{"doc_id": "a", "date": "2015-06-30"}',
         '{"doc_id": "b", "date": "2015-0',  # torn tail
         '{"doc_id": "b", "date": "2015-07-31"}',
@@ -157,24 +154,42 @@ def test_malformed_manifest_line_does_not_cost_its_neighbours(tmp_path):
     assert payloads["b"]["publication_date"] == "2015-07-31"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #5: _find_manifest only looks for the extinct single-file "
-           "manifest.jsonl, so with cb_corpus's per-bank manifest/<bank>.jsonl "
-           "layout every document silently degrades to path-derived metadata",
-)
 def test_per_bank_manifest_layout_is_read(tmp_path):
     """cb_corpus splits its manifest per bank (``manifest/<bank>.jsonl``); the
     connector must read that layout, or every real corpus document loses its
-    exact publication date without any error being raised."""
+    exact publication date without any error being raised (issue #5)."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    (root / "manifest").mkdir()
-    (root / "manifest" / "us.jsonl").write_text(
-        '{"doc_id": "a", "date": "2015-06-30"}\n', encoding="utf-8"
-    )
+    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}')
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
     assert item.payload["publication_date"] == "2015-06-30"
+
+
+def test_all_bank_files_are_merged_into_one_index(tmp_path):
+    """Every ``manifest/<bank>.jsonl`` feeds the index: a document indexed in
+    ``ecb.jsonl`` must be enriched just like one indexed in ``us.jsonl`` —
+    reading only the first file would silently degrade every other bank."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "ecb/A3/2019/c.pdf")
+    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "US"}')
+    _manifest(root, "ecb", '{"doc_id": "c", "date": "2019-03-07", "title": "ECB"}')
+    payloads = {i.doc_id: i.payload for i in iter_items(root)}
+    assert payloads["a"]["metadata_source"] == "manifest"
+    assert payloads["a"]["publication_date"] == "2015-06-30"
+    assert payloads["c"]["metadata_source"] == "manifest"
+    assert payloads["c"]["publication_date"] == "2019-03-07"
+    assert payloads["c"]["title"] == "ECB"
+
+
+def test_single_file_manifest_is_not_recognised(tmp_path):
+    """The legacy single ``manifest.jsonl`` is gone upstream and is deliberately
+    NOT read (pre-release: clean break, no compat shim). With a per-bank dir
+    present, a stray single file must have no effect on the index."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
+    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}')
+    (root / "manifest.jsonl").write_text('{"doc_id": "b", "date": "2015-07-31"}\n', encoding="utf-8")
+    payloads = {i.doc_id: i.payload for i in iter_items(root)}
+    assert payloads["a"]["metadata_source"] == "manifest"
+    assert payloads["b"]["metadata_source"] == "path"
 
 
 def test_unconfigured_root_raises_an_actionable_value_error(monkeypatch):
@@ -197,3 +212,40 @@ def test_root_without_raw_dir_raises_an_actionable_file_not_found(tmp_path):
     with pytest.raises(FileNotFoundError) as excinfo:
         list(iter_items(root))
     assert str(root / "raw") in str(excinfo.value)
+
+
+def test_missing_manifest_dir_is_an_actionable_error(tmp_path):
+    """No ``manifest/`` under the root means a mis-pointed CB_CORPUS_ROOT or an
+    unsynced share — NOT a corpus whose every document happens to be undated.
+    Fail with the expected path instead of ingesting a fully degraded corpus."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    with pytest.raises(FileNotFoundError) as excinfo:
+        list(iter_items(root))
+    assert str(root / "manifest") in str(excinfo.value)
+
+
+def test_empty_manifest_dir_is_the_same_error(tmp_path):
+    """An existing but empty ``manifest/`` (no ``*.jsonl``) is just as wrong."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    (root / "manifest").mkdir()
+    with pytest.raises(FileNotFoundError) as excinfo:
+        list(iter_items(root))
+    assert str(root / "manifest") in str(excinfo.value)
+
+
+def test_prefer_manifest_false_needs_no_manifest_at_all(tmp_path):
+    """The disk-only mode is the explicit escape hatch: no manifest, no error,
+    purely path-derived metadata."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    (item,) = iter_items(root, prefer_manifest=False)
+    assert item.payload["metadata_source"] == "path"
+
+
+def test_non_numeric_year_dir_is_excluded_only_when_a_bound_is_set(tmp_path):
+    """``raw/<bank>/<type>/undated/`` has no year: without bounds it is walked
+    like today, but a --year-min/--year-max slice must not smuggle it in
+    (issue #5, third checkbox) — an unknown year cannot satisfy a bound."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/undated/u.pdf")
+    assert sorted(_ids(root)) == ["a", "u"]
+    assert _ids(root, year_min=2000) == ["a"]
+    assert _ids(root, year_max=2020) == ["a"]

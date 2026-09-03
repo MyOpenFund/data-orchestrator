@@ -6,7 +6,11 @@ and yields :class:`..core.SourceItem` objects for the orchestrator.
 On-disk layout (produced by cb_corpus ``storage.py``)::
 
     <root>/raw/<bank>/<doctype>/<year>/<doc_id>.<ext>
-    <root>/manifest.jsonl          # rich index, one JSON row per document
+    <root>/manifest/<bank>.jsonl   # rich index, one JSON row per document, per bank
+
+``<root>`` is the folder that contains ``raw/`` (a synced data folder, or the
+``data/`` directory of a cb_corpus checkout). A root without any
+``manifest/*.jsonl`` is rejected — see :func:`iter_items`.
 
 Hybrid strategy
 ---------------
@@ -23,8 +27,10 @@ back to what the path encodes — ``bank``/``doctype``/``year`` — and date the
 to ``<year>-01-01`` (cb_corpus's own year→Jan-1 convention, so working papers,
 which are year-only at the source anyway, match exactly). Such rows are flagged
 ``metadata_source="path"`` / ``date_granularity="year"`` so downstream (the
-dashboard, the quant point-in-time layer) can treat them conservatively and so a
+quant point-in-time layer) can treat them conservatively and so a
 later ``cb_corpus reindex-from-disk`` transparently upgrades them to exact dates.
+Such documents are counted (``IngestStats.docs_path_metadata``) and reported by
+the CLI, so the fallback is never silent.
 """
 from __future__ import annotations
 
@@ -83,34 +89,61 @@ def _has_pdf_sibling(html_path: Path) -> bool:
     return html_path.with_suffix(".pdf").exists()
 
 
-def _find_manifest(root: Path) -> Optional[Path]:
-    """Locate ``manifest.jsonl`` for a corpus root (``<root>`` or ``<root>/data``)."""
-    for cand in (root / "manifest.jsonl", root / "data" / "manifest.jsonl"):
-        if cand.is_file():
-            return cand
-    return None
+def _manifest_files(root: Path) -> list[Path]:
+    """Per-bank manifest files ``<root>/manifest/<bank>.jsonl`` (sorted).
+
+    cb_corpus writes one JSON-lines file per bank; the pre-split single
+    ``manifest.jsonl`` no longer exists and is deliberately not read.
+    Returns ``[]`` when the directory is absent or holds no ``.jsonl``.
+    """
+    manifest_dir = root / "manifest"
+    if not manifest_dir.is_dir():
+        return []
+    return sorted(p for p in manifest_dir.glob("*.jsonl") if p.is_file())
 
 
-def _load_manifest_index(manifest: Path) -> dict[str, dict]:
-    """Build a ``doc_id -> manifest row`` index for enriching on-disk files.
+def require_manifest(root: Path) -> list[Path]:
+    """Per-bank manifest files for ``root``, raising if none exist.
+
+    Same result as :func:`_manifest_files`, but raises the actionable
+    ``FileNotFoundError`` used by both :func:`iter_items` (its default
+    ``prefer_manifest=True`` path) and the CLI's eager pre-flight (cli.py),
+    so the two call sites can never drift on the error message.
+    """
+    files = _manifest_files(Path(root))
+    if not files:
+        raise FileNotFoundError(
+            f"cb_corpus manifest dir not found or empty: {Path(root) / 'manifest'} "
+            "(expected one <bank>.jsonl per bank; Python API: pass "
+            "prefer_manifest=False for a disk-only walk)"
+        )
+    return files
+
+
+def _load_manifest_index(files: Sequence[Path]) -> dict[str, dict]:
+    """Build a ``doc_id -> manifest row`` index across all per-bank files.
 
     Keyed by the manifest ``doc_id``, which equals the on-disk filename stem
     (files are stored as ``<doc_id>.<ext>``), so the join with the disk walk is
-    exact.
+    exact. Blank and malformed lines (torn appends) are skipped so one bad row
+    costs only its own document. A ``doc_id`` appearing in two bank files is
+    last-file-wins (doc_ids are corpus-unique in practice — verified 0
+    duplicates over 39,449 real rows on 2026-09-03).
     """
     index: dict[str, dict] = {}
-    with manifest.open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            doc_id = rec.get("doc_id")
-            if doc_id:
-                index[doc_id] = rec
+    for manifest in files:
+        with manifest.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                doc_id = rec.get("doc_id")
+                if doc_id:
+                    index[doc_id] = rec
     return index
 
 
@@ -183,8 +216,19 @@ def iter_items(
         (the PDF is the canonical artifact when both exist).
     prefer_manifest:
         If True (default) on-disk files are enriched with manifest metadata when
-        their ``doc_id`` is indexed. If False the manifest is ignored entirely
-        (pure path-derived metadata) — mostly useful for testing.
+        their ``doc_id`` is indexed, and a missing/empty ``manifest/`` is a
+        configuration error (see Raises below). If False the manifest is
+        ignored entirely (pure path-derived metadata) and the manifest-required
+        check is disabled — a disk-only walk, Python API only (there is no CLI
+        flag for it); mostly useful for testing.
+
+    Raises
+    ------
+    ValueError
+        ``root`` is not configured (no argument and no ``CB_CORPUS_ROOT``).
+    FileNotFoundError
+        ``<root>/raw`` does not exist, or (when ``prefer_manifest`` is True)
+        ``<root>/manifest`` has no ``*.jsonl`` files.
     """
     if root is None:
         root = default_root()
@@ -200,10 +244,15 @@ def iter_items(
     bank_set = {b.lower() for b in banks} if banks else None
     doctype_set = {d.upper() for d in doctypes} if doctypes else None
     group_set = {g.upper() for g in groups} if groups else None
+    bounded = year_min is not None or year_max is not None
 
-    # Walk the disk for completeness; enrich from the manifest index when present.
-    manifest = _find_manifest(Path(root)) if prefer_manifest else None
-    index = _load_manifest_index(manifest) if manifest is not None else {}
+    # Walk the disk for completeness; enrich from the per-bank manifest index.
+    # No manifest at all is a configuration error (mis-pointed root, unsynced
+    # share), not a corpus of undated documents — fail loudly, like raw/.
+    if prefer_manifest:
+        index = _load_manifest_index(require_manifest(Path(root)))
+    else:
+        index = {}
 
     for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
         bank_code = bank_dir.name
@@ -220,7 +269,10 @@ def iter_items(
 
             for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
                 year = _parse_year(year_dir.name)
-                if year is not None:
+                if year is None:
+                    if bounded:
+                        continue  # an unknown year cannot satisfy a bound
+                else:
                     if year_min is not None and year < year_min:
                         continue
                     if year_max is not None and year > year_max:
