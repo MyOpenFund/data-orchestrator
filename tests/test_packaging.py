@@ -33,20 +33,26 @@ def test_distribution_name_is_data_orchestrator():
 
 
 def test_console_scripts_are_the_new_names_only():
-    """Exactly the two intended console scripts, both on the renamed package.
+    """Exactly one console script, on the renamed package.
 
-    Pinning the whole key set rather than the absence of one known-bad name
-    catches *any* stray entry point — an alias under the pre-rename command
-    name, a half-finished addition, a typo'd duplicate — instead of only the
-    one alias we happen to have removed. An alias left behind would keep the
-    old command working, so nobody's muscle memory (or pinned script) would
-    ever surface the rename while the product is still pre-release and free to
-    break it."""
+    Pinning the whole key set catches *any* stray entry point — an alias
+    under the pre-rename command name, the removed ``rag-dashboard``, a
+    half-finished addition — instead of only the ones we happen to remember.
+    The Streamlit dashboard was removed (issue #5): its corpus/RAG-state views
+    belong to Metabase over the vault."""
     data = _load_pyproject()
     scripts = data["project"]["scripts"]
-    assert set(scripts) == {"data-orchestrator", "rag-dashboard"}
+    assert set(scripts) == {"data-orchestrator"}
     assert scripts["data-orchestrator"] == "data_orchestrator.cli:main"
-    assert scripts["rag-dashboard"] == "data_orchestrator.dashboard.__main__:main"
+
+
+def test_no_dashboard_extra_and_no_dashboard_package():
+    """The dashboard is gone for good: no optional extra pulling Streamlit, and
+    no importable package left behind for a stale script to find."""
+    data = _load_pyproject()
+    assert "dashboard" not in data["project"].get("optional-dependencies", {})
+    repo_root = Path(__file__).resolve().parents[1]
+    assert not (repo_root / "data_orchestrator" / "dashboard").exists()
 
 
 def test_cli_prog_is_data_orchestrator(capsys):

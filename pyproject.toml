@@ -25,8 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Streamlit dashboard (corpus vs RAG tracking, as-of date, query/graph logs).
-dashboard = ["streamlit>=1.40", "pandas>=2.0"]
 # bottom_up_corpus source connector (SEC EDGAR micro layer). Pulled from GitHub
 # rather than vendored: it owns all discovery/download/render logic and exposes
 # `bottom_up_corpus.rag.iter_items`. Heavy + has its own system needs (Chrome for
@@ -39,7 +37,6 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 
 [project.scripts]
 data-orchestrator = "data_orchestrator.cli:main"
-rag-dashboard = "data_orchestrator.dashboard.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["data_orchestrator*"]

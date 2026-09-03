@@ -23,7 +23,7 @@ back to what the path encodes — ``bank``/``doctype``/``year`` — and date the
 to ``<year>-01-01`` (cb_corpus's own year→Jan-1 convention, so working papers,
 which are year-only at the source anyway, match exactly). Such rows are flagged
 ``metadata_source="path"`` / ``date_granularity="year"`` so downstream (the
-dashboard, the quant point-in-time layer) can treat them conservatively and so a
+quant point-in-time layer) can treat them conservatively and so a
 later ``cb_corpus reindex-from-disk`` transparently upgrades them to exact dates.
 """
 from __future__ import annotations

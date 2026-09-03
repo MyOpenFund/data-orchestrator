@@ -307,9 +307,11 @@ generator that yields `core.SourceItem(doc_id, path, payload)`, then wire it
 into `cli.py` (`source` choices + dispatch). The core engine needs no
 changes.
 
-## Dashboard
+## Corpus and RAG-state views
 
-An optional Streamlit dashboard (`rag-dashboard`, `pip install -e ".[dashboard]"`)
-reads corpus/RAG state live for the `cb_corpus` disk layout. It is out of
-scope for the vault-driven ingestion chain described above and still reads
-its own catalog internals directly.
+Coverage, cadence and RAG-state views live in Metabase over the vault
+([MyOpenFund/vault](https://github.com/MyOpenFund/vault)): `documents`,
+`rag_ingestions`, `cadence` and `runs` are the tables to chart. The former
+Streamlit dashboard shipped with this repo was removed (it read the extinct
+single-file manifest and duplicated what the vault now records); its feature
+inventory is kept in the project notes.
