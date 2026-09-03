@@ -71,7 +71,7 @@ def isolated_env(request):
         yield
         return
 
-    from rag_orchestrator import config
+    from data_orchestrator import config
 
     saved = dict(os.environ)
     patch = pytest.MonkeyPatch()

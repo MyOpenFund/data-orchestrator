@@ -1,8 +1,8 @@
 """Streamlit entry point for the RAG data dashboard.
 
-Launch with ``python -m rag_orchestrator.dashboard`` (preferred) or directly::
+Launch with ``python -m data_orchestrator.dashboard`` (preferred) or directly::
 
-    streamlit run rag_orchestrator/dashboard/app.py
+    streamlit run data_orchestrator/dashboard/app.py
 """
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ import streamlit as st
 
 # Allow ``streamlit run app.py`` (no package context) as well as ``-m``.
 try:
-    from rag_orchestrator.dashboard import catalog
+    from data_orchestrator.dashboard import catalog
 except ImportError:  # pragma: no cover - direct-file launch
     import sys
 
     # parents[2] == the data-orchestrator repo root (which contains the
-    # ``rag_orchestrator`` package). parents: [dashboard, rag_orchestrator, repo].
+    # ``data_orchestrator`` package). parents: [dashboard, data_orchestrator, repo].
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from rag_orchestrator.dashboard import catalog
+    from data_orchestrator.dashboard import catalog
 
 
 st.set_page_config(page_title="RAG Data Platform", page_icon="📚", layout="wide")

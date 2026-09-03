@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from rag_orchestrator.core import (
+from data_orchestrator.core import (
     OCR_TO_ENGINE,
     Ledger,
     SourceItem,
@@ -163,7 +163,7 @@ def test_ledger_failure_on_empty_doc_is_isolated_and_run_continues(tmp_path, mon
     docs_error for that one doc and let the run continue, not abort."""
     from chunknorris.exceptions import TextNotFoundException
 
-    import rag_orchestrator.core as core
+    import data_orchestrator.core as core
 
     original_chunk = core.chunk_with_chunknorris
     calls = {"n": 0}
@@ -199,7 +199,7 @@ def test_ensure_collection_failure_still_releases_owned_embedder(tmp_path, monke
     """ensure_collection() must be inside the try/finally that releases an
     *owned* embedder (item 6 of the fix wave) — otherwise a raising
     ensure_collection leaks the loaded model."""
-    import rag_orchestrator.core as core
+    import data_orchestrator.core as core
 
     released = {"n": 0}
 
@@ -239,7 +239,7 @@ def test_ingest_item_omits_page_key_when_start_page_is_none(tmp_path):
 
 
 def test_ingest_item_includes_page_key_when_start_page_present(tmp_path, monkeypatch):
-    import rag_orchestrator.core as core
+    import data_orchestrator.core as core
 
     class FakeChunk:
         def __init__(self, text, start_page):
@@ -316,7 +316,7 @@ def test_limit_stops_after_n_newly_ingested(tmp_path):
 def test_text_not_found_maps_to_empty_doc(tmp_path, monkeypatch):
     from chunknorris.exceptions import TextNotFoundException
 
-    import rag_orchestrator.core as core
+    import data_orchestrator.core as core
 
     def raise_tnf(path, use_ocr=None):
         raise TextNotFoundException("no text layer")

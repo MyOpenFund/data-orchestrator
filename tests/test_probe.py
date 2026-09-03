@@ -2,7 +2,7 @@
 import logging
 from pathlib import Path
 
-from rag_orchestrator.probe import probe_file, run_probe
+from data_orchestrator.probe import probe_file, run_probe
 
 from .conftest import DescribedFakeConn
 
@@ -226,7 +226,7 @@ def test_probe_file_survives_a_corrupt_pdf(tmp_path, caplog):
     corrupt = tmp_path / "truncated.pdf"
     corrupt.write_bytes(b"%PDF-1.4\n" + b"\xde\xad\xbe\xef" * 40 + b"\ntrailer\n")
 
-    with caplog.at_level(logging.WARNING, logger="rag_orchestrator.probe"):
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.probe"):
         assert probe_file(corrupt) == (None, None)
 
     assert "probe failed for" in caplog.text

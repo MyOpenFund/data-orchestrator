@@ -1,7 +1,7 @@
 import json
 
-from rag_orchestrator.cli import _build_report
-from rag_orchestrator.core import IngestStats
+from data_orchestrator.cli import _build_report
+from data_orchestrator.core import IngestStats
 
 
 def _stats(**over):
@@ -32,7 +32,7 @@ def test_all_failed_is_degraded_exit_three():
 def test_run_ingest_populates_by_source(tmp_path):
     # reuse the fakes from test_core_engine
     from tests.test_core_engine import FakeEmbedder, FakeStore, RecordingLedger, _md_item
-    from rag_orchestrator.core import run_ingest
+    from data_orchestrator.core import run_ingest
 
     log = []
     items = [_md_item(tmp_path, doc_id="d1", payload={"bank_code": "us"}),
@@ -44,7 +44,7 @@ def test_run_ingest_populates_by_source(tmp_path):
 
 
 def test_insert_run_report_sql_contract():
-    from rag_orchestrator.vault import insert_run_report
+    from data_orchestrator.vault import insert_run_report
     from tests.test_vault_ledger import FakeConn
 
     conn = FakeConn()
@@ -64,9 +64,9 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     args.no_resume" block entirely, so the success-path report write must
     open its own short-lived connection rather than silently doing nothing
     (finding 2 of the fix wave)."""
-    from rag_orchestrator import cli
-    from rag_orchestrator.core import IngestStats
-    import rag_orchestrator.vault as vault_mod
+    from data_orchestrator import cli
+    from data_orchestrator.core import IngestStats
+    import data_orchestrator.vault as vault_mod
     from tests.test_vault_ledger import FakeConn
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
@@ -101,8 +101,8 @@ def test_no_vault_report_append_failure_does_not_mask_clean_run(
     fatal handler and flipped a clean run's exit code, contradicting the
     "report write never masks the run's outcome" contract that already
     applies to every vault insert. It must be warn-only, same as those."""
-    from rag_orchestrator import cli
-    from rag_orchestrator.core import IngestStats
+    from data_orchestrator import cli
+    from data_orchestrator.core import IngestStats
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")

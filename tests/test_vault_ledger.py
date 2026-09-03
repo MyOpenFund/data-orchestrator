@@ -1,7 +1,7 @@
 """VaultLedger unit tests against a scripted fake psycopg2 connection."""
 import pytest
 
-from rag_orchestrator.vault import VaultLedger, connect
+from data_orchestrator.vault import VaultLedger, connect
 
 
 class FakeCursor:
@@ -135,8 +135,8 @@ def test_cli_closes_vault_connection_on_run_failure(monkeypatch, tmp_path):
     (exit 1), and the vault connection is still closed via the same
     try/finally as every other path.
     """
-    from rag_orchestrator import cli
-    import rag_orchestrator.vault as vault_mod
+    from data_orchestrator import cli
+    import data_orchestrator.vault as vault_mod
 
     class ClosableConn(FakeConn):
         def __init__(self):

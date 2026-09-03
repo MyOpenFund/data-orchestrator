@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from rag_orchestrator.core import SourceItem
-from rag_orchestrator.sources import bottom_up_corpus as connector
+from data_orchestrator.core import SourceItem
+from data_orchestrator.sources import bottom_up_corpus as connector
 
 
 @dataclass
@@ -138,7 +138,7 @@ def test_missing_dependency_raises_helpful_error(monkeypatch):
 
 
 def test_cli_count_only_groups_by_cik_and_doctype(fake_bottom_up_corpus, capsys):
-    from rag_orchestrator import cli
+    from data_orchestrator import cli
 
     fake_bottom_up_corpus["set_items"]([
         _FakeItem("d1", Path("/a.pdf"),

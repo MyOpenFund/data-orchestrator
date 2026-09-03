@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rag_orchestrator import config, vault
+from data_orchestrator import config, vault
 
 from .conftest import DOTENV_KEYS
 
@@ -102,7 +102,7 @@ def test_a_key_written_straight_into_os_environ_does_not_survive_the_test(pytest
         """
         import os
 
-        from rag_orchestrator import config
+        from data_orchestrator import config
 
         def test_loads_a_dotenv_through_the_production_loader(tmp_path):
             env = tmp_path / ".env"

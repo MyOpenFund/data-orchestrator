@@ -1,5 +1,5 @@
 """Golden tests pinning _point_id byte-stability across the engine rewrite."""
-from rag_orchestrator.core import _point_id
+from data_orchestrator.core import _point_id
 
 
 GOLDEN_1 = 5299910714168844021
