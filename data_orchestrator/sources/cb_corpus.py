@@ -6,7 +6,11 @@ and yields :class:`..core.SourceItem` objects for the orchestrator.
 On-disk layout (produced by cb_corpus ``storage.py``)::
 
     <root>/raw/<bank>/<doctype>/<year>/<doc_id>.<ext>
-    <root>/manifest/<bank>.jsonl    # rich index, one JSON row per document, per bank
+    <root>/manifest/<bank>.jsonl   # rich index, one JSON row per document, per bank
+
+``<root>`` is the folder that contains ``raw/`` (a synced data folder, or the
+``data/`` directory of a cb_corpus checkout). A root without any
+``manifest/*.jsonl`` is rejected — see :func:`iter_items`.
 
 Hybrid strategy
 ---------------
@@ -25,6 +29,8 @@ which are year-only at the source anyway, match exactly). Such rows are flagged
 ``metadata_source="path"`` / ``date_granularity="year"`` so downstream (the
 quant point-in-time layer) can treat them conservatively and so a
 later ``cb_corpus reindex-from-disk`` transparently upgrades them to exact dates.
+Such documents are counted (``IngestStats.docs_path_metadata``) and reported by
+the CLI, so the fallback is never silent.
 """
 from __future__ import annotations
 

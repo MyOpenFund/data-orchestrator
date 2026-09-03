@@ -83,12 +83,21 @@ via `routing.collection_name`.
 
 ### `cb_corpus` — the central-bank corpus
 
-Reads the corpus produced by the [`cb_corpus`](https://github.com/jeulinmarc/cb_corpus)
+Reads the corpus produced by the
+[`central-bank-corpus`](https://github.com/MyOpenFund/central-bank-corpus)
 project, laid out on disk as:
 
 ```
 <root>/raw/<bank>/<doctype>/<year>/<doc_id>.pdf
+<root>/manifest/<bank>.jsonl
 ```
+
+`<root>` is the folder that contains `raw/`. The per-bank manifest files
+supply exact publication dates, titles and checksums; a root without any
+`manifest/*.jsonl` is rejected outright (mis-pointed `CB_CORPUS_ROOT`),
+while a document not yet indexed is ingested with path-derived metadata
+(`<year>-01-01`) and counted — the run summary warns and the run report
+carries `totals.docs_path_metadata`.
 
 `bank`, `doctype` and `year` are parsed from the path and attached to **every
 chunk's payload**, so the vector DB can be filtered and cited per bank /
