@@ -68,6 +68,7 @@ via their own connector (`--no-vault`) in the meantime:
    | `BOTTOM_UP_CORPUS_ROOT` | local root of the bottom_up_corpus (SEC EDGAR) data dir — optional, only needed for the `bottom_up_corpus` disk fallback; unset falls back to bottom_up_corpus's own default data dir |
    | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
+   | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` |
 
    The pre-rename names `RAGO_EMBEDDING_MODEL` and `RAGO_STATE_DIR` still work
    as a deprecated fallback for one release: if the `DATA_ORCHESTRATOR_*` name
@@ -286,7 +287,7 @@ counted as an error, while every other document in the batch still commits.
 ## Testing
 
 ```bash
-./venv/bin/python -m pytest -q                    # 76 unit tests
+./venv/bin/python -m pytest -q                    # 116 unit tests
 ./venv/bin/python -m pytest -m integration -q      # 12 integration tests
 ```
 

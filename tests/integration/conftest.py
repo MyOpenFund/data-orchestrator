@@ -92,10 +92,10 @@ def tiny_model_env():
 def pg_url():
     if not docker_available():
         pytest.skip("docker unavailable")
-    name = f"rago-it-pg-{uuid.uuid4().hex[:8]}"
+    name = f"data-orchestrator-it-pg-{uuid.uuid4().hex[:8]}"
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name,
-         "-e", "POSTGRES_PASSWORD=it", "-e", "POSTGRES_USER=rago",
+         "-e", "POSTGRES_PASSWORD=it", "-e", "POSTGRES_USER=data_orchestrator",
          "-e", "POSTGRES_DB=documents", "-p", "127.0.0.1:0:5432", "postgres:16"],
         check=True, capture_output=True, timeout=300,
     )
@@ -103,7 +103,7 @@ def pg_url():
         out = subprocess.run(["docker", "port", name, "5432/tcp"],
                              capture_output=True, text=True, check=True)
         port = out.stdout.strip().splitlines()[0].rsplit(":", 1)[1]
-        url = f"postgresql://rago:it@127.0.0.1:{port}/documents"
+        url = f"postgresql://data_orchestrator:it@127.0.0.1:{port}/documents"
         assert _wait_port(lambda: psycopg2.connect(url).close()), "postgres not ready"
         yield url
     finally:
@@ -115,7 +115,7 @@ def qdrant_addr():
     if not docker_available():
         pytest.skip("docker unavailable")
     from qdrant_client import QdrantClient
-    name = f"rago-it-qd-{uuid.uuid4().hex[:8]}"
+    name = f"data-orchestrator-it-qd-{uuid.uuid4().hex[:8]}"
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name,
          "-p", "127.0.0.1:0:6333", "qdrant/qdrant"],
