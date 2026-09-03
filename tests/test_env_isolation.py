@@ -106,12 +106,12 @@ def test_a_key_written_straight_into_os_environ_does_not_survive_the_test(pytest
 
         def test_loads_a_dotenv_through_the_production_loader(tmp_path):
             env = tmp_path / ".env"
-            env.write_text("RAGO_TEST_LEAKED=from-the-file", encoding="utf-8")
+            env.write_text("DATA_ORCHESTRATOR_TEST_LEAKED=from-the-file", encoding="utf-8")
             assert config.load_dotenv(env) is True
-            assert os.environ["RAGO_TEST_LEAKED"] == "from-the-file"
+            assert os.environ["DATA_ORCHESTRATOR_TEST_LEAKED"] == "from-the-file"
         """
     )
 
     result = pytester.runpytest("-q", "-p", "no:cacheprovider")
     result.assert_outcomes(passed=1)
-    assert "RAGO_TEST_LEAKED" not in os.environ
+    assert "DATA_ORCHESTRATOR_TEST_LEAKED" not in os.environ

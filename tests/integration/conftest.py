@@ -84,7 +84,7 @@ def _wait_port(probe, tries=60):
 @pytest.fixture(scope="session", autouse=True)
 def tiny_model_env():
     import os
-    os.environ.setdefault("RAGO_EMBEDDING_MODEL", TINY_MODEL)
+    os.environ.setdefault("DATA_ORCHESTRATOR_EMBEDDING_MODEL", TINY_MODEL)
     yield
 
 

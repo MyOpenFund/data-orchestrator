@@ -31,7 +31,7 @@ def corpus_dir(tmp_path):
 
 
 def _coll():
-    """Derive collection name at test runtime from RAGO_EMBEDDING_MODEL."""
+    """Derive collection name at test runtime from DATA_ORCHESTRATOR_EMBEDDING_MODEL."""
     return collection_name("central-bank")
 
 

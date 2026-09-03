@@ -70,7 +70,7 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     from tests.test_vault_ledger import FakeConn
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     (tmp_path / "raw").mkdir()
 
     def fake_run_ingest(items, *, collection, **kwargs):
@@ -105,7 +105,7 @@ def test_no_vault_report_append_failure_does_not_mask_clean_run(
     from data_orchestrator.core import IngestStats
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     (tmp_path / "raw").mkdir()
 
     def fake_run_ingest(items, *, collection, **kwargs):

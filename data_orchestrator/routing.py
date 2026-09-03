@@ -7,14 +7,14 @@ vault. Adding a corpus = adding one CorpusRoute entry, never new connector code.
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import get_path
+from .config import env_with_fallback, get_path
 
-EMBEDDING_MODEL_ENV = "RAGO_EMBEDDING_MODEL"
+EMBEDDING_MODEL_ENV = "DATA_ORCHESTRATOR_EMBEDDING_MODEL"
+LEGACY_EMBEDDING_MODEL_ENV = "RAGO_EMBEDDING_MODEL"  # deprecated fallback — remove after one release
 DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 
 # Policy tag recorded in rag_ingestions.embedding_version: bump when the
@@ -30,7 +30,10 @@ MODEL_TAGS = {
 
 def embedding_model_name() -> str:
     """The sentence-transformers model to embed with (env-overridable for CI)."""
-    return os.environ.get(EMBEDDING_MODEL_ENV) or DEFAULT_EMBEDDING_MODEL
+    return (
+        env_with_fallback(EMBEDDING_MODEL_ENV, LEGACY_EMBEDDING_MODEL_ENV)
+        or DEFAULT_EMBEDDING_MODEL
+    )
 
 
 def model_tag(model_name: str) -> str:

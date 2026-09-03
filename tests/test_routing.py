@@ -6,12 +6,12 @@ from data_orchestrator import routing
 
 
 def test_default_embedding_model(monkeypatch):
-    monkeypatch.delenv("RAGO_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", raising=False)
     assert routing.embedding_model_name() == "intfloat/multilingual-e5-base"
 
 
 def test_embedding_model_env_override(monkeypatch):
-    monkeypatch.setenv("RAGO_EMBEDDING_MODEL", "sentence-transformers/tiny")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "sentence-transformers/tiny")
     assert routing.embedding_model_name() == "sentence-transformers/tiny"
 
 
@@ -24,7 +24,7 @@ def test_model_tag_unknown_is_sanitized_last_segment():
 
 
 def test_collection_name_default_model(monkeypatch):
-    monkeypatch.delenv("RAGO_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", raising=False)
     assert routing.collection_name("central-bank") == "central-bank-e5b-v1"
 
 

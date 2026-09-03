@@ -25,24 +25,24 @@ def test_comments_and_blank_lines_are_skipped(tmp_path):
         tmp_path,
         "# a header comment\n"
         "\n"
-        "RAGO_TEST_KEY=value\n"
+        "DATA_ORCHESTRATOR_TEST_KEY=value\n"
         "\n"
-        "# RAGO_TEST_OFF=disabled\n",
+        "# DATA_ORCHESTRATOR_TEST_OFF=disabled\n",
     )
     assert config.load_dotenv(env) is True
-    assert os.environ["RAGO_TEST_KEY"] == "value"
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "value"
     # A commented-out setting must leave no trace at all — neither under its own
     # name nor as a key that still carries the "#" (which a bare split would).
-    assert not [key for key in os.environ if "RAGO_TEST_OFF" in key]
+    assert not [key for key in os.environ if "DATA_ORCHESTRATOR_TEST_OFF" in key]
 
 
 def test_export_prefix_is_stripped(tmp_path):
     """`.env` files are routinely copy-pasted from shell snippets, so a line
     written ``export KEY=value`` must set KEY, not a key named "export KEY"."""
-    env = _env_file(tmp_path, "export RAGO_TEST_EXPORTED=value\n")
+    env = _env_file(tmp_path, "export DATA_ORCHESTRATOR_TEST_EXPORTED=value\n")
     config.load_dotenv(env)
-    assert os.environ["RAGO_TEST_EXPORTED"] == "value"
-    assert "export RAGO_TEST_EXPORTED" not in os.environ
+    assert os.environ["DATA_ORCHESTRATOR_TEST_EXPORTED"] == "value"
+    assert "export DATA_ORCHESTRATOR_TEST_EXPORTED" not in os.environ
 
 
 def test_quoted_values_are_unquoted(tmp_path):
@@ -50,29 +50,29 @@ def test_quoted_values_are_unquoted(tmp_path):
     root like '"/My Drive/corpus"' that no filesystem call can resolve."""
     env = _env_file(
         tmp_path,
-        'RAGO_TEST_DOUBLE="/My Drive/corpus"\n'
-        "RAGO_TEST_SINGLE='/My Drive/other'\n",
+        'DATA_ORCHESTRATOR_TEST_DOUBLE="/My Drive/corpus"\n'
+        "DATA_ORCHESTRATOR_TEST_SINGLE='/My Drive/other'\n",
     )
     config.load_dotenv(env)
-    assert os.environ["RAGO_TEST_DOUBLE"] == "/My Drive/corpus"
-    assert os.environ["RAGO_TEST_SINGLE"] == "/My Drive/other"
+    assert os.environ["DATA_ORCHESTRATOR_TEST_DOUBLE"] == "/My Drive/corpus"
+    assert os.environ["DATA_ORCHESTRATOR_TEST_SINGLE"] == "/My Drive/other"
 
 
 def test_a_preset_environment_value_wins_by_default(tmp_path, monkeypatch):
     """The documented contract: an explicit ``KEY=... rag-orchestrator ...`` (or
     a CLI flag exported into the environment) must beat the ``.env`` on disk,
     otherwise a per-run override silently does nothing."""
-    monkeypatch.setenv("RAGO_TEST_KEY", "from-the-shell")
-    config.load_dotenv(_env_file(tmp_path, "RAGO_TEST_KEY=from-the-file\n"))
-    assert os.environ["RAGO_TEST_KEY"] == "from-the-shell"
+    monkeypatch.setenv("DATA_ORCHESTRATOR_TEST_KEY", "from-the-shell")
+    config.load_dotenv(_env_file(tmp_path, "DATA_ORCHESTRATOR_TEST_KEY=from-the-file\n"))
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "from-the-shell"
 
 
 def test_override_true_replaces_a_preset_value(tmp_path, monkeypatch):
     """The opt-in half of the same rule: a caller that asks to override must
     actually get the file's value, or the flag is decorative."""
-    monkeypatch.setenv("RAGO_TEST_KEY", "from-the-shell")
-    config.load_dotenv(_env_file(tmp_path, "RAGO_TEST_KEY=from-the-file\n"), override=True)
-    assert os.environ["RAGO_TEST_KEY"] == "from-the-file"
+    monkeypatch.setenv("DATA_ORCHESTRATOR_TEST_KEY", "from-the-shell")
+    config.load_dotenv(_env_file(tmp_path, "DATA_ORCHESTRATOR_TEST_KEY=from-the-file\n"), override=True)
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "from-the-file"
 
 
 def test_an_explicit_path_is_read_even_after_the_process_wide_load(tmp_path, monkeypatch):
@@ -80,5 +80,5 @@ def test_an_explicit_path_is_read_even_after_the_process_wide_load(tmp_path, mon
     flag). A caller passing a path explicitly asks for that file to be read,
     whatever happened earlier in the process."""
     monkeypatch.setattr(config, "_LOADED", True)
-    assert config.load_dotenv(_env_file(tmp_path, "RAGO_TEST_KEY=value\n")) is True
-    assert os.environ["RAGO_TEST_KEY"] == "value"
+    assert config.load_dotenv(_env_file(tmp_path, "DATA_ORCHESTRATOR_TEST_KEY=value\n")) is True
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "value"

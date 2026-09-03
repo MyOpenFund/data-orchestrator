@@ -35,22 +35,27 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .config import env_with_fallback
 from .core import Ledger, SourceItem, run_ingest, IngestStats
 from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
 from .sources import bottom_up_corpus as bottom_up_corpus_source
 
 # Ledger lives at the repo root (one level above this package), or wherever
-# ``RAGO_STATE_DIR`` points (useful once installed site-wide).
+# ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide). The
+# pre-rename ``RAGO_STATE_DIR`` is still honoured, with a DeprecationWarning,
+# for one release.
+STATE_DIR_ENV = "DATA_ORCHESTRATOR_STATE_DIR"
+LEGACY_STATE_DIR_ENV = "RAGO_STATE_DIR"  # deprecated fallback — remove after one release
+_DEFAULT_STATE_DIR = Path(__file__).resolve().parents[1] / "state"
 STATE_DIR = Path(
-    os.environ.get("RAGO_STATE_DIR", Path(__file__).resolve().parents[1] / "state")
+    env_with_fallback(STATE_DIR_ENV, LEGACY_STATE_DIR_ENV, str(_DEFAULT_STATE_DIR))
 )
 # Selectable sources.
 SOURCES = ("cb_corpus", "bottom_up_corpus", "vault", "probe")
