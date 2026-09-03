@@ -67,7 +67,12 @@ via their own connector (`--no-vault`) in the meantime:
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `BOTTOM_UP_CORPUS_ROOT` | local root of the bottom_up_corpus (SEC EDGAR) data dir — optional, only needed for the `bottom_up_corpus` disk fallback; unset falls back to bottom_up_corpus's own default data dir |
    | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
-   | `RAGO_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
+   | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
+
+   The pre-rename names `RAGO_EMBEDDING_MODEL` and `RAGO_STATE_DIR` still work
+   as a deprecated fallback for one release: if the `DATA_ORCHESTRATOR_*` name
+   is unset the old one is read and a `DeprecationWarning` is emitted, so
+   migrate your `.env` before that fallback is removed.
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
 
@@ -241,7 +246,7 @@ generation)`:
 ```
 
 e.g. `central-bank-e5b-v1`. The embedding model defaults to
-`intfloat/multilingual-e5-base` and is overridable via `RAGO_EMBEDDING_MODEL`
+`intfloat/multilingual-e5-base` and is overridable via `DATA_ORCHESTRATOR_EMBEDDING_MODEL`
 (used by CI to swap in a tiny model for integration tests). Bump `n` (or the
 `EMBEDDING_VERSION` policy tag in `routing.py`) when chunking/embedding
 *policy* changes, not just the model name.
@@ -287,7 +292,7 @@ counted as an error, while every other document in the batch still commits.
 
 Integration tests spin up throwaway Postgres and Qdrant containers via
 `docker run` (skipped automatically if Docker is unavailable) and use a tiny
-embedding model (`RAGO_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`)
+embedding model (`DATA_ORCHESTRATOR_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`)
 to keep CI fast. CI (`.github/workflows/tests.yml`) runs both suites on every
 push/PR, checking out this repo and the public `MyOpenFund/eigenmind` fork
 side by side.
