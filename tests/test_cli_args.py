@@ -1,7 +1,7 @@
 """CLI argument-plumbing tests (no engine, no DB — parser-level behavior)."""
 import pytest
 
-from rag_orchestrator import cli
+from data_orchestrator import cli
 
 
 def test_vault_source_is_a_choice():
@@ -37,7 +37,7 @@ def test_default_collection_for_cb_corpus_source_matches_vault_routing(monkeypat
 
     def fake_run_ingest(items, *, collection, **kwargs):
         seen["collection"] = collection
-        from rag_orchestrator.core import IngestStats
+        from data_orchestrator.core import IngestStats
         return IngestStats()
 
     monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
@@ -74,7 +74,7 @@ def test_vault_source_connect_failure_returns_fatal_report_not_exception(
     unset) must not escape cli.main() as an uncaught exception — it must
     produce the best-effort failed/1 report, same as every other fatal path
     (finding 1 of the fix wave)."""
-    import rag_orchestrator.vault as vault_mod
+    import data_orchestrator.vault as vault_mod
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
 
@@ -95,7 +95,7 @@ def test_vault_missing_root_fails_before_any_engine_work(monkeypatch, capsys):
     monkeypatch.delenv("CB_CORPUS_ROOT", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://nope")
     called = {"connect": False}
-    import rag_orchestrator.vault as vault_mod
+    import data_orchestrator.vault as vault_mod
     monkeypatch.setattr(vault_mod, "connect", lambda: called.__setitem__("connect", True))
     rc = cli.main(["vault", "--corpus", "central-bank"])
     assert rc == 1
@@ -118,14 +118,14 @@ def test_cb_corpus_missing_root_fails_before_any_engine_work(monkeypatch, capsys
     already have been created (item 1 of the fix wave)."""
     monkeypatch.delenv("CB_CORPUS_ROOT", raising=False)
     called = {"connect": False, "run_ingest": False}
-    import rag_orchestrator.vault as vault_mod
+    import data_orchestrator.vault as vault_mod
 
     def fake_connect():
         called["connect"] = True
 
     def fake_run_ingest(*args, **kwargs):
         called["run_ingest"] = True
-        from rag_orchestrator.core import IngestStats
+        from data_orchestrator.core import IngestStats
         return IngestStats()
 
     monkeypatch.setattr(vault_mod, "connect", fake_connect)
@@ -148,14 +148,14 @@ def test_cb_corpus_explicit_missing_root_fails_before_any_engine_work(
     (which would happily resolve a *different*, possibly unset, env var)."""
     missing = tmp_path / "does-not-exist"
     called = {"connect": False, "run_ingest": False}
-    import rag_orchestrator.vault as vault_mod
+    import data_orchestrator.vault as vault_mod
 
     def fake_connect():
         called["connect"] = True
 
     def fake_run_ingest(*args, **kwargs):
         called["run_ingest"] = True
-        from rag_orchestrator.core import IngestStats
+        from data_orchestrator.core import IngestStats
         return IngestStats()
 
     monkeypatch.setattr(vault_mod, "connect", fake_connect)
@@ -173,7 +173,7 @@ def test_unknown_corpus_error_message_lists_known_corpora(capsys):
     """MINOR (item 2 of the fix wave): an unknown --corpus must not surface
     as a bare KeyError repr — catch it separately and derive the known list
     from routing.ROUTING rather than hardcoding it."""
-    from rag_orchestrator.routing import ROUTING
+    from data_orchestrator.routing import ROUTING
 
     rc = cli.main(["vault", "--corpus", "not-a-real-corpus"])
 

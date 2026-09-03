@@ -1,4 +1,4 @@
-"""rag_orchestrator CLI.
+"""data_orchestrator CLI.
 
 Installed as the ``data-orchestrator`` console script (``rag-orchestrator``
 remains as a compat alias). Standalone repo that drives the eigenmind engine
@@ -11,7 +11,7 @@ remains as a compat alias). Standalone repo that drives the eigenmind engine
     data-orchestrator bottom_up_corpus --ciks 320193 --collection company-e5b-v1
     data-orchestrator bottom_up_corpus --ciks 320193 --doctypes A1 --year-min 2024
 
-(equivalently ``python -m rag_orchestrator.cli <source> ...``)
+(equivalently ``python -m data_orchestrator.cli <source> ...``)
 
 The default collection is routed per corpus by
 ``routing.collection_name`` — ``{corpus}-{model_tag}-v1``, e.g.

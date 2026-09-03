@@ -3,8 +3,8 @@ import psycopg2
 import pytest
 from qdrant_client import QdrantClient
 
-from rag_orchestrator.core import SourceItem, run_ingest
-from rag_orchestrator.vault import VaultLedger
+from data_orchestrator.core import SourceItem, run_ingest
+from data_orchestrator.vault import VaultLedger
 
 from .conftest import insert_documents
 

@@ -16,5 +16,5 @@ truth; Qdrant is queried live for the RAG state. The two join on ``doc_id``.
 
 Run it with::
 
-    python -m rag_orchestrator.dashboard      # wraps `streamlit run`
+    python -m data_orchestrator.dashboard      # wraps `streamlit run`
 """

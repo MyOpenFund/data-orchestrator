@@ -21,7 +21,7 @@ def find_dotenv() -> Optional[Path]:
     """Locate the nearest ``.env``.
 
     Search order: the current working directory and its parents, then the repo
-    root that ships this package (one level above ``rag_orchestrator/``).
+    root that ships this package (one level above ``data_orchestrator/``).
     """
     candidates = []
     cwd = Path.cwd()

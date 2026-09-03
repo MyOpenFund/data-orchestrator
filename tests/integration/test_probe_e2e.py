@@ -2,7 +2,7 @@
 import psycopg2
 import pytest
 
-from rag_orchestrator import cli
+from data_orchestrator import cli
 
 from .conftest import insert_documents, write_note_md, write_text_pdf
 
@@ -55,8 +55,8 @@ def test_probe_excludes_deleted_missing_path_and_other_corpus(clean_state, qdran
     soft-deleted, missing local_path, and a different corpus."""
     import os
 
-    from rag_orchestrator import vault as vault_mod
-    from rag_orchestrator.probe import run_probe
+    from data_orchestrator import vault as vault_mod
+    from data_orchestrator.probe import run_probe
 
     os.environ["DATABASE_URL"] = clean_state
     os.environ["CB_CORPUS_ROOT"] = str(corpus_dir)
@@ -107,8 +107,8 @@ def test_probe_savepoint_isolates_poisoned_row_on_real_postgres(clean_state, qdr
     """
     import os
 
-    from rag_orchestrator import vault as vault_mod
-    from rag_orchestrator.probe import run_probe
+    from data_orchestrator import vault as vault_mod
+    from data_orchestrator.probe import run_probe
 
     os.environ["DATABASE_URL"] = clean_state
     os.environ["CB_CORPUS_ROOT"] = str(corpus_dir)

@@ -1,4 +1,4 @@
-"""Unit tests for the self-contained ``.env`` parser in rag_orchestrator.config.
+"""Unit tests for the self-contained ``.env`` parser in data_orchestrator.config.
 
 Every other test bypasses this loader with ``monkeypatch.setenv``, so its
 parsing loop — the thing that actually configures a real machine — was never
@@ -9,7 +9,7 @@ the keys these tests let the loader write cannot leak into their neighbours.
 """
 import os
 
-from rag_orchestrator import config
+from data_orchestrator import config
 
 
 def _env_file(tmp_path, body):

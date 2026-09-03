@@ -1,4 +1,4 @@
-"""rag_orchestrator.
+"""data_orchestrator.
 
 Ingestion orchestrator: a policy layer that moves documents selected by the
 vault (Postgres) through the **eigenmind** engine (chunking, embedding,

@@ -38,9 +38,9 @@ bottom_up = [
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 
 [project.scripts]
-data-orchestrator = "rag_orchestrator.cli:main"
-rag-orchestrator = "rag_orchestrator.cli:main"  # compat alias for the pre-rename command — remove after one release
-rag-dashboard = "rag_orchestrator.dashboard.__main__:main"
+data-orchestrator = "data_orchestrator.cli:main"
+rag-orchestrator = "data_orchestrator.cli:main"  # compat alias for the pre-rename command — remove after one release
+rag-dashboard = "data_orchestrator.dashboard.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["rag_orchestrator*"]
+include = ["data_orchestrator*"]

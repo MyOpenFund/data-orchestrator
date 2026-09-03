@@ -2,7 +2,7 @@
 import logging
 from datetime import date
 
-from rag_orchestrator.sources.vault import (
+from data_orchestrator.sources.vault import (
     _SELECT_COLUMNS, build_selection_sql, iter_items, row_to_item,
 )
 
@@ -101,7 +101,7 @@ def test_iter_items_skips_null_local_path_rows_and_says_how_many(
         columns=_SELECT_COLUMNS,
     )
 
-    with caplog.at_level(logging.WARNING, logger="rag_orchestrator.sources.vault"):
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.vault"):
         items = list(iter_items(conn, "central-bank", "central-bank-e5b-v1"))
 
     assert [item.doc_id for item in items] == ["downloaded"]
@@ -117,7 +117,7 @@ def test_iter_items_stays_quiet_when_every_row_has_a_path(
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS)
 
-    with caplog.at_level(logging.WARNING, logger="rag_orchestrator.sources.vault"):
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.vault"):
         assert len(list(iter_items(conn, "central-bank", "central-bank-e5b-v1"))) == 1
 
     assert caplog.text == ""

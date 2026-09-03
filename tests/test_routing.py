@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rag_orchestrator import routing
+from data_orchestrator import routing
 
 
 def test_default_embedding_model(monkeypatch):

@@ -1,7 +1,7 @@
 """Unit tests for the cb_corpus connector's disk walk and its config guards."""
 import pytest
 
-from rag_orchestrator.sources.cb_corpus import ROOT_ENV_KEY, iter_items
+from data_orchestrator.sources.cb_corpus import ROOT_ENV_KEY, iter_items
 
 
 def _corpus(tmp_path, *rel_paths):

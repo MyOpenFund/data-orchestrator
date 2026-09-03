@@ -1,4 +1,4 @@
-"""``python -m rag_orchestrator.dashboard`` -> ``streamlit run app.py``."""
+"""``python -m data_orchestrator.dashboard`` -> ``streamlit run app.py``."""
 from __future__ import annotations
 
 import sys

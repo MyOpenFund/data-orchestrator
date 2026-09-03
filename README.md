@@ -27,7 +27,7 @@ migrates it — the vault's own ingestion service runs that DDL.
 ```
 data-orchestrator/
   pyproject.toml          # packaging — installs the `data-orchestrator` CLI (`rag-orchestrator` kept as a compat alias for one release)
-  rag_orchestrator/
+  data_orchestrator/
     __init__.py            # public API: SourceItem, run_ingest, Ledger, …
     core.py                # engine: chunk -> embed -> upsert + resume ledger
     routing.py              # per-corpus root/local_path routing + collection naming
@@ -159,7 +159,7 @@ folder that contains `raw/`", i.e. the repo's `data/` dir itself). Joining
 and find nothing.
 
 `routing.resolve_local_path(corpus, local_path)` reconciles this: each
-`CorpusRoute` in `rag_orchestrator/routing.py` carries an optional
+`CorpusRoute` in `data_orchestrator/routing.py` carries an optional
 `local_path_strip` — a **leading-prefix** stripped from `local_path` before
 joining with the root. `central-bank` strips `"data/"` for exactly this
 reason. Adding a corpus whose root already matches its vault `local_path`
@@ -188,7 +188,7 @@ data-orchestrator probe --corpus central-bank
 data-orchestrator vault --corpus central-bank --ocr always
 ```
 
-> Equivalent module form: `python -m rag_orchestrator.cli vault --corpus central-bank`
+> Equivalent module form: `python -m data_orchestrator.cli vault --corpus central-bank`
 
 ### Useful flags
 
@@ -294,14 +294,14 @@ side by side.
 
 ## Adding a new corpus
 
-Add one `CorpusRoute` entry to `ROUTING` in `rag_orchestrator/routing.py`
+Add one `CorpusRoute` entry to `ROUTING` in `data_orchestrator/routing.py`
 (root env key + optional `local_path_strip`) — no new connector code, as long
 as the corpus is onboarded to the vault. The `vault` source works for any
 corpus already in `documents`.
 
 ## Adding a new disk-fallback source
 
-Create `rag_orchestrator/sources/<name>.py` exposing an `iter_items(...)`
+Create `data_orchestrator/sources/<name>.py` exposing an `iter_items(...)`
 generator that yields `core.SourceItem(doc_id, path, payload)`, then wire it
 into `cli.py` (`source` choices + dispatch). The core engine needs no
 changes.

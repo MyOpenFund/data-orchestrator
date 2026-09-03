@@ -3,8 +3,8 @@ import psycopg2
 import pytest
 from qdrant_client import QdrantClient
 
-from rag_orchestrator import cli
-from rag_orchestrator.routing import collection_name
+from data_orchestrator import cli
+from data_orchestrator.routing import collection_name
 
 from .conftest import insert_documents, write_note_md, write_text_pdf
 
