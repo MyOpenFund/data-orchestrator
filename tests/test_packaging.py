@@ -36,11 +36,13 @@ def test_distribution_name_is_data_orchestrator():
 def test_console_scripts_include_new_name_and_compat_alias():
     """Both the new ``data-orchestrator`` command and the old ``rag-orchestrator``
     name (kept one release as a compat alias) must resolve to the same entry
-    point, so neither a fresh install nor an existing pinned script breaks."""
+    point, so neither a fresh install nor an existing pinned script breaks.
+    ``rag-dashboard`` must also point at the renamed package."""
     data = _load_pyproject()
     scripts = data["project"]["scripts"]
     assert scripts["data-orchestrator"] == "data_orchestrator.cli:main"
     assert scripts["rag-orchestrator"] == "data_orchestrator.cli:main"
+    assert scripts["rag-dashboard"] == "data_orchestrator.dashboard.__main__:main"
 
 
 def test_cli_prog_is_data_orchestrator(capsys):
@@ -53,7 +55,7 @@ def test_cli_prog_is_data_orchestrator(capsys):
     assert out.split()[1] == "data-orchestrator"
 
 
-def test_import_resolves_to_this_worktrees_package():
+def test_import_resolves_to_this_checkout():
     """``import data_orchestrator`` must resolve to *this* checkout, not some
     other install on the path.
 
