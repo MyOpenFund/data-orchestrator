@@ -37,12 +37,6 @@ DOTENV_KEYS = (
     "QDRANT_PORT",
     "DATA_ORCHESTRATOR_STATE_DIR",
     "DATA_ORCHESTRATOR_EMBEDDING_MODEL",
-    # Pre-rename names, still honoured by config.env_with_fallback for one
-    # release: a developer's un-migrated .env would otherwise reach the code
-    # under test through exactly the fallback the new names were meant to
-    # sidestep, and the isolation would silently have a hole in it.
-    "RAGO_STATE_DIR",
-    "RAGO_EMBEDDING_MODEL",
 )
 
 

@@ -26,7 +26,7 @@ migrates it — the vault's own ingestion service runs that DDL.
 
 ```
 data-orchestrator/
-  pyproject.toml          # packaging — installs the `data-orchestrator` CLI (`rag-orchestrator` kept as a compat alias for one release)
+  pyproject.toml          # packaging — installs the `data-orchestrator` CLI
   data_orchestrator/
     __init__.py            # public API: SourceItem, run_ingest, Ledger, …
     core.py                # engine: chunk -> embed -> upsert + resume ledger
@@ -69,11 +69,6 @@ via their own connector (`--no-vault`) in the meantime:
    | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` |
-
-   The pre-rename names `RAGO_EMBEDDING_MODEL` and `RAGO_STATE_DIR` still work
-   as a deprecated fallback for one release: if the `DATA_ORCHESTRATOR_*` name
-   is unset the old one is read and a `DeprecationWarning` is emitted, so
-   migrate your `.env` before that fallback is removed.
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
 

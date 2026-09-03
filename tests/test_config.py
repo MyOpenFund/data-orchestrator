@@ -59,7 +59,7 @@ def test_quoted_values_are_unquoted(tmp_path):
 
 
 def test_a_preset_environment_value_wins_by_default(tmp_path, monkeypatch):
-    """The documented contract: an explicit ``KEY=... rag-orchestrator ...`` (or
+    """The documented contract: an explicit ``KEY=... data-orchestrator ...`` (or
     a CLI flag exported into the environment) must beat the ``.env`` on disk,
     otherwise a per-run override silently does nothing."""
     monkeypatch.setenv("DATA_ORCHESTRATOR_TEST_KEY", "from-the-shell")

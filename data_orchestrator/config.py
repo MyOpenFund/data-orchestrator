@@ -11,38 +11,10 @@ that are *not already present* in the real environment, so an explicit
 from __future__ import annotations
 
 import os
-import warnings
 from pathlib import Path
 from typing import Optional
 
 _LOADED = False
-
-
-def env_with_fallback(new: str, old: str, default: Optional[str] = None) -> Optional[str]:
-    """Read ``new`` from the environment, falling back to a deprecated ``old`` name.
-
-    The ``RAGO_*`` prefix predates this repo's rename to data-orchestrator. The
-    old names keep working for one release so an un-migrated ``.env`` does not
-    fail *silently* (an unset key here is not an error — it just reverts to a
-    built-in default, e.g. a different embedding model and hence a different
-    collection name). Reading ``old`` therefore emits a ``DeprecationWarning``.
-
-    If both names are set the new one wins, silently: warning at that point
-    would fire on every run of a machine that has already migrated but kept the
-    old line around, and train people to ignore the warning that matters.
-    """
-    value = os.environ.get(new)
-    if value is not None:
-        return value
-    legacy = os.environ.get(old)
-    if legacy is not None:
-        warnings.warn(
-            f"{old} is deprecated, use {new}",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return legacy
-    return default
 
 
 def find_dotenv() -> Optional[Path]:

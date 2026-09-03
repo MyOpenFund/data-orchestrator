@@ -1,8 +1,7 @@
 """data_orchestrator CLI.
 
-Installed as the ``data-orchestrator`` console script (``rag-orchestrator``
-remains as a compat alias). Standalone repo that drives the eigenmind engine
-(a separate editable install, see ``README.md``)::
+Installed as the ``data-orchestrator`` console script. Standalone repo that
+drives the eigenmind engine (a separate editable install, see ``README.md``)::
 
     data-orchestrator vault --corpus central-bank
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
@@ -35,27 +34,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import env_with_fallback
 from .core import Ledger, SourceItem, run_ingest, IngestStats
 from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
 from .sources import bottom_up_corpus as bottom_up_corpus_source
 
 # Ledger lives at the repo root (one level above this package), or wherever
-# ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide). The
-# pre-rename ``RAGO_STATE_DIR`` is still honoured, with a DeprecationWarning,
-# for one release.
-STATE_DIR_ENV = "DATA_ORCHESTRATOR_STATE_DIR"
-LEGACY_STATE_DIR_ENV = "RAGO_STATE_DIR"  # deprecated fallback — remove after one release
-_DEFAULT_STATE_DIR = Path(__file__).resolve().parents[1] / "state"
+# ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide).
 STATE_DIR = Path(
-    env_with_fallback(STATE_DIR_ENV, LEGACY_STATE_DIR_ENV, str(_DEFAULT_STATE_DIR))
+    os.environ.get(
+        "DATA_ORCHESTRATOR_STATE_DIR", Path(__file__).resolve().parents[1] / "state"
+    )
 )
 # Selectable sources.
 SOURCES = ("cb_corpus", "bottom_up_corpus", "vault", "probe")

@@ -2,13 +2,12 @@
 
 The repo was renamed and transferred to the MyOpenFund org (see README) and
 the Python import package was renamed to match the new repo name. These
-tests pin the things that change in
-``pyproject.toml``: the distribution/console-script identity (new
-``data-orchestrator`` command, ``rag-orchestrator`` kept one release as a
-compat alias so existing scripts/muscle-memory don't break, now pointing at
-the renamed package) and the argparse ``prog`` shown in ``--help``/error
-output, so a regression in either is caught even though neither is
-exercised by the rest of the suite.
+tests pin the things that change in ``pyproject.toml``: the distribution and
+console-script identity (the ``data-orchestrator`` command, with the
+pre-rename command name dropped outright rather than kept as an alias — this
+is pre-release, so there is nothing to stay compatible with) and the argparse
+``prog`` shown in ``--help``/error output, so a regression in either is caught
+even though neither is exercised by the rest of the suite.
 """
 from __future__ import annotations
 
@@ -33,22 +32,23 @@ def test_distribution_name_is_data_orchestrator():
     assert data["project"]["name"] == "data-orchestrator"
 
 
-def test_console_scripts_include_new_name_and_compat_alias():
-    """Both the new ``data-orchestrator`` command and the old ``rag-orchestrator``
-    name (kept one release as a compat alias) must resolve to the same entry
-    point, so neither a fresh install nor an existing pinned script breaks.
-    ``rag-dashboard`` must also point at the renamed package."""
+def test_console_scripts_are_the_new_names_only():
+    """Exactly the two intended console scripts, both on the renamed package,
+    and no alias under the pre-rename command name: an alias left behind would
+    keep the old command working, so nobody's muscle memory (or pinned script)
+    would ever surface the rename while the product is still pre-release and
+    free to break it."""
     data = _load_pyproject()
     scripts = data["project"]["scripts"]
     assert scripts["data-orchestrator"] == "data_orchestrator.cli:main"
-    assert scripts["rag-orchestrator"] == "data_orchestrator.cli:main"
     assert scripts["rag-dashboard"] == "data_orchestrator.dashboard.__main__:main"
+    assert "rag-orchestrator" not in scripts
 
 
 def test_cli_prog_is_data_orchestrator(capsys):
     """argparse's ``prog`` drives the usage/error text a user actually sees
     (e.g. ``data-orchestrator: error: ...``); it must match the renamed
-    console script, not the old repo name or the compat-alias command."""
+    console script, not the old repo or command name."""
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     out = capsys.readouterr().out
