@@ -11,6 +11,7 @@ production code rather than through a helper.
 """
 import importlib
 import warnings
+from pathlib import Path
 
 from data_orchestrator import cli, routing
 
@@ -56,4 +57,28 @@ def test_state_dir_honours_the_new_env_name(monkeypatch, tmp_path):
         assert cli.STATE_DIR == tmp_path / "new-state"
     finally:
         monkeypatch.delenv("DATA_ORCHESTRATOR_STATE_DIR", raising=False)
+        importlib.reload(cli)  # restore the import-time default for later tests
+
+
+def test_the_legacy_state_dir_env_is_ignored(monkeypatch, tmp_path):
+    """The ledger directory's half of the same clean break: a leftover
+    ``RAGO_STATE_DIR`` must be inert, and silently so.
+
+    If it were still honoured the resume ledger would keep being written to the
+    pre-rename location while the operator believed the new key was in charge —
+    the kind of split-brain state that only shows up as a surprise re-ingest.
+    Asserting the *default* (not merely "not the legacy path") is what makes the
+    test fail loudly if the expression stops reading an env key at all.
+    """
+    monkeypatch.delenv("DATA_ORCHESTRATOR_STATE_DIR", raising=False)
+    monkeypatch.setenv("RAGO_STATE_DIR", str(tmp_path / "legacy-state"))
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning becomes a test failure
+            importlib.reload(cli)
+        assert cli.STATE_DIR == Path(cli.__file__).resolve().parents[1] / "state"
+        assert cli.STATE_DIR != tmp_path / "legacy-state"
+    finally:
+        monkeypatch.delenv("RAGO_STATE_DIR", raising=False)
         importlib.reload(cli)  # restore the import-time default for later tests

@@ -33,16 +33,20 @@ def test_distribution_name_is_data_orchestrator():
 
 
 def test_console_scripts_are_the_new_names_only():
-    """Exactly the two intended console scripts, both on the renamed package,
-    and no alias under the pre-rename command name: an alias left behind would
-    keep the old command working, so nobody's muscle memory (or pinned script)
-    would ever surface the rename while the product is still pre-release and
-    free to break it."""
+    """Exactly the two intended console scripts, both on the renamed package.
+
+    Pinning the whole key set rather than the absence of one known-bad name
+    catches *any* stray entry point — an alias under the pre-rename command
+    name, a half-finished addition, a typo'd duplicate — instead of only the
+    one alias we happen to have removed. An alias left behind would keep the
+    old command working, so nobody's muscle memory (or pinned script) would
+    ever surface the rename while the product is still pre-release and free to
+    break it."""
     data = _load_pyproject()
     scripts = data["project"]["scripts"]
+    assert set(scripts) == {"data-orchestrator", "rag-dashboard"}
     assert scripts["data-orchestrator"] == "data_orchestrator.cli:main"
     assert scripts["rag-dashboard"] == "data_orchestrator.dashboard.__main__:main"
-    assert "rag-orchestrator" not in scripts
 
 
 def test_cli_prog_is_data_orchestrator(capsys):
