@@ -209,7 +209,19 @@ def iter_items(
     group_set = {g.upper() for g in groups} if groups else None
 
     # Walk the disk for completeness; enrich from the per-bank manifest index.
-    index = _load_manifest_index(_manifest_files(Path(root))) if prefer_manifest else {}
+    # No manifest at all is a configuration error (mis-pointed root, unsynced
+    # share), not a corpus of undated documents — fail loudly, like raw/.
+    if prefer_manifest:
+        files = _manifest_files(Path(root))
+        if not files:
+            raise FileNotFoundError(
+                f"cb_corpus manifest dir not found or empty: {Path(root) / 'manifest'} "
+                "(expected one <bank>.jsonl per bank; pass prefer_manifest=False "
+                "for a disk-only walk)"
+            )
+        index = _load_manifest_index(files)
+    else:
+        index = {}
 
     for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
         bank_code = bank_dir.name

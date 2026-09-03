@@ -212,3 +212,29 @@ def test_root_without_raw_dir_raises_an_actionable_file_not_found(tmp_path):
     with pytest.raises(FileNotFoundError) as excinfo:
         list(iter_items(root))
     assert str(root / "raw") in str(excinfo.value)
+
+
+def test_missing_manifest_dir_is_an_actionable_error(tmp_path):
+    """No ``manifest/`` under the root means a mis-pointed CB_CORPUS_ROOT or an
+    unsynced share — NOT a corpus whose every document happens to be undated.
+    Fail with the expected path instead of ingesting a fully degraded corpus."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    with pytest.raises(FileNotFoundError) as excinfo:
+        list(iter_items(root))
+    assert str(root / "manifest") in str(excinfo.value)
+
+
+def test_empty_manifest_dir_is_the_same_error(tmp_path):
+    """An existing but empty ``manifest/`` (no ``*.jsonl``) is just as wrong."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    (root / "manifest").mkdir()
+    with pytest.raises(FileNotFoundError):
+        list(iter_items(root))
+
+
+def test_prefer_manifest_false_needs_no_manifest_at_all(tmp_path):
+    """The disk-only mode is the explicit escape hatch: no manifest, no error,
+    purely path-derived metadata."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    (item,) = iter_items(root, prefer_manifest=False)
+    assert item.payload["metadata_source"] == "path"
