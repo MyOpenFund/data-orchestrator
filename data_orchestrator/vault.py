@@ -17,12 +17,25 @@ from .config import load_dotenv
 
 RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
 
+# The `runs` columns this writer fills, in INSERT order. Single source of
+# truth: the SQL below is built from it, and `insert_run_report` sweeps every
+# report key that is NOT in it into `extra` (JSONB) — the same rule the vault
+# ingester applies in `parse_run_line` (KNOWN_FIELDS), so the two writers of
+# this table agree on what `extra` holds. `corpus` is deliberately absent: the
+# orchestrator is corpus-agnostic and leaves that column NULL by design.
+_RUN_COLUMNS = (
+    "run_id", "tool", "command", "started_at", "finished_at",
+    "outcome", "exit_code", "totals", "sources",
+)
+
 INSERT_RUN_SQL = """
-INSERT INTO runs (run_id, tool, command, started_at, finished_at,
-                  outcome, exit_code, totals, sources)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+INSERT INTO runs ({columns}, extra)
+VALUES ({placeholders}, %s)
 ON CONFLICT (run_id) DO NOTHING
-"""
+""".format(
+    columns=", ".join(_RUN_COLUMNS),
+    placeholders=", ".join(["%s"] * len(_RUN_COLUMNS)),
+)
 
 UPSERT_INGESTION_SQL = """
 INSERT INTO rag_ingestions (
@@ -57,13 +70,20 @@ def insert_run_report(conn, report: dict) -> None:
     Best-effort by contract: the caller (cli._build_report's consumers)
     tolerates a raising insert with a warning rather than letting it mask
     the run's own outcome.
+
+    Report keys outside ``_RUN_COLUMNS`` (notably ``error``, set by
+    ``cli._fatal_report``) are swept into ``extra``; an empty sweep writes SQL
+    NULL rather than ``'{}'``, so ``extra IS NULL`` means the same thing here
+    as in the vault ingester.
     """
+    extra = {k: v for k, v in report.items() if k not in _RUN_COLUMNS}
     with conn.cursor() as cur:
         cur.execute(INSERT_RUN_SQL, (
             report["run_id"], report["tool"], report["command"],
             report["started_at"], report["finished_at"],
             report["outcome"], report["exit_code"],
             json.dumps(report["totals"]), json.dumps(report["sources"]),
+            json.dumps(extra) if extra else None,
         ))
     conn.commit()
 

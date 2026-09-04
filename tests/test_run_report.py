@@ -138,3 +138,40 @@ def test_report_totals_carry_the_path_metadata_counter():
     rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00")
     assert rep["totals"]["docs_path_metadata"] == 5
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
+
+
+def test_insert_run_report_sweeps_non_column_fields_into_extra():
+    """R4: `_fatal_report` puts the exception text under an ``error`` key, which
+    is not a `runs` column — before this, the vault path silently dropped it and
+    the message survived only in the ``--no-vault`` JSONL. Non-column keys go to
+    ``extra`` (JSONB), the same rule the vault ingester's ``parse_run_line``
+    applies to the other writer of this table."""
+    from data_orchestrator.cli import _fatal_report
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    rep = _fatal_report("vault", "2026-09-04T00:00:00+00:00",
+                        RuntimeError("vault unreachable"))
+    conn = FakeConn()
+    insert_run_report(conn, rep)
+
+    sql, params = conn.executed[-1]
+    assert "extra" in sql
+    assert sql.count("%s") == 10 and len(params) == 10
+    extra = json.loads(params[-1])
+    assert extra["error"] == "RuntimeError: vault unreachable"
+
+
+def test_insert_run_report_extra_is_null_when_no_extra_fields():
+    """An empty sweep must be SQL NULL, not the string ``'{}'`` — matching the
+    ingester, so `extra IS NULL` means the same thing for both writers."""
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    conn = FakeConn()
+    insert_run_report(conn, {"run_id": "r1", "tool": "data-orchestrator",
+                             "command": "vault", "started_at": "s", "finished_at": "f",
+                             "outcome": "ok", "exit_code": 0,
+                             "totals": {}, "sources": []})
+    _sql, params = conn.executed[-1]
+    assert params[-1] is None
