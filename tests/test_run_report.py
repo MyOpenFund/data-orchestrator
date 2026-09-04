@@ -186,3 +186,22 @@ def test_insert_run_report_extra_is_null_when_no_extra_fields():
                              "totals": {}, "sources": []})
     _sql, params = conn.executed[-1]
     assert params[-1] is None
+
+
+def test_insert_run_report_absent_columns_become_sql_null():
+    """A report missing ``totals``/``sources`` (e.g. an early-failure report)
+    must not raise KeyError: absent columns map to SQL NULL, same as the
+    vault ingester's absent-key rule."""
+    from data_orchestrator.vault import insert_run_report, _RUN_COLUMNS
+    from tests.test_vault_ledger import FakeConn
+
+    conn = FakeConn()
+    report = {"run_id": "r1", "tool": "data-orchestrator",
+              "command": "vault", "started_at": "s", "finished_at": "f",
+              "outcome": "error", "exit_code": 1}
+    insert_run_report(conn, report)
+
+    _sql, params = conn.executed[-1]
+    by_column = dict(zip(_RUN_COLUMNS, params))
+    assert by_column["totals"] is None
+    assert by_column["sources"] is None

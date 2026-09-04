@@ -19,9 +19,11 @@ RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
 
 # The `runs` columns this writer fills, in INSERT order. Single source of
 # truth: the SQL below is built from it, and `insert_run_report` sweeps every
-# report key that is NOT in it into `extra` (JSONB) — mirroring the vault
-# ingester's `KNOWN_FIELDS` minus `corpus`, which this writer never emits (the
-# orchestrator is corpus-agnostic and leaves that column NULL by design).
+# report key that is NOT in it into `extra` (JSONB). Mirrors the vault
+# ingester's `KNOWN_FIELDS` (`vault/ingestion/ingest_runs.py`). The vault's
+# `runs.corpus` column (nullable; being added by the vault substrate chantier)
+# is deliberately NOT written here: the orchestrator is corpus-agnostic and
+# leaves it NULL, so this insert needs no schema coordination.
 _RUN_COLUMNS = (
     "run_id", "tool", "command", "started_at", "finished_at",
     "outcome", "exit_code", "totals", "sources",
@@ -77,12 +79,18 @@ def insert_run_report(conn, report: dict) -> None:
     ``cli._fatal_report``) are swept into ``extra``; an empty sweep writes SQL
     NULL rather than ``'{}'``, so ``extra IS NULL`` means the same thing here
     as in the vault ingester.
+
+    A report missing one of ``_RUN_COLUMNS`` (e.g. no ``totals``/``sources``
+    on an early failure) writes SQL NULL for that column, same as an absent
+    key does in the vault ingester — it never raises ``KeyError``.
     """
     extra = {k: v for k, v in report.items() if k not in _RUN_COLUMNS}
-    params = tuple(
-        json.dumps(report[c]) if c in _JSON_COLUMNS else report[c]
-        for c in _RUN_COLUMNS
-    )
+
+    def _param(c):
+        v = report.get(c)
+        return json.dumps(v) if c in _JSON_COLUMNS and v is not None else v
+
+    params = tuple(_param(c) for c in _RUN_COLUMNS)
     with conn.cursor() as cur:
         cur.execute(INSERT_RUN_SQL, params + (
             json.dumps(extra, default=str) if extra else None,
