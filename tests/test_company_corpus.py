@@ -40,6 +40,10 @@ def fake_company_corpus(monkeypatch):
 
     def iter_items(root=None, *, ciks=None, doctypes=None,
                    year_min=None, year_max=None, prefer="pdf"):
+        if doctypes is not None and not isinstance(doctypes, str):
+            raise TypeError(
+                f"doctypes must be a comma-separated str or None, got {type(doctypes)!r}"
+            )
         captured.update(
             root=root, ciks=ciks, doctypes=doctypes,
             year_min=year_min, year_max=year_max, prefer=prefer,
@@ -112,10 +116,22 @@ def test_arguments_forwarded(fake_company_corpus):
     cap = fake_company_corpus
     assert cap["root"] == str(Path("/data/bu"))
     assert cap["ciks"] == ["320193"]
-    assert cap["doctypes"] == ["A1", "C"]
+    assert cap["doctypes"] == "A1,C"
     assert cap["year_min"] == 2020
     assert cap["year_max"] == 2025
     assert cap["prefer"] == "text"
+
+
+def test_doctypes_list_is_joined_into_csv_string(fake_company_corpus):
+    fake_company_corpus["set_items"]([])
+    list(connector.iter_items(doctypes=["A1", "A3"]))
+    assert fake_company_corpus["doctypes"] == "A1,A3"
+
+
+def test_doctypes_csv_string_is_passed_through_unchanged(fake_company_corpus):
+    fake_company_corpus["set_items"]([])
+    list(connector.iter_items(doctypes="A1,A3"))
+    assert fake_company_corpus["doctypes"] == "A1,A3"
 
 
 def test_default_prefer_is_pdf(fake_company_corpus):

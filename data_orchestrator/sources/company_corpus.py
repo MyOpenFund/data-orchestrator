@@ -22,7 +22,7 @@ and ``url``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Optional, Sequence, Union
 
 from ..config import get_path
 from ..core import SourceItem
@@ -67,7 +67,7 @@ def iter_items(
     root: Optional[Path] = None,
     *,
     ciks: Optional[Sequence[str]] = None,
-    doctypes: Optional[Sequence[str]] = None,
+    doctypes: Union[Sequence[str], str, None] = None,
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
     prefer: str = "pdf",
@@ -85,7 +85,10 @@ def iter_items(
         comma-separated string (``"320193,789019"``).
     doctypes:
         Optional allow-list of filing-type / family codes (e.g. ``["A1"]`` for
-        10-K). ``None`` means "all".
+        10-K). Accepts a sequence (joined into a comma-separated string) or a
+        single comma-separated string (``"A1,A3"``), since the real
+        ``company_corpus.rag.iter_items`` only accepts ``str | None``.
+        ``None`` means "all".
     year_min / year_max:
         Inclusive year bounds.
     prefer:
@@ -101,10 +104,18 @@ def iter_items(
     if isinstance(ciks, str):
         ciks = [c.strip() for c in ciks.split(",") if c.strip()]
 
+    doctypes_arg: Optional[str]
+    if doctypes is None:
+        doctypes_arg = None
+    elif isinstance(doctypes, str):
+        doctypes_arg = doctypes
+    else:
+        doctypes_arg = ",".join(doctypes)
+
     for it in _iter_items(
         root=root_arg,
         ciks=list(ciks) if ciks else None,
-        doctypes=list(doctypes) if doctypes else None,
+        doctypes=doctypes_arg,
         year_min=year_min,
         year_max=year_max,
         prefer=prefer,
