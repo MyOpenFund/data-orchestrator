@@ -19,14 +19,16 @@ RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
 
 # The `runs` columns this writer fills, in INSERT order. Single source of
 # truth: the SQL below is built from it, and `insert_run_report` sweeps every
-# report key that is NOT in it into `extra` (JSONB) — the same rule the vault
-# ingester applies in `parse_run_line` (KNOWN_FIELDS), so the two writers of
-# this table agree on what `extra` holds. `corpus` is deliberately absent: the
-# orchestrator is corpus-agnostic and leaves that column NULL by design.
+# report key that is NOT in it into `extra` (JSONB) — mirroring the vault
+# ingester's `KNOWN_FIELDS` minus `corpus`, which this writer never emits (the
+# orchestrator is corpus-agnostic and leaves that column NULL by design).
 _RUN_COLUMNS = (
     "run_id", "tool", "command", "started_at", "finished_at",
     "outcome", "exit_code", "totals", "sources",
 )
+
+# Columns whose report value must be JSON-encoded before it hits the driver.
+_JSON_COLUMNS = frozenset({"totals", "sources"})
 
 INSERT_RUN_SQL = """
 INSERT INTO runs ({columns}, extra)
@@ -77,13 +79,13 @@ def insert_run_report(conn, report: dict) -> None:
     as in the vault ingester.
     """
     extra = {k: v for k, v in report.items() if k not in _RUN_COLUMNS}
+    params = tuple(
+        json.dumps(report[c]) if c in _JSON_COLUMNS else report[c]
+        for c in _RUN_COLUMNS
+    )
     with conn.cursor() as cur:
-        cur.execute(INSERT_RUN_SQL, (
-            report["run_id"], report["tool"], report["command"],
-            report["started_at"], report["finished_at"],
-            report["outcome"], report["exit_code"],
-            json.dumps(report["totals"]), json.dumps(report["sources"]),
-            json.dumps(extra) if extra else None,
+        cur.execute(INSERT_RUN_SQL, params + (
+            json.dumps(extra, default=str) if extra else None,
         ))
     conn.commit()
 

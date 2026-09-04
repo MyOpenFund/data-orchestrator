@@ -242,7 +242,8 @@ documents ingested while attempts errored — e.g. an embedding-dimension
 mismatch). A run that did no useful work never exits 0. Report fields that
 have no column of their own — notably the `error` text of a fatal run — are
 swept into `runs.extra` (JSONB, NULL when there are none), the same rule the
-vault's own runs ingester applies to `state/runs.jsonl` lines.
+vault's runs ingester applies to the `runs.jsonl` reports it ingests from
+central-bank-corpus.
 
 ## Collections & embedding model
 

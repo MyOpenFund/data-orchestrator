@@ -45,17 +45,27 @@ def test_run_ingest_populates_by_source(tmp_path):
 
 
 def test_insert_run_report_sql_contract():
-    from data_orchestrator.vault import insert_run_report
+    from data_orchestrator.vault import insert_run_report, _RUN_COLUMNS, _JSON_COLUMNS
     from tests.test_vault_ledger import FakeConn
 
+    report = {"run_id": "r1", "tool": "data-orchestrator",
+              "command": "vault", "started_at": "s", "finished_at": "f",
+              "outcome": "ok", "exit_code": 0,
+              "totals": {}, "sources": []}
     conn = FakeConn()
-    insert_run_report(conn, {"run_id": "r1", "tool": "data-orchestrator",
-                             "command": "vault", "started_at": "s", "finished_at": "f",
-                             "outcome": "ok", "exit_code": 0,
-                             "totals": {}, "sources": []})
+    insert_run_report(conn, report)
     sql, params = conn.executed[-1]
     assert "INSERT INTO runs" in sql and "ON CONFLICT (run_id) DO NOTHING" in sql
-    assert params[0] == "r1"
+
+    # Params must line up positionally with _RUN_COLUMNS regardless of
+    # column order — a full round-trip decode, not just a spot check.
+    by_column = dict(zip(_RUN_COLUMNS, params))
+    assert by_column["started_at"] == "s"
+    decoded = {
+        c: json.loads(v) if c in _JSON_COLUMNS else v
+        for c, v in by_column.items()
+    }
+    assert decoded == report
     assert conn.commits == 1
 
 
@@ -156,10 +166,11 @@ def test_insert_run_report_sweeps_non_column_fields_into_extra():
     insert_run_report(conn, rep)
 
     sql, params = conn.executed[-1]
-    assert "extra" in sql
+    assert ("run_id, tool, command, started_at, finished_at, outcome, "
+            "exit_code, totals, sources, extra") in sql
     assert sql.count("%s") == 10 and len(params) == 10
     extra = json.loads(params[-1])
-    assert extra["error"] == "RuntimeError: vault unreachable"
+    assert extra == {"error": "RuntimeError: vault unreachable"}
 
 
 def test_insert_run_report_extra_is_null_when_no_extra_fields():
