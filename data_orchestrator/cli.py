@@ -7,23 +7,23 @@ drives the eigenmind engine (a separate editable install, see ``README.md``)::
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
     data-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
 
-    data-orchestrator bottom_up_corpus --ciks 320193 --collection company-e5b-v1
-    data-orchestrator bottom_up_corpus --ciks 320193 --doctypes A1 --year-min 2024
+    data-orchestrator company --ciks 320193 --collection company-e5b-v1
+    data-orchestrator company --ciks 320193 --doctypes A1 --year-min 2024
 
 (equivalently ``python -m data_orchestrator.cli <source> ...``)
 
 The default collection is routed per corpus by
 ``routing.collection_name`` — ``{corpus}-{model_tag}-v1``, e.g.
 ``central-bank-e5b-v1`` for the ``cb_corpus``/``vault`` sources or
-``company-e5b-v1`` for ``bottom_up_corpus`` — for every source, never a
+``company-e5b-v1`` for ``company`` — for every source, never a
 hard-coded legacy name. Each disk source implies its own vault corpus
-(``cb_corpus`` -> ``central-bank``, ``bottom_up_corpus`` -> ``company``), so
+(``cb_corpus`` -> ``central-bank``, ``company`` -> ``company``), so
 ``--corpus`` defaults per-source; an explicit ``--corpus`` always wins.
 
 The vault (``rag_ingestions``) is the *default* resume mechanism: a re-run
 skips documents already recorded there. Pass ``--no-vault`` to fall back to a
 local JSON-lines ledger under ``<repo>/state/`` instead (disk sources —
-``cb_corpus``, ``bottom_up_corpus`` — only; the vault source's resume *is*
+``cb_corpus``, ``company`` — only; the vault source's resume *is*
 the vault anti-join in ``sources/vault.py``, so ``--no-vault`` is rejected
 there). ``--no-resume`` ignores the ledger and re-ingests everything; it is
 likewise rejected for the vault source (its anti-join always filters on the
@@ -44,7 +44,7 @@ from pathlib import Path
 from .core import Ledger, SourceItem, run_ingest, IngestStats
 from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
-from .sources import bottom_up_corpus as bottom_up_corpus_source
+from .sources import company_corpus as company_corpus_source
 
 # Ledger lives at the repo root (one level above this package), or wherever
 # ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide).
@@ -54,14 +54,14 @@ STATE_DIR = Path(
     )
 )
 # Selectable sources.
-SOURCES = ("cb_corpus", "bottom_up_corpus", "vault", "probe")
+SOURCES = ("cb_corpus", "company", "vault", "probe")
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
 # _count_vault_source).
 COUNT_KEYS = {
     "cb_corpus": ("bank_code", "doc_type"),
-    "bottom_up_corpus": ("cik", "doc_type"),
+    "company": ("cik", "doc_type"),
 }
 
 # Each disk source implies its own vault corpus, so --corpus can default
@@ -69,7 +69,7 @@ COUNT_KEYS = {
 # wins. Sources absent here (vault, probe) keep the "central-bank" default.
 IMPLIED_CORPUS = {
     "cb_corpus": "central-bank",
-    "bottom_up_corpus": "company",
+    "company": "company",
 }
 
 
@@ -91,8 +91,8 @@ def _build_cb_corpus_items(args: argparse.Namespace):
     )
 
 
-def _build_bottom_up_corpus_items(args: argparse.Namespace):
-    return bottom_up_corpus_source.iter_items(
+def _build_company_items(args: argparse.Namespace):
+    return company_corpus_source.iter_items(
         root=Path(args.root) if args.root else None,
         ciks=_csv(args.ciks),
         doctypes=_csv(args.doctypes),
@@ -228,11 +228,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source", choices=list(SOURCES), help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/, or the source's data dir)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
-    parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3 (cb_corpus) or A1 (bottom_up_corpus)")
+    parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3 (cb_corpus) or A1 (company)")
     parser.add_argument("--groups", help="comma list of doc groups, e.g. A,C")
-    parser.add_argument("--ciks", help="comma list of SEC CIK numbers, e.g. 320193,789019 (bottom_up_corpus source)")
+    parser.add_argument("--ciks", help="comma list of SEC CIK numbers, e.g. 320193,789019 (company source)")
     parser.add_argument("--prefer", choices=["pdf", "text"], default="pdf",
-                        help="(bottom_up_corpus source) artifact to ingest: rendered PDF "
+                        help="(company source) artifact to ingest: rendered PDF "
                              "(default) or cleaned text")
     parser.add_argument("--source-codes", help="comma list of vault source codes, e.g. ecb,fr")
     parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
@@ -257,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--corpus", default=None,
                         help="vault corpus this run belongs to (default: per-source — "
                              "central-bank for cb_corpus/vault/probe, company for "
-                             "bottom_up_corpus)")
+                             "company)")
     parser.add_argument("--count-only", action="store_true",
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Each disk source implies its own vault corpus; an explicit --corpus
     # always wins. Never a source-name collection fallback (item 3/4 of the
-    # bottom_up_corpus integration) — collection routing is always
+    # company_corpus integration) — collection routing is always
     # routing.collection_name(args.corpus) below.
     if args.corpus is None:
         args.corpus = IMPLIED_CORPUS.get(args.source, "central-bank")
@@ -307,8 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         items = _build_cb_corpus_items(args)
-    elif args.source == "bottom_up_corpus":
-        items = _build_bottom_up_corpus_items(args)
+    elif args.source == "company":
+        items = _build_company_items(args)
 
     if args.source == "vault":
         if args.no_vault:

@@ -1,28 +1,28 @@
-"""bottom_up_corpus source connector.
+"""company_corpus source connector.
 
-Thin shim over the ``bottom_up_corpus`` project's RAG ingestion contract
-(``bottom_up_corpus.rag.iter_items``). bottom_up_corpus is the **micro** layer of
+Thin shim over the ``company_corpus`` project's RAG ingestion contract
+(``company_corpus.rag.iter_items``). company_corpus is the **micro** layer of
 the corpus family: it discovers SEC EDGAR company filings, downloads and
 decomposes the complete submission, extracts clean text and renders each filing's
 primary document to a human-readable, page-anchored PDF. That rendered PDF is the
 artifact we ingest (it flows through the existing mvp-graph-rag PDF loader with no
 change); cleaned text is the fallback when no PDF exists.
 
-All of that corpus logic lives in the bottom_up_corpus project — this connector
+All of that corpus logic lives in the company_corpus project — this connector
 only maps its items onto this repo's :class:`..core.SourceItem` and registers it
 as a selectable source. Nothing is vendored here.
 
-bottom_up_corpus: https://github.com/jeulinmarc/bottom_up_corpus
+company_corpus: https://github.com/MyOpenFund/company-corpus
 Its ``SourceItem`` already mirrors this repo's (``doc_id``, ``path``, ``payload``)
 and its payload schema, citation format and family-weighting guidance are
-documented in ``bottom_up_corpus/docs/INGESTION_RAG.md``. The payload carries at
-least ``source="bottom_up_corpus"``, ``cik``, ``company``, ``doc_type``, ``year``
+documented in ``company_corpus/docs/INGESTION_RAG.md``. The payload carries at
+least ``source="company-corpus"``, ``cik``, ``company``, ``doc_type``, ``year``
 and ``url``.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Optional, Sequence, Union
 
 from ..config import get_path
 from ..core import SourceItem
@@ -30,33 +30,33 @@ from ..core import SourceItem
 # Name of the ``.env`` key holding this machine's corpus root. As with cb_corpus
 # the path is never hard-coded: it lives in ``.env`` (see ``.env.example``) or is
 # passed explicitly via the CLI ``--root`` flag. ``None`` is also acceptable —
-# ``bottom_up_corpus.rag.iter_items`` has its own default root resolution.
-ROOT_ENV_KEY = "BOTTOM_UP_CORPUS_ROOT"
+# ``company_corpus.rag.iter_items`` has its own default root resolution.
+ROOT_ENV_KEY = "COMPANY_CORPUS_ROOT"
 
 
 def default_root() -> Optional[Path]:
-    """Corpus root for this machine, read from ``BOTTOM_UP_CORPUS_ROOT`` in ``.env``.
+    """Corpus root for this machine, read from ``COMPANY_CORPUS_ROOT`` in ``.env``.
 
-    Returns ``None`` if it is not configured; bottom_up_corpus then falls back to
+    Returns ``None`` if it is not configured; company_corpus then falls back to
     its own default data dir (or the caller can pass an explicit ``--root``).
     """
     return get_path(ROOT_ENV_KEY)
 
 
 def _load_iter_items():
-    """Import ``bottom_up_corpus.rag.iter_items`` lazily with a helpful error.
+    """Import ``company_corpus.rag.iter_items`` lazily with a helpful error.
 
     Kept out of module import so this connector (and its tests) can be imported
-    without bottom_up_corpus installed; the dependency is only required to
+    without company_corpus installed; the dependency is only required to
     actually ingest.
     """
     try:
-        from bottom_up_corpus.rag import iter_items as _iter_items
+        from company_corpus.rag import iter_items as _iter_items
     except ImportError as exc:  # pragma: no cover — exercised via a stubbed module
         raise ImportError(
-            "bottom_up_corpus is not importable. Install it from GitHub, e.g.\n"
-            "    pip install 'bottom_up_corpus @ "
-            "git+https://github.com/jeulinmarc/bottom_up_corpus'\n"
+            "company_corpus is not importable. Install it from GitHub, e.g.\n"
+            "    pip install 'company-corpus @ "
+            "git+https://github.com/MyOpenFund/company-corpus'\n"
             "or `pip install -e .` a local checkout / add it to PYTHONPATH. "
             f"(original import error: {exc})"
         ) from exc
@@ -67,25 +67,28 @@ def iter_items(
     root: Optional[Path] = None,
     *,
     ciks: Optional[Sequence[str]] = None,
-    doctypes: Optional[Sequence[str]] = None,
+    doctypes: Union[Sequence[str], str, None] = None,
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
     prefer: str = "pdf",
 ) -> Iterator[SourceItem]:
-    """Yield one :class:`SourceItem` per bottom_up_corpus filing.
+    """Yield one :class:`SourceItem` per company_corpus filing.
 
     Parameters
     ----------
     root:
-        Corpus root. Defaults to the ``BOTTOM_UP_CORPUS_ROOT`` value from
+        Corpus root. Defaults to the ``COMPANY_CORPUS_ROOT`` value from
         ``.env``; if that is unset too, ``None`` is passed through so
-        bottom_up_corpus uses its own default data dir.
+        company_corpus uses its own default data dir.
     ciks:
         Optional allow-list of SEC CIK numbers. Accepts a sequence or a single
         comma-separated string (``"320193,789019"``).
     doctypes:
         Optional allow-list of filing-type / family codes (e.g. ``["A1"]`` for
-        10-K). ``None`` means "all".
+        10-K). Accepts a sequence (joined into a comma-separated string) or a
+        single comma-separated string (``"A1,A3"``), since the real
+        ``company_corpus.rag.iter_items`` only accepts ``str | None``.
+        ``None`` means "all".
     year_min / year_max:
         Inclusive year bounds.
     prefer:
@@ -101,15 +104,23 @@ def iter_items(
     if isinstance(ciks, str):
         ciks = [c.strip() for c in ciks.split(",") if c.strip()]
 
+    doctypes_arg: Optional[str]
+    if doctypes is None:
+        doctypes_arg = None
+    elif isinstance(doctypes, str):
+        doctypes_arg = doctypes
+    else:
+        doctypes_arg = ",".join(doctypes)
+
     for it in _iter_items(
         root=root_arg,
         ciks=list(ciks) if ciks else None,
-        doctypes=list(doctypes) if doctypes else None,
+        doctypes=doctypes_arg,
         year_min=year_min,
         year_max=year_max,
         prefer=prefer,
     ):
-        # bottom_up_corpus's SourceItem already exposes (doc_id, path, payload)
+        # company_corpus's SourceItem already exposes (doc_id, path, payload)
         # with the same meaning as ours; re-wrap into this repo's dataclass so the
         # core engine receives exactly the type it expects.
         yield SourceItem(

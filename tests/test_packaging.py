@@ -11,6 +11,7 @@ even though neither is exercised by the rest of the suite.
 """
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -81,3 +82,34 @@ def test_import_resolves_to_this_checkout():
     repo_root = Path(__file__).resolve().parents[1]
     resolved = Path(data_orchestrator.__file__).resolve()
     assert resolved.is_relative_to(repo_root)
+
+
+def test_no_bottom_up_corpus_references_remain():
+    """The pre-release company-filings source was re-pointed from the private
+    ``bottom_up_corpus`` to ``MyOpenFund/company-corpus`` (package
+    ``company_corpus``, CLI source name ``company``). Clean break, no
+    aliases: this pins that nothing in the tree still names the old
+    project/package, so a stray leftover reference is caught here rather
+    than surfacing as a confusing runtime import error later.
+
+    Self-excludes this test file (it necessarily mentions the old name in
+    its own docstring/name) the same way the rest of the suite would if it
+    ever needed to reference a banned string.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    this_file = Path(__file__).resolve()
+    try:
+        result = subprocess.run(
+            ["git", "grep", "-l", "-i", "bottom_up"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        pytest.skip("git not available")
+    if result.returncode == 128:
+        pytest.skip("not a git checkout")
+    assert result.returncode in (0, 1), result.stderr
+    hits = [line for line in result.stdout.splitlines() if line.strip()]
+    hits = [h for h in hits if (repo_root / h).resolve() != this_file]
+    assert hits == [], f"stray bottom_up references: {hits}"

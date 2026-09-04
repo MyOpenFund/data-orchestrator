@@ -32,7 +32,7 @@ except ImportError:  # eigenmind is an optional editable checkout
 DOTENV_KEYS = (
     "DATABASE_URL",
     "CB_CORPUS_ROOT",
-    "BOTTOM_UP_CORPUS_ROOT",
+    "COMPANY_CORPUS_ROOT",
     "QDRANT_HOST",
     "QDRANT_PORT",
     "DATA_ORCHESTRATOR_STATE_DIR",
