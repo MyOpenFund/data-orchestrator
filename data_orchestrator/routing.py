@@ -73,11 +73,11 @@ ROUTING: dict[str, CorpusRoute] = {
     ),
     "company": CorpusRoute(
         corpus="company",
-        root_env_key="BOTTOM_UP_CORPUS_ROOT",
-        # bottom_up_corpus (the "company" corpus, SEC EDGAR micro layer) has
+        root_env_key="COMPANY_CORPUS_ROOT",
+        # company_corpus (the "company" corpus, SEC EDGAR micro layer) has
         # no manifests feeding the vault yet, so its vault local_path
         # convention isn't settled — this connector still runs disk-only
-        # (bottom_up_corpus source, --no-vault). Revisit local_path_strip
+        # (company source, --no-vault). Revisit local_path_strip
         # once company documents/rag_ingestions rows exist to derive it from.
         local_path_strip="",
     ),

@@ -25,13 +25,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# bottom_up_corpus source connector (SEC EDGAR micro layer). Pulled from GitHub
+# company_corpus source connector (SEC EDGAR micro layer). Pulled from GitHub
 # rather than vendored: it owns all discovery/download/render logic and exposes
-# `bottom_up_corpus.rag.iter_items`. Heavy + has its own system needs (Chrome for
+# `company_corpus.rag.iter_items`. Heavy + has its own system needs (Chrome for
 # PDF rendering), hence an opt-in extra. Equivalent to a local checkout installed
 # with `pip install -e .`, or simply put on PYTHONPATH.
-bottom_up = [
-    "bottom_up_corpus @ git+https://github.com/jeulinmarc/bottom_up_corpus",
+company = [
+    "company-corpus @ git+https://github.com/MyOpenFund/company-corpus",
 ]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 
