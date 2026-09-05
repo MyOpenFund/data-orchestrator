@@ -45,17 +45,27 @@ def test_run_ingest_populates_by_source(tmp_path):
 
 
 def test_insert_run_report_sql_contract():
-    from data_orchestrator.vault import insert_run_report
+    from data_orchestrator.vault import insert_run_report, _RUN_COLUMNS, _JSON_COLUMNS
     from tests.test_vault_ledger import FakeConn
 
+    report = {"run_id": "r1", "tool": "data-orchestrator",
+              "command": "vault", "started_at": "s", "finished_at": "f",
+              "outcome": "ok", "exit_code": 0,
+              "totals": {}, "sources": []}
     conn = FakeConn()
-    insert_run_report(conn, {"run_id": "r1", "tool": "data-orchestrator",
-                             "command": "vault", "started_at": "s", "finished_at": "f",
-                             "outcome": "ok", "exit_code": 0,
-                             "totals": {}, "sources": []})
+    insert_run_report(conn, report)
     sql, params = conn.executed[-1]
     assert "INSERT INTO runs" in sql and "ON CONFLICT (run_id) DO NOTHING" in sql
-    assert params[0] == "r1"
+
+    # Params must line up positionally with _RUN_COLUMNS regardless of
+    # column order — a full round-trip decode, not just a spot check.
+    by_column = dict(zip(_RUN_COLUMNS, params))
+    assert by_column["started_at"] == "s"
+    decoded = {
+        c: json.loads(v) if c in _JSON_COLUMNS else v
+        for c, v in by_column.items()
+    }
+    assert decoded == report
     assert conn.commits == 1
 
 
@@ -138,3 +148,60 @@ def test_report_totals_carry_the_path_metadata_counter():
     rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00")
     assert rep["totals"]["docs_path_metadata"] == 5
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
+
+
+def test_insert_run_report_sweeps_non_column_fields_into_extra():
+    """R4: `_fatal_report` puts the exception text under an ``error`` key, which
+    is not a `runs` column — before this, the vault path silently dropped it and
+    the message survived only in the ``--no-vault`` JSONL. Non-column keys go to
+    ``extra`` (JSONB), the same rule the vault ingester's ``parse_run_line``
+    applies to the other writer of this table."""
+    from data_orchestrator.cli import _fatal_report
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    rep = _fatal_report("vault", "2026-09-04T00:00:00+00:00",
+                        RuntimeError("vault unreachable"))
+    conn = FakeConn()
+    insert_run_report(conn, rep)
+
+    sql, params = conn.executed[-1]
+    assert ("run_id, tool, command, started_at, finished_at, outcome, "
+            "exit_code, totals, sources, extra") in sql
+    assert sql.count("%s") == 10 and len(params) == 10
+    extra = json.loads(params[-1])
+    assert extra == {"error": "RuntimeError: vault unreachable"}
+
+
+def test_insert_run_report_extra_is_null_when_no_extra_fields():
+    """An empty sweep must be SQL NULL, not the string ``'{}'`` — matching the
+    ingester, so `extra IS NULL` means the same thing for both writers."""
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    conn = FakeConn()
+    insert_run_report(conn, {"run_id": "r1", "tool": "data-orchestrator",
+                             "command": "vault", "started_at": "s", "finished_at": "f",
+                             "outcome": "ok", "exit_code": 0,
+                             "totals": {}, "sources": []})
+    _sql, params = conn.executed[-1]
+    assert params[-1] is None
+
+
+def test_insert_run_report_absent_columns_become_sql_null():
+    """A report missing ``totals``/``sources`` (e.g. an early-failure report)
+    must not raise KeyError: absent columns map to SQL NULL, same as the
+    vault ingester's absent-key rule."""
+    from data_orchestrator.vault import insert_run_report, _RUN_COLUMNS
+    from tests.test_vault_ledger import FakeConn
+
+    conn = FakeConn()
+    report = {"run_id": "r1", "tool": "data-orchestrator",
+              "command": "vault", "started_at": "s", "finished_at": "f",
+              "outcome": "error", "exit_code": 1}
+    insert_run_report(conn, report)
+
+    _sql, params = conn.executed[-1]
+    by_column = dict(zip(_RUN_COLUMNS, params))
+    assert by_column["totals"] is None
+    assert by_column["sources"] is None

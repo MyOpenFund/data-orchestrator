@@ -239,7 +239,11 @@ Every run writes a telemetry row to the vault's `runs` table (or appends
 `state/runs.jsonl` with `--no-vault`): run id, per-source counters and the
 outcome. Exit codes are honest: `0` clean, `1` fatal, `3` degraded (zero
 documents ingested while attempts errored — e.g. an embedding-dimension
-mismatch). A run that did no useful work never exits 0.
+mismatch). A run that did no useful work never exits 0. Report fields that
+have no column of their own — notably the `error` text of a fatal run — are
+swept into `runs.extra` (JSONB, NULL when there are none), the same rule the
+vault's runs ingester applies to the `runs.jsonl` reports it ingests from
+central-bank-corpus.
 
 ## Collections & embedding model
 

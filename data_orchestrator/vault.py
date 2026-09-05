@@ -17,12 +17,29 @@ from .config import load_dotenv
 
 RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
 
+# The `runs` columns this writer fills, in INSERT order. Single source of
+# truth: the SQL below is built from it, and `insert_run_report` sweeps every
+# report key that is NOT in it into `extra` (JSONB). Mirrors the vault
+# ingester's `KNOWN_FIELDS` (`vault/ingestion/ingest_runs.py`). The vault's
+# `runs.corpus` column (nullable; being added by the vault substrate chantier)
+# is deliberately NOT written here: the orchestrator is corpus-agnostic and
+# leaves it NULL, so this insert needs no schema coordination.
+_RUN_COLUMNS = (
+    "run_id", "tool", "command", "started_at", "finished_at",
+    "outcome", "exit_code", "totals", "sources",
+)
+
+# Columns whose report value must be JSON-encoded before it hits the driver.
+_JSON_COLUMNS = frozenset({"totals", "sources"})
+
 INSERT_RUN_SQL = """
-INSERT INTO runs (run_id, tool, command, started_at, finished_at,
-                  outcome, exit_code, totals, sources)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+INSERT INTO runs ({columns}, extra)
+VALUES ({placeholders}, %s)
 ON CONFLICT (run_id) DO NOTHING
-"""
+""".format(
+    columns=", ".join(_RUN_COLUMNS),
+    placeholders=", ".join(["%s"] * len(_RUN_COLUMNS)),
+)
 
 UPSERT_INGESTION_SQL = """
 INSERT INTO rag_ingestions (
@@ -57,13 +74,26 @@ def insert_run_report(conn, report: dict) -> None:
     Best-effort by contract: the caller (cli._build_report's consumers)
     tolerates a raising insert with a warning rather than letting it mask
     the run's own outcome.
+
+    Report keys outside ``_RUN_COLUMNS`` (notably ``error``, set by
+    ``cli._fatal_report``) are swept into ``extra``; an empty sweep writes SQL
+    NULL rather than ``'{}'``, so ``extra IS NULL`` means the same thing here
+    as in the vault ingester.
+
+    A report missing one of ``_RUN_COLUMNS`` (e.g. no ``totals``/``sources``
+    on an early failure) writes SQL NULL for that column, same as an absent
+    key does in the vault ingester — it never raises ``KeyError``.
     """
+    extra = {k: v for k, v in report.items() if k not in _RUN_COLUMNS}
+
+    def _param(c):
+        v = report.get(c)
+        return json.dumps(v) if c in _JSON_COLUMNS and v is not None else v
+
+    params = tuple(_param(c) for c in _RUN_COLUMNS)
     with conn.cursor() as cur:
-        cur.execute(INSERT_RUN_SQL, (
-            report["run_id"], report["tool"], report["command"],
-            report["started_at"], report["finished_at"],
-            report["outcome"], report["exit_code"],
-            json.dumps(report["totals"]), json.dumps(report["sources"]),
+        cur.execute(INSERT_RUN_SQL, params + (
+            json.dumps(extra, default=str) if extra else None,
         ))
     conn.commit()
 
