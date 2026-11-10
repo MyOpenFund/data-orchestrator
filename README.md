@@ -73,7 +73,7 @@ via their own connector (`--no-vault`) in the meantime:
    | `DATABASE_URL` | vault Postgres, e.g. `postgresql://user:pass@host:5432/documents` |
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `COMPANY_CORPUS_ROOT` | local root of the company_corpus (SEC EDGAR) data dir — optional, only needed for the `company` disk fallback; unset falls back to company_corpus's own default data dir |
-   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port>` (the engine's store, as constructed) and warns on stderr when the port is 6333 |
+   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port>` (the engine's store, as constructed) and warns on stderr when the port is 6333. A set `QDRANT_PORT` must be a plain integer in `1..65535` (surrounding whitespace ignored): empty, signed, decimal or followed by an inline `# comment` is an error on every ingest run (exit 2, before any work) |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
    | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching (a relative path is resolved against the current directory; the absolute path is what is read and printed); a missing file is an error (exit 2 from the CLI, `FileNotFoundError` for a library caller) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
@@ -100,9 +100,11 @@ via their own connector (`--no-vault`) in the meantime:
   engine's store is constructed — read from that store, i.e. after
   eigenmind's own python-dotenv ran at its first import (which can still set
   a `QDRANT_*` key our `.env` left unset) — with a stderr `warning:` on port
-  6333 (the legacy store; compared numerically, an empty value reads as the
-  default). `--count-only` and `probe` never touch Qdrant and print no
-  `Qdrant:` line.
+  6333 (the legacy store; compared numerically, `06333` is 6333). A
+  `QDRANT_PORT` that is set but is not a plain integer in `1..65535` (empty
+  included) stops an ingest run with an `error:` and exit 2 before any work,
+  rather than let the engine fail mid-run. `--count-only` and `probe` never
+  touch Qdrant, do not check `QDRANT_PORT` and print no `Qdrant:` line.
 - **Literal values.** No `$VAR` expansion, surrounding quotes stripped, and
   **no inline comments**: a `#` after a value is part of the value. A key
   already set in the real environment always wins over the file.
@@ -247,8 +249,8 @@ data-orchestrator vault --corpus central-bank --ocr always
 | flag | meaning |
 |---|---|
 | `--corpus NAME` | vault corpus to operate on (default: per-source — `central-bank` for `vault`/`cb_corpus`/`probe`, `company` for `company`) |
-| `--no-vault` | (cb_corpus/company) use the local JSON-lines file ledger instead of the vault's `rag_ingestions`, and append the run report to `state_dir()/runs.jsonl` (no vault state is read or written). Rejected for the `vault` source (exit 2); **ignored by `probe`**, which always reads and writes the vault |
-| `--ledger PATH` | (cb_corpus/company with `--no-vault`) path of the file ledger (default `state_dir()/<collection>.jsonl`); ignored otherwise |
+| `--no-vault` | (cb_corpus/company) use the local JSON-lines file ledger instead of the vault's `rag_ingestions`, and append the run report to `state_dir()/runs.jsonl` (no vault state is read or written). Rejected for the `vault` source and for `probe` (exit 2): both always read and write the vault |
+| `--ledger PATH` | (cb_corpus/company with `--no-vault`) path of the file ledger (default `state_dir()/<collection>.jsonl`); ignored by the other ingest runs, rejected for `probe` (exit 2) |
 | `--ocr auto\|always\|never` | OCR fallback for scanned pages (default `auto`: defers to the engine's tesseract availability check) |
 | `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` via `routing.collection_name` — the same resolution for every source, using `--corpus` or the source's implied corpus) |
 | `--source-codes a,b` | (vault source) only these `source_code` values, e.g. `ecb,fr` |
@@ -262,8 +264,8 @@ data-orchestrator vault --corpus central-bank --ocr always
 | `--root PATH` | (cb_corpus/company sources) corpus root override |
 | `--limit N` | stop after N newly ingested docs; for `probe`, probe at most N documents (`N >= 1`; `0` or negative is an error, exit 2) |
 | `--progress-every N` | progress line every N documents (`N >= 1`, default 25) |
-| `--no-resume` | (disk sources) ignore the resume ledger, re-ingest everything. **Rejected for the `vault` source** (exit 2), by design: its resume *is* the `documents`/`rag_ingestions` anti-join, and a policy change means a fresh collection — re-ingest into a new `--collection` name. Re-ingesting into the same collection would leave stale chunks behind when the new chunking yields fewer chunks than the points already stored |
-| `--count-only` | just count matching documents, do not ingest (cb_corpus, company, vault; **ignored by `probe`**, which runs); for `vault`, also the unsupported documents and their per-source split. A NULL `source_code` is counted under the corpus name — the label the run report's `sources[]` uses (`core.source_label`) — and a NULL `doc_type` as `unknown`. No run report, no `Qdrant:` line |
+| `--no-resume` | (disk sources) ignore the resume ledger, re-ingest everything. **Rejected for the `vault` source** (exit 2), by design: its resume *is* the `documents`/`rag_ingestions` anti-join, and a policy change means a fresh collection — re-ingest into a new `--collection` name. Re-ingesting into the same collection would leave stale chunks behind when the new chunking yields fewer chunks than the points already stored. Also rejected for `probe` (exit 2), which is resumable by construction |
+| `--count-only` | just count matching documents, do not ingest (cb_corpus, company, vault; **rejected for `probe`**, exit 2); for `vault`, also the unsupported documents and their per-source split. A NULL `source_code` is counted under the corpus name — the label the run report's `sources[]` uses (`core.source_label`) — and a NULL `doc_type` as `unknown`. No run report, no `Qdrant:` line |
 
 `--include-html` was removed (argparse rejects it, exit 2): eigenmind has no
 HTML reader, so every such file was a per-document error. HTML is converted to
@@ -295,11 +297,17 @@ or supported. Mime values are normalised first: lower-cased, parameters
 dropped (`text/plain; charset=utf-8` → `text/plain`), whitespace trimmed, blank
 = NULL. So a supported mime on another extension (`application/pdf` +
 `.html`) and a row with no `local_path` are unsupported. Unsupported rows are
-never offered to the engine; they are counted as `docs_unsupported` (run
-report totals and each `sources[]` entry, also for a source code that has only
-unsupported documents; a NULL `source_code` is filed under the corpus name, as
-for the ingested ones) and never degrade a run. Disk sources do not report the
-key (they cannot know).
+never offered to the engine and never degrade a run. A vault run reports them
+three ways: `totals.docs_unsupported` (the sum); `docs_unsupported` on each
+`sources[]` entry (`0` when none) — `sources[]` lists only the source codes
+the run actually touched, so a source code with only unsupported documents is
+not there; and the full per-source split, every source code included, as
+`unsupported_by_source` (a JSON object sorted by key, stored in
+`runs.extra->'unsupported_by_source'`, written on every vault run, `{}` when
+there are none; a fatal run keeps it when the count was computed before the
+failure). A NULL `source_code` is filed under the corpus name, as for
+the ingested ones. Before each run the CLI prints `Skipping N document(s)…`
+with the count. Disk sources report none of these keys (they cannot know).
 
 ## The write protocol
 
@@ -320,9 +328,10 @@ Every ingest run (`vault`, `cb_corpus`, `company`) writes a telemetry row to
 the vault's `runs` table (or appends `state_dir()/runs.jsonl` with
 `--no-vault`): run id, `corpus`, per-source counters and the outcome — on a
 fatal error too, best effort (a vault that cannot be reached cannot record it;
-the failure is said on stderr). **No report** is written by `--count-only`, by
-`probe`, or by a run stopped by a pre-flight error (exit 1 or 2, before any
-work). Exit codes are honest:
+the failure is said on stderr, `warning: failed to write run report to vault:`
+or, with `--no-vault`, `warning: failed to append run report:`). **No report**
+is written by `--count-only`, by `probe`, or by a run stopped by a pre-flight
+error (exit 1 or 2, before any work). Exit codes are honest:
 
 - `0` **ok**;
 - `3` **degraded** when (a) nothing was ingested while attempts failed, or
@@ -335,23 +344,35 @@ work). Exit codes are honest:
   dimension cannot be verified: either one is refused before any document,
   whether it pre-existed or a concurrent run just created it); also a
   pre-flight error (unknown `--corpus`, missing corpus root or `--root`, a
-  cb_corpus root without manifest), with no report;
+  cb_corpus root without manifest), with no report; also a vault failure
+  (missing `DATABASE_URL`, unreachable database, failing query) under `probe`
+  or `vault --count-only`, said as `error: fatal: <Type>: <message>` (no
+  traceback, no report);
 - `2` **usage/config error**, before any work and with no report: bad
   arguments (argparse), `--limit`/`--progress-every` below 1, `--no-vault` or
-  `--no-resume` on the `vault` source, a missing `DATA_ORCHESTRATOR_DOTENV`
+  `--no-resume` on the `vault` source, `--count-only`, `--no-vault`,
+  `--no-resume` or `--ledger` on `probe`, a missing `DATA_ORCHESTRATOR_DOTENV`
   file, an invalid `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` or
-  `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`.
+  `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, and, on an ingest run, a set
+  `QDRANT_PORT` that is not a plain integer in `1..65535`.
 
 `runs.corpus` is now written on every report (success and fatal, all
 sources). **Caveat:** the vault health views `runs_sources`,
 `sources_without_cadence` and `source_health` group on `(corpus,
 source_code)` without filtering on `tool`; until the vault follow-up filters
 them on the crawler tools, orchestrator runs count there as crawler runs of
-that source.
+the sources they list. Only the source codes a run actually touched appear in
+`runs.sources` (the full unsupported split lives in
+`extra->'unsupported_by_source'`, which those views do not read), but a run
+still touches every source code its selection covers: until the views filter
+on `tool`, scope the first real runs with `--source-codes`.
 
 Report fields that have no column of their own are swept into `runs.extra`
 (JSONB, NULL when there are none), the same rule the vault's runs ingester
-applies to central-bank-corpus's `runs.jsonl`. A fatal run's reason is
+applies to central-bank-corpus's `runs.jsonl`. A `vault` run carries
+`unsupported_by_source` (even `{}`) whenever its unsupported count was computed
+— every successful one, so a successful `vault` run's `extra` is never NULL;
+a disk source's successful run has a NULL `extra`. A fatal run's reason is
 `extra->>'fatal'` (capped at 500 characters, the key central-bank-corpus
 writes); rows written before 2026-11 carry it as `extra->>'error'`, so a reader
 covering both uses `coalesce(extra->>'fatal', extra->>'error')`.
@@ -402,6 +423,9 @@ converges to a no-op on re-run. Each document's `UPDATE` runs inside its own
 `SAVEPOINT`, so one failing row (a corrupt PDF path, a constraint) can never
 poison the whole batch's transaction — it is rolled back to the savepoint and
 counted as an error, while every other document in the batch still commits.
+`--count-only`, `--no-vault`, `--no-resume` and `--ledger` are rejected
+(exit 2); `--limit N` probes at most N documents. A vault failure (missing
+`DATABASE_URL`, unreachable database) is an `error: fatal:` line and exit 1.
 
 ## Testing
 
