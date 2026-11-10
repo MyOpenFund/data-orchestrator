@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS runs (
     exit_code INTEGER NOT NULL,
     totals JSONB,
     sources JSONB,
+    corpus TEXT,
     extra JSONB,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -134,9 +135,8 @@ def qdrant_addr():
 
 
 @pytest.fixture()
-def clean_state(pg_url, qdrant_addr):
-    """Fresh vault tables and an empty Qdrant between tests."""
-    from qdrant_client import QdrantClient
+def clean_pg(pg_url):
+    """Fresh vault tables (Postgres only: for tests that never reach Qdrant)."""
     conn = psycopg2.connect(pg_url)
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -144,6 +144,14 @@ def clean_state(pg_url, qdrant_addr):
                     "DROP TABLE IF EXISTS runs;")
         cur.execute(SCHEMA_SQL)
     conn.close()
+    return pg_url
+
+
+@pytest.fixture()
+def clean_state(clean_pg, qdrant_addr):
+    """Fresh vault tables and an empty Qdrant between tests."""
+    from qdrant_client import QdrantClient
+    pg_url = clean_pg
     client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])
     for coll in client.get_collections().collections:
         client.delete_collection(coll.name)
@@ -208,9 +216,9 @@ def write_note_md(path):
 def corpus_dir(tmp_path):
     """Adversarial mini-corpus: 2-page text PDF, empty PDF, markdown note.
 
-    Files sit flat at the corpus root — this fixture backs wave-1 tests,
+    Files sit flat at the corpus root — this fixture backs the disk-source tests,
     which build SourceItem paths directly and never go through the vault's
-    local_path/CB_CORPUS_ROOT resolver. Wave-2 and probe end-to-end tests
+    local_path/CB_CORPUS_ROOT resolver. Vault-source and probe end-to-end tests
     override this fixture locally with a realistic nested "raw/..." layout
     (see their own conftest-shadowing corpus_dir) to exercise that resolver.
     """

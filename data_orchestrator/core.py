@@ -14,6 +14,12 @@ Responsibilities the core owns (so sources don't have to):
   spans documents.
 
 A *source* only has to yield :class:`SourceItem` objects.
+
+eigenmind is imported on first use, never at import: ``cli.main`` must load
+this repo's ``.env`` before eigenmind's python-dotenv runs (issue #8). The
+engine entry points below are thin lazy wrappers kept as module attributes, so
+tests can still monkeypatch ``core.chunk_with_chunknorris``, ``core.detect_device``,
+``core.EmbeddingModel`` and ``core.QdrantStore``.
 """
 from __future__ import annotations
 
@@ -26,13 +32,48 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from chunknorris.exceptions import TextNotFoundException
-from eigenmind.config import BATCH_SIZE
-from eigenmind.core.chunking import chunk_with_chunknorris
-from eigenmind.core.embeddings import EmbeddingModel, detect_device
-from eigenmind.vectordb.store import QdrantStore
 from qdrant_client.models import PointStruct
 
 from .routing import embedding_model_name
+
+# ---------------------------------------------------------------------------
+# Lazy engine entry points (issue #8: no eigenmind import at module import)
+# ---------------------------------------------------------------------------
+def chunk_with_chunknorris(filepath, use_ocr=None):
+    from eigenmind.core.chunking import chunk_with_chunknorris as _chunk
+    return _chunk(filepath, use_ocr=use_ocr)
+
+
+def detect_device():
+    from eigenmind.core.embeddings import detect_device as _detect
+    return _detect()
+
+
+def EmbeddingModel(**kwargs):  # noqa: N802 — stands in for the engine class
+    from eigenmind.core.embeddings import EmbeddingModel as _Model
+    return _Model(**kwargs)
+
+
+def QdrantStore():  # noqa: N802 — stands in for the engine class
+    from eigenmind.vectordb.store import QdrantStore as _Store
+    return _Store()
+
+
+def _default_batch_size() -> int:
+    """eigenmind's upsert batch size, read on first use (not at import)."""
+    from eigenmind.config import BATCH_SIZE
+    return BATCH_SIZE
+
+
+def _resolve_batch_size(batch_size: int | None) -> int:
+    """``None`` -> the engine default; an explicit value is used as given and
+    must be >= 1 (``0`` would otherwise silently fall back to the default)."""
+    if batch_size is None:
+        return _default_batch_size()
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    return batch_size
+
 
 # CLI --ocr mode -> engine use_ocr argument. "auto" defers to the engine's
 # availability check (None), so a machine without tesseract degrades to
@@ -134,9 +175,28 @@ class Ledger:
 # ---------------------------------------------------------------------------
 # Per-source_code stats — feeds the run-report's "sources" breakdown
 # ---------------------------------------------------------------------------
+def source_label(payload_or_code, corpus: str | None = None) -> str:
+    """The ``sources[]`` key a document is counted under — the ONE rule shared
+    by :func:`_bump`, ``sources.vault.count_unsupported`` and the vault
+    ``--count-only`` breakdown, so they cannot drift apart.
+
+    ``payload_or_code`` is a payload dict (its ``source_code``, else its
+    ``bank_code``, else its ``corpus``) or a bare source code (a SQL
+    ``GROUP BY d.source_code`` value). An empty/NULL code falls back to the
+    payload's ``corpus``, then to ``corpus``, then to ``"unknown"`` — so a
+    vault document with a NULL source_code is filed under its corpus name
+    whichever way it was counted.
+    """
+    if isinstance(payload_or_code, dict):
+        code = payload_or_code.get("source_code") or payload_or_code.get("bank_code")
+        corpus = payload_or_code.get("corpus") or corpus
+    else:
+        code = payload_or_code
+    return code or corpus or "unknown"
+
+
 def _bump(stats: IngestStats, item: SourceItem, *, new: int = 0, failed: int = 0) -> None:
-    code = (item.payload.get("source_code") or item.payload.get("bank_code")
-            or item.payload.get("corpus", "unknown"))
+    code = source_label(item.payload)
     entry = stats.by_source.setdefault(code, {"docs_seen": 0, "docs_new": 0, "docs_failed": 0})
     entry["docs_seen"] += 1
     entry["docs_new"] += new
@@ -159,16 +219,17 @@ def ingest_item(
     item: SourceItem,
     collection: str,
     *,
-    store: QdrantStore,
-    embedder: EmbeddingModel,
+    store: object,
+    embedder: object,
     ocr: str = "auto",
-    batch_size: int = BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> int:
     """Chunk, embed and upsert one document. Returns chunks written.
 
     All of this document's points reach Qdrant before the caller records it
     in the ledger (write protocol) — batching never spans documents.
     """
+    batch_size = _resolve_batch_size(batch_size)
     try:
         chunks = chunk_with_chunknorris(str(item.path), use_ocr=OCR_TO_ENGINE[ocr])
     except TextNotFoundException:
@@ -226,17 +287,72 @@ def ingest_item(
     return len(points)
 
 
+def _ensure_collection(store, name: str, dim: int) -> None:
+    """Create ``name`` if missing, surviving a concurrent creator (issue #6),
+    then verify the stored vector configuration against the model.
+
+    eigenmind's ``ensure_collection`` is get-then-create: two first runs both
+    see "not found" and the loser's create raises a 409. If the collection
+    exists once the call has failed, the other process created it: carry on.
+    Any other failure — including one while checking for the race — is
+    re-raised as the original error (``from None``).
+
+    One verification path follows, whether ``ensure_collection`` returned or
+    the race was lost: ``store.client.get_collection`` is read once and the
+    collection is refused when its vectors have no single ``size`` (a
+    named-vector collection: its dimension cannot be verified, and
+    eigenmind's own return value would merely echo the requested one) or a
+    size other than the model's (a 768-d upsert into a 384-d collection
+    would fail every document). If that read fails on the normal path the
+    failure propagates as is; after a lost race it reports the original
+    error, as above.
+    """
+    lost_race: Exception | None = None
+    try:
+        store.ensure_collection(name, dim)
+    except Exception as exc:
+        # Any failure while checking the race reports the ORIGINAL error: it
+        # is the one the operator needs; the follow-up is noise.
+        try:
+            exists = store.client.collection_exists(name)
+        except Exception:
+            raise exc from None
+        if not exists:
+            raise
+        lost_race = exc
+    try:
+        info = store.client.get_collection(collection_name=name)
+    except Exception:
+        if lost_race is None:
+            raise
+        raise lost_race from None
+    size = getattr(info.config.params.vectors, "size", None)
+    if size is None:
+        raise RuntimeError(
+            f"collection {name!r}: cannot verify the dimension of a "
+            f"named-vector collection (the embedding model produces {dim}-d): "
+            "use another --collection"
+        )
+    stored = int(size)
+    if stored != dim:
+        raise RuntimeError(
+            f"collection {name!r} stores {stored}-d vectors but the embedding "
+            f"model produces {dim}-d: use another --collection"
+        )
+
+
 def run_ingest(
     items: Iterable[SourceItem],
     *,
     collection: str,
     ledger=None,
     ocr: str = "auto",
-    batch_size: int = BATCH_SIZE,
+    batch_size: int | None = None,
     limit: Optional[int] = None,
     on_progress: Optional[Callable[[IngestStats, SourceItem, str], None]] = None,
-    store: QdrantStore | None = None,
-    embedder: EmbeddingModel | None = None,
+    store: object | None = None,
+    embedder: object | None = None,
+    on_target: Optional[Callable[[object, object], None]] = None,
 ) -> IngestStats:
     """Ingest a stream of items into ``collection``.
 
@@ -246,17 +362,26 @@ def run_ingest(
     and ``embedder`` are injectable for tests; by default a QdrantStore and
     an EmbeddingModel (loaded once, on the best available device) are created
     and the embedder is released at the end.
+
+    ``on_target(host, port)`` is called once, right after the store is
+    constructed and before any collection work, with the store's ``host`` and
+    ``port`` attributes (``None`` when it has none): the Qdrant the run really
+    writes to, as eigenmind resolved it AFTER its own python-dotenv ran at
+    first import — which can set keys this repo's loader did not.
     """
     stats = IngestStats()
+    batch_size = _resolve_batch_size(batch_size)
     owns_embedder = embedder is None
     store = store or QdrantStore()
+    if on_target is not None:
+        on_target(getattr(store, "host", None), getattr(store, "port", None))
     embedder = embedder or EmbeddingModel(
         device=detect_device(), model_name=embedding_model_name()
     )
     try:
         # Inside the try/finally that releases an owned embedder: a raising
         # ensure_collection must not leak it.
-        store.ensure_collection(collection, embedder.dim)
+        _ensure_collection(store, collection, embedder.dim)
         for item in items:
             stats.docs_seen += 1
 

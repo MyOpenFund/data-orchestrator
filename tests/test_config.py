@@ -82,3 +82,56 @@ def test_an_explicit_path_is_read_even_after_the_process_wide_load(tmp_path, mon
     monkeypatch.setattr(config, "_LOADED", True)
     assert config.load_dotenv(_env_file(tmp_path, "DATA_ORCHESTRATOR_TEST_KEY=value\n")) is True
     assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "value"
+
+
+def test_loaded_dotenv_reports_the_file_the_search_read(tmp_path, monkeypatch):
+    env = _env_file(tmp_path, "DATA_ORCHESTRATOR_TEST_KEY=value\n")
+    monkeypatch.setattr(config, "find_dotenv", lambda: env)
+    assert config.loaded_dotenv() is None
+    assert config.load_dotenv() is True
+    assert config.loaded_dotenv() == env
+
+
+def test_loaded_dotenv_is_none_when_no_file_was_found():
+    assert config.load_dotenv() is False  # the autouse fixture pins find_dotenv to None
+    assert config.loaded_dotenv() is None
+
+
+def test_explicit_dotenv_env_replaces_the_search(tmp_path, monkeypatch):
+    searched = _env_file(tmp_path, "DATA_ORCHESTRATOR_TEST_KEY=searched\n")
+    explicit = tmp_path / "explicit.env"
+    explicit.write_text("DATA_ORCHESTRATOR_TEST_KEY=explicit\n", encoding="utf-8")
+    monkeypatch.setattr(config, "find_dotenv", lambda: searched)
+    monkeypatch.setenv(config.DOTENV_ENV, str(explicit))
+    monkeypatch.delenv("DATA_ORCHESTRATOR_TEST_KEY", raising=False)
+    assert config.load_dotenv() is True
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "explicit"
+    assert config.loaded_dotenv() == explicit
+
+
+def test_explicit_dotenv_env_naming_a_missing_file_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.DOTENV_ENV, str(tmp_path / "nope.env"))
+    import pytest
+    with pytest.raises(FileNotFoundError, match="DATA_ORCHESTRATOR_DOTENV"):
+        config.load_dotenv()
+
+
+def test_a_relative_explicit_dotenv_is_loaded_and_reported_absolute(tmp_path, monkeypatch):
+    (tmp_path / "conf").mkdir()
+    (tmp_path / "conf" / "x.env").write_text("DATA_ORCHESTRATOR_TEST_KEY=rel\n",
+                                              encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(config.DOTENV_ENV, "conf/x.env")
+    monkeypatch.delenv("DATA_ORCHESTRATOR_TEST_KEY", raising=False)
+    assert config.load_dotenv() is True
+    assert config.loaded_dotenv() == tmp_path.resolve() / "conf" / "x.env"
+    assert config.loaded_dotenv().is_absolute()
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "rel"
+
+
+def test_a_missing_relative_explicit_dotenv_names_the_resolved_path(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(config.DOTENV_ENV, "nope.env")
+    with pytest.raises(FileNotFoundError, match=str(tmp_path.resolve() / "nope.env")):
+        config.load_dotenv()

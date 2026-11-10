@@ -41,18 +41,26 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import Ledger, SourceItem, run_ingest, IngestStats
-from .routing import collection_name
+from . import config, policy
+from .core import Ledger, SourceItem, run_ingest, IngestStats, source_label
+from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
 
-# Ledger lives at the repo root (one level above this package), or wherever
-# ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide).
-STATE_DIR = Path(
-    os.environ.get(
-        "DATA_ORCHESTRATOR_STATE_DIR", Path(__file__).resolve().parents[1] / "state"
-    )
-)
+
+def state_dir() -> Path:
+    """Directory of the ``--no-vault`` file ledger and run reports.
+
+    ``DATA_ORCHESTRATOR_STATE_DIR`` (useful once installed site-wide), else
+    ``<repo>/state`` (one level above this package). Read at call time, never
+    at import: the key may come from the ``.env`` that ``main()`` loads first.
+    """
+    value = os.environ.get("DATA_ORCHESTRATOR_STATE_DIR")
+    if value:
+        return Path(value).expanduser()  # .env values are literal: no shell ~
+    return Path(__file__).resolve().parents[1] / "state"
+
+
 # Selectable sources.
 SOURCES = ("cb_corpus", "company", "vault", "probe")
 
@@ -87,7 +95,6 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         groups=_csv(args.groups),
         year_min=args.year_min,
         year_max=args.year_max,
-        include_html=args.include_html,
     )
 
 
@@ -150,52 +157,152 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
 
 # ---------------------------------------------------------------------------
 # Run reports — the shared contract shape written to the vault's ``runs``
-# table (or, with --no-vault, appended to STATE_DIR/runs.jsonl).
+# table (or, with --no-vault, appended to state_dir()/runs.jsonl).
 #
-# Doctrine (fixed): degraded/exit 3 iff docs_ingested == 0 and docs_error > 0
-# (a run that touched documents and got none of them in); otherwise ok/0. A
-# fatal exception is reported separately as failed/exit 1 (_fatal_report).
+# The ok/degraded rule (incl. the failure-ratio threshold) lives in
+# ``policy.py``; a fatal exception is reported separately as failed/exit 1
+# (_fatal_report).
 # ---------------------------------------------------------------------------
-def _build_report(command: str, stats: IngestStats, started_at: str) -> dict:
+
+# Same cap as central-bank-corpus runreport.py (the other writer of runs.extra->>'fatal').
+FATAL_MAX_CHARS = 500
+
+
+def _build_report(command: str, stats: IngestStats, started_at: str, *,
+                  corpus: str, ratio: float,
+                  unsupported: dict[str, int] | None = None) -> dict:
     totals = {
         "docs_seen": stats.docs_seen,
         "docs_new": stats.docs_ingested,
         "docs_failed": stats.docs_error,
         "docs_path_metadata": stats.docs_path_metadata,
     }
-    sources = [
-        {"source_code": code, **counts}
-        for code, counts in sorted(stats.by_source.items())
-    ]
-    degraded = stats.docs_ingested == 0 and stats.docs_error > 0
-    return {
+    # sources[] lists only the source codes the run touched (stats.by_source):
+    # a source with only unsupported documents is not a source the run
+    # worked on, so it never appears there (it would read as a run of that
+    # source in the vault's per-source views). Its count lives in the
+    # top-level ``unsupported_by_source`` (no runs column: swept into
+    # runs.extra), written whenever the count is known, even empty.
+    by_source = {code: dict(counts) for code, counts in stats.by_source.items()}
+    if unsupported is not None:
+        totals["docs_unsupported"] = sum(unsupported.values())
+        for code, counts in by_source.items():
+            counts["docs_unsupported"] = unsupported.get(code, 0)
+    sources = [{"source_code": code, **counts} for code, counts in sorted(by_source.items())]
+    outcome, exit_code = policy.run_outcome(
+        docs_ingested=stats.docs_ingested, docs_empty=stats.docs_empty,
+        docs_failed=stats.docs_error, ratio=ratio,
+    )
+    report = {
         "run_id": str(uuid.uuid4()),
         "tool": "data-orchestrator",
         "command": command,
+        "corpus": corpus,
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
-        "outcome": "degraded" if degraded else "ok",
-        "exit_code": 3 if degraded else 0,
+        "outcome": outcome,
+        "exit_code": exit_code,
         "totals": totals,
         "sources": sources,
     }
+    if unsupported is not None:
+        report["unsupported_by_source"] = dict(sorted(unsupported.items()))
+    return report
 
 
-def _fatal_report(command: str, started_at: str, exc: Exception) -> dict:
-    """Best-effort report for a run that never reached a normal IngestStats
-    outcome (e.g. the vault connection or the engine itself failed)."""
-    rep = _build_report(command, IngestStats(), started_at)
+def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str,
+                  unsupported: dict[str, int] | None = None) -> dict:
+    """Best-effort report for a run that never reached a normal outcome.
+
+    The reason goes under ``fatal`` (runs.extra->>'fatal'), the key
+    central-bank-corpus already writes; it was ``error`` before 2026-11.
+    ``unsupported`` (the vault source's per-source count, when it was
+    computed before the failure) is passed through so a known
+    ``docs_unsupported`` and ``unsupported_by_source`` are not lost;
+    ``sources[]`` stays empty (the run touched no source).
+    """
+    # The ratio is irrelevant to a fatal outcome (overwritten below); the
+    # default is stated explicitly since _build_report has no default.
+    rep = _build_report(command, IngestStats(), started_at, corpus=corpus,
+                        ratio=policy.DEFAULT_DEGRADED_FAILURE_RATIO,
+                        unsupported=unsupported)
     rep["outcome"] = "failed"
     rep["exit_code"] = 1
-    rep["error"] = f"{type(exc).__name__}: {exc}"
+    rep["fatal"] = f"{type(exc).__name__}: {exc}"[:FATAL_MAX_CHARS]
     return rep
 
 
+def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
+    """Write a fatal report on a connection the failure may have left inside
+    an aborted transaction: roll back first (a failing rollback is not
+    itself fatal; the insert then says whether the connection is usable),
+    and warn on an insert failure — never silent, never masking the run's
+    own fatal outcome."""
+    try:
+        conn.rollback()
+    except Exception:  # noqa: BLE001 — the insert below reports a dead connection
+        pass
+    try:
+        vault_mod.insert_run_report(conn, report)
+    except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+        print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+
+
 def _append_report_jsonl(report: dict) -> None:
-    """--no-vault fallback: a single atomic append to STATE_DIR/runs.jsonl."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with (STATE_DIR / "runs.jsonl").open("a", encoding="utf-8") as fh:
+    """--no-vault fallback: a single atomic append to state_dir()/runs.jsonl."""
+    folder = state_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / "runs.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(report) + "\n")
+
+
+# eigenmind's own defaults (eigenmind/config.py qdrant_host/qdrant_port),
+# used only to display a store that reports no host/port. 6333 is the LEGACY
+# store.
+QDRANT_DEFAULT_HOST = "localhost"
+QDRANT_DEFAULT_PORT = 6333
+
+
+def _print_qdrant_target(host, port) -> None:
+    """``run_ingest``'s ``on_target``: print the Qdrant the constructed store
+    writes to — resolved by eigenmind AFTER its own python-dotenv ran, so the
+    line is right even when that loader set QDRANT_HOST/QDRANT_PORT — and warn
+    on the legacy port. A store that reports no host or port is displayed
+    with eigenmind's default (an invalid or empty ``QDRANT_PORT`` in the
+    environment never gets here: ``_qdrant_port_error`` refuses it before
+    any work); the port is compared numerically (``06333`` is 6333)."""
+    host = str(host).strip() if host is not None else ""
+    host = host or QDRANT_DEFAULT_HOST
+    raw = str(port).strip() if port is not None else ""
+    try:
+        port = int(raw) if raw else QDRANT_DEFAULT_PORT
+    except ValueError:
+        port = raw  # displayed as is; cannot be the legacy port
+    print(f"Qdrant: {host}:{port}", flush=True)
+    if port == QDRANT_DEFAULT_PORT:
+        print(f"warning: Qdrant port {port} is the legacy store (eigenmind's default); "
+              "set QDRANT_PORT to the dedicated one unless this is intended",
+              file=sys.stderr)
+
+
+QDRANT_PORT_ENV = "QDRANT_PORT"
+
+
+def _qdrant_port_error(environ=None) -> str | None:
+    """Pre-flight for an ingest run: the error message when ``QDRANT_PORT`` is
+    set but is not a plain integer in 1..65535 (surrounding whitespace
+    ignored; empty is invalid, ``.env`` values are literal so an inline
+    ``# comment`` is part of the value), else ``None``. Absent is fine
+    (eigenmind's default, warned about by ``_print_qdrant_target``)."""
+    environ = os.environ if environ is None else environ
+    raw = environ.get(QDRANT_PORT_ENV)
+    if raw is None:
+        return None
+    text = raw.strip()
+    if text.isascii() and text.isdigit() and 1 <= int(text) <= 65535:
+        return None
+    return (f"{QDRANT_PORT_ENV}={raw!r} is not a port number (expected a plain "
+            "integer 1..65535; unset it to use eigenmind's default)")
 
 
 def _validate_corpus_root(corpus: str) -> int | None:
@@ -238,8 +345,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
     parser.add_argument("--year-min", type=int, help="inclusive lower year bound")
     parser.add_argument("--year-max", type=int, help="inclusive upper year bound")
-    parser.add_argument("--include-html", action="store_true",
-                        help="also ingest .html with no .pdf sibling")
     parser.add_argument("--collection", default=None,
                         help="Qdrant collection (default: {corpus}-{tag}-v1 "
                              "via routing.collection_name — same resolution "
@@ -249,7 +354,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ocr", choices=["auto", "always", "never"], default="auto",
                         help="OCR fallback mode for scanned pages (default: auto)")
     parser.add_argument("--no-resume", action="store_true",
-                        help="ignore the resume ledger (re-ingest everything)")
+                        help="ignore the resume ledger (disk sources only). Rejected "
+                             "for the vault source: its resume is the anti-join; "
+                             "re-ingest into a fresh --collection instead (a re-run "
+                             "into the same collection would leave stale chunks "
+                             "behind).")
     parser.add_argument("--ledger", help="path to the resume ledger JSONL")
     parser.add_argument("--no-vault", action="store_true",
                         help="use the local file ledger instead of the vault "
@@ -263,15 +372,57 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
+    # The one .env loader (issue #8), run before anything can import eigenmind:
+    # eigenmind's own python-dotenv (override=False) runs at its first import
+    # and can then only add keys this file did not set. No $VAR interpolation
+    # here — values are taken literally, surrounding quotes stripped.
+    # DATA_ORCHESTRATOR_DOTENV (real environment only) names the file
+    # explicitly; a missing one is an operator error, before any work.
+    try:
+        config.load_dotenv()
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    loaded = config.loaded_dotenv()
+    print(f"Config: .env = {loaded}" if loaded else "Config: no .env file found")
 
     # Guard against invalid --progress-every early, before any engine/DB work.
     if getattr(args, "progress_every", 1) <= 0:
         print("error: --progress-every must be >= 1", file=sys.stderr)
         return 2
+    if args.limit is not None and args.limit < 1:
+        print("error: --limit must be >= 1", file=sys.stderr)
+        return 2
+    # Run policy, read once from the (now loaded) environment: an invalid
+    # value is an operator error (exit 2), caught before any DB/engine work.
+    try:
+        args.degraded_ratio = policy.degraded_failure_ratio()
+        args.supported_mimes = supported_mime_types()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.source == "probe":
+        unsupported_flags = [flag for flag, given in (
+            ("--count-only", args.count_only), ("--no-vault", args.no_vault),
+            ("--no-resume", args.no_resume), ("--ledger", args.ledger is not None),
+        ) if given]
+        if unsupported_flags:
+            print(f"error: {', '.join(unsupported_flags)} not supported by probe "
+                  "(it always reads and writes the vault, and is resumable by "
+                  "construction)", file=sys.stderr)
+            return 2
+    elif not args.count_only:
+        # An ingest run: the engine will read QDRANT_PORT. Refuse a value it
+        # cannot use before any DB/engine work, rather than fail mid-run.
+        port_error = _qdrant_port_error()
+        if port_error is not None:
+            print(f"error: {port_error}", file=sys.stderr)
+            return 2
 
     # Each disk source implies its own vault corpus; an explicit --corpus
-    # always wins. Never a source-name collection fallback (item 3/4 of the
-    # company_corpus integration) — collection routing is always
+    # always wins. Never a source-name collection fallback — collection
+    # routing is always
     # routing.collection_name(args.corpus) below.
     if args.corpus is None:
         args.corpus = IMPLIED_CORPUS.get(args.source, "central-bank")
@@ -321,7 +472,9 @@ def main(argv: list[str] | None = None) -> int:
                 "its resume IS the documents/rag_ingestions anti-join (a doc "
                 "already recorded for the target collection is never "
                 "selected again, --no-resume or not). To re-ingest, use a "
-                "fresh --collection name instead.",
+                "fresh --collection name instead: a re-run into the same "
+                "collection would leave stale chunks behind (a new chunking "
+                "can yield fewer chunks than the points already stored).",
                 file=sys.stderr,
             )
             return 2
@@ -338,11 +491,16 @@ def main(argv: list[str] | None = None) -> int:
         from . import vault as vault_mod
         from .probe import run_probe
 
-        conn = vault_mod.connect()
+        conn = None
         try:
+            conn = vault_mod.connect()
             stats = run_probe(conn, args.corpus, limit=args.limit)
+        except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
+            print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         print(f"Probe done: {stats}")
         return 0
 
@@ -374,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.no_resume:
             if args.no_vault:
-                ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{collection}.jsonl"
+                ledger_path = Path(args.ledger) if args.ledger else state_dir() / f"{collection}.jsonl"
                 ledger = Ledger(ledger_path)
                 print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
             else:
@@ -400,11 +558,13 @@ def main(argv: list[str] | None = None) -> int:
             ocr=args.ocr,
             limit=args.limit,
             on_progress=_make_progress(args.progress_every),
+            on_target=_print_qdrant_target,
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
 
-        rep = _build_report(args.source, stats, started_at)
+        rep = _build_report(args.source, stats, started_at, corpus=args.corpus,
+                            ratio=args.degraded_ratio)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -434,17 +594,14 @@ def main(argv: list[str] | None = None) -> int:
                     report_conn.close()
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report(args.source, started_at, exc)
+        rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
-            except Exception:
-                pass
+            except Exception as report_exc:  # noqa: BLE001 — never masks the run's own outcome
+                print(f"warning: failed to append run report: {report_exc}", file=sys.stderr)
         elif vault_conn is not None:
-            try:
-                vault_mod.insert_run_report(vault_conn, rep)
-            except Exception:
-                pass
+            _insert_fatal_report(vault_mod, vault_conn, rep)
         else:
             # Same short-lived-connection pattern as the success path above:
             # vault mode, but no ledger connection was ever opened (e.g. a
@@ -469,6 +626,15 @@ def main(argv: list[str] | None = None) -> int:
             vault_conn.close()
 
 
+def _vault_filters(args) -> dict:
+    """Selection filters shared by the vault selection and its unsupported count."""
+    return dict(
+        source_codes=_csv(args.source_codes), doctypes=_csv(args.doctypes),
+        year_min=args.year_min, year_max=args.year_max,
+        languages=_csv(args.languages), supported_mimes=args.supported_mimes,
+    )
+
+
 def _run_vault_source(args, collection: str) -> int:
     from . import vault as vault_mod
     from .routing import EMBEDDING_VERSION, embedding_model_name
@@ -476,6 +642,7 @@ def _run_vault_source(args, collection: str) -> int:
 
     started_at = datetime.now(timezone.utc).isoformat()
     conn = None
+    unsupported = None  # known once count_unsupported ran; kept by a fatal report
     try:
         conn = vault_mod.connect()
         # --no-resume is rejected for this source before we ever get here
@@ -488,34 +655,37 @@ def _run_vault_source(args, collection: str) -> int:
         )
         print(f"Resume ledger (vault): rag_ingestions/{collection} "
               f"({len(ledger)} docs already done)")
-        items = vault_source.iter_items(
-            conn, args.corpus, collection,
-            source_codes=_csv(args.source_codes),
-            doctypes=_csv(args.doctypes),
-            year_min=args.year_min, year_max=args.year_max,
-            languages=_csv(args.languages),
-        )
+        # One filter set for both queries, so the unsupported count is
+        # exactly the complement of the selection (same candidates).
+        filters = _vault_filters(args)
+        unsupported = vault_source.count_unsupported(conn, args.corpus, collection, **filters)
+        n_unsupported = sum(unsupported.values())
+        if n_unsupported:
+            print(f"Skipping {n_unsupported} document(s) of a type the engine cannot read "
+                  "(see DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES and the README's "
+                  "'Supported document types')")
+        items = vault_source.iter_items(conn, args.corpus, collection, **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
               f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
         stats = run_ingest(
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
+            on_target=_print_qdrant_target,
         )
         _print_summary(stats)
 
-        rep = _build_report("vault", stats, started_at)
+        rep = _build_report("vault", stats, started_at, corpus=args.corpus,
+                            ratio=args.degraded_ratio, unsupported=unsupported)
         try:
             vault_mod.insert_run_report(conn, rep)
         except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
             print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report("vault", started_at, exc)
+        rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
+                            unsupported=unsupported)
         if conn is not None:
-            try:
-                vault_mod.insert_run_report(conn, rep)
-            except Exception:
-                pass
+            _insert_fatal_report(vault_mod, conn, rep)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:
@@ -528,34 +698,40 @@ def _count_vault_source(args, collection: str) -> int:
 
     Mirrors the cb_corpus ``--count-only`` output format (total + breakdowns),
     using ``source_code``/``doc_type`` — the vault source's payload columns —
-    in place of cb_corpus's ``bank_code``/``doc_type``.
+    in place of cb_corpus's ``bank_code``/``doc_type``. Both source breakdowns
+    use ``core.source_label`` (a NULL source_code reads as the corpus), the
+    label the run report's ``sources[]`` uses; a NULL doc_type reads
+    ``unknown``. No Qdrant line: a count never touches Qdrant.
     """
     from . import vault as vault_mod
     from .sources import vault as vault_source
 
-    conn = vault_mod.connect()
+    conn = None
     try:
-        items = vault_source.iter_items(
-            conn, args.corpus, collection,
-            source_codes=_csv(args.source_codes),
-            doctypes=_csv(args.doctypes),
-            year_min=args.year_min, year_max=args.year_max,
-            languages=_csv(args.languages),
-        )
+        conn = vault_mod.connect()
+        filters = _vault_filters(args)
+        unsupported = vault_source.count_unsupported(conn, args.corpus, collection, **filters)
+        items = vault_source.iter_items(conn, args.corpus, collection, **filters)
         by_source: dict[str, int] = {}
         by_type: dict[str, int] = {}
         total = 0
         for it in items:
             total += 1
-            source_code = it.payload.get("source_code", "<unknown>")
-            doc_type = it.payload.get("doc_type", "<unknown>")
+            source_code = source_label(it.payload, args.corpus)
+            doc_type = it.payload.get("doc_type") or "unknown"
             by_source[source_code] = by_source.get(source_code, 0) + 1
             by_type[doc_type] = by_type.get(doc_type, 0) + 1
+    except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
+        print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     print(f"Matching documents: {total}")
     print("  by source_code:", dict(sorted(by_source.items(), key=lambda kv: -kv[1])))
     print("  by doc_type:", dict(sorted(by_type.items())))
+    print(f"Unsupported (not offered to the engine): {sum(unsupported.values())}")
+    print("  by source_code:", dict(sorted(unsupported.items(), key=lambda kv: -kv[1])))
     return 0
 
 

@@ -1,7 +1,12 @@
 import json
 
+import pytest
+
 from data_orchestrator.cli import _build_report
 from data_orchestrator.core import IngestStats
+from data_orchestrator.policy import DEFAULT_DEGRADED_FAILURE_RATIO
+
+R = DEFAULT_DEGRADED_FAILURE_RATIO
 
 
 def _stats(**over):
@@ -12,12 +17,16 @@ def _stats(**over):
 
 
 def test_report_shape_and_ok_outcome():
-    s = _stats(docs_seen=5, docs_ingested=4, docs_error=1,
-               by_source={"us": {"docs_seen": 5, "docs_new": 4, "docs_failed": 1}})
-    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00")
+    # 1 failure in 10 attempted is exactly the 10 % default: not above it, ok.
+    s = _stats(docs_seen=10, docs_ingested=9, docs_error=1,
+               by_source={"us": {"docs_seen": 10, "docs_new": 9, "docs_failed": 1}})
+    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00",
+                        corpus="central-bank", ratio=DEFAULT_DEGRADED_FAILURE_RATIO)
     assert rep["tool"] == "data-orchestrator" and rep["command"] == "vault"
+    assert rep["corpus"] == "central-bank"
+    assert "docs_unsupported" not in rep["totals"]
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
-    assert rep["totals"] == {"docs_seen": 5, "docs_new": 4, "docs_failed": 1,
+    assert rep["totals"] == {"docs_seen": 10, "docs_new": 9, "docs_failed": 1,
                              "docs_path_metadata": 0}
     assert rep["sources"][0]["source_code"] == "us"
     assert set(rep) >= {"run_id", "started_at", "finished_at"}
@@ -26,7 +35,8 @@ def test_report_shape_and_ok_outcome():
 def test_all_failed_is_degraded_exit_three():
     s = _stats(docs_seen=3, docs_ingested=0, docs_error=3,
                by_source={"us": {"docs_seen": 3, "docs_new": 0, "docs_failed": 3}})
-    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00")
+    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00", corpus="central-bank",
+                        ratio=R)
     assert rep["outcome"] == "degraded" and rep["exit_code"] == 3
 
 
@@ -49,7 +59,7 @@ def test_insert_run_report_sql_contract():
     from tests.test_vault_ledger import FakeConn
 
     report = {"run_id": "r1", "tool": "data-orchestrator",
-              "command": "vault", "started_at": "s", "finished_at": "f",
+              "command": "vault", "corpus": "central-bank", "started_at": "s", "finished_at": "f",
               "outcome": "ok", "exit_code": 0,
               "totals": {}, "sources": []}
     conn = FakeConn()
@@ -73,8 +83,7 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     """cb_corpus + --no-resume, vault mode (no --no-vault): the resume-ledger
     vault_conn stays None because --no-resume skips the "if not
     args.no_resume" block entirely, so the success-path report write must
-    open its own short-lived connection rather than silently doing nothing
-    (finding 2 of the fix wave)."""
+    open its own short-lived connection rather than silently doing nothing."""
     from data_orchestrator import cli
     from data_orchestrator.core import IngestStats
     import data_orchestrator.vault as vault_mod
@@ -109,7 +118,7 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
 def test_no_vault_report_append_failure_does_not_mask_clean_run(
     monkeypatch, tmp_path, capsys
 ):
-    """MINOR (item 4 of the fix wave): on the --no-vault success path,
+    """On the --no-vault success path,
     _append_report_jsonl() was unguarded — a failed append cascaded into the
     fatal handler and flipped a clean run's exit code, contradicting the
     "report write never masks the run's outcome" contract that already
@@ -145,32 +154,34 @@ def test_report_totals_carry_the_path_metadata_counter():
     card can chart it without null-handling, and it never affects the outcome."""
     s = _stats(docs_seen=5, docs_ingested=5, docs_path_metadata=5,
                by_source={"us": {"docs_seen": 5, "docs_new": 5, "docs_failed": 0}})
-    rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00")
+    rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00", corpus="central-bank",
+                        ratio=R)
     assert rep["totals"]["docs_path_metadata"] == 5
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
 
 
 def test_insert_run_report_sweeps_non_column_fields_into_extra():
-    """R4: `_fatal_report` puts the exception text under an ``error`` key, which
+    """R4: `_fatal_report` puts the exception text under a ``fatal`` key, which
     is not a `runs` column — before this, the vault path silently dropped it and
     the message survived only in the ``--no-vault`` JSONL. Non-column keys go to
     ``extra`` (JSONB), the same rule the vault ingester's ``parse_run_line``
     applies to the other writer of this table."""
     from data_orchestrator.cli import _fatal_report
-    from data_orchestrator.vault import insert_run_report
+    from data_orchestrator.vault import insert_run_report, _RUN_COLUMNS
     from tests.test_vault_ledger import FakeConn
 
     rep = _fatal_report("vault", "2026-09-04T00:00:00+00:00",
-                        RuntimeError("vault unreachable"))
+                        RuntimeError("vault unreachable"), corpus="central-bank")
     conn = FakeConn()
     insert_run_report(conn, rep)
 
     sql, params = conn.executed[-1]
     assert ("run_id, tool, command, started_at, finished_at, outcome, "
-            "exit_code, totals, sources, extra") in sql
-    assert sql.count("%s") == 10 and len(params) == 10
+            "exit_code, totals, sources, corpus, extra") in sql
+    assert sql.count("%s") == 11 and len(params) == 11
     extra = json.loads(params[-1])
-    assert extra == {"error": "RuntimeError: vault unreachable"}
+    assert extra == {"fatal": "RuntimeError: vault unreachable"}
+    assert dict(zip(_RUN_COLUMNS, params))["corpus"] == "central-bank"
 
 
 def test_insert_run_report_extra_is_null_when_no_extra_fields():
@@ -205,3 +216,206 @@ def test_insert_run_report_absent_columns_become_sql_null():
     by_column = dict(zip(_RUN_COLUMNS, params))
     assert by_column["totals"] is None
     assert by_column["sources"] is None
+
+
+def test_failure_ratio_above_threshold_degrades_a_run_that_ingested_something():
+    s = _stats(docs_seen=10, docs_ingested=8, docs_error=2)
+    rep = _build_report("vault", s, "t", corpus="central-bank", ratio=0.10)
+    assert rep["outcome"] == "degraded" and rep["exit_code"] == 3
+
+
+def test_unsupported_counts_land_in_totals_and_touched_sources_without_degrading():
+    """sources[] lists only the source codes the run touched; each carries its
+    own docs_unsupported. A source with only unsupported documents is not in
+    sources[]: the full split is ``unsupported_by_source``."""
+    s = _stats(docs_seen=2, docs_ingested=2,
+               by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0},
+                          "fr": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
+    rep = _build_report("vault", s, "t", corpus="central-bank", ratio=R,
+                        unsupported={"us": 1, "ecb": 32})
+    assert rep["outcome"] == "ok"
+    assert rep["totals"]["docs_unsupported"] == 33
+    assert rep["sources"] == [
+        {"source_code": "fr", "docs_seen": 1, "docs_new": 1, "docs_failed": 0,
+         "docs_unsupported": 0},
+        {"source_code": "us", "docs_seen": 1, "docs_new": 1, "docs_failed": 0,
+         "docs_unsupported": 1},
+    ]
+    assert rep["unsupported_by_source"] == {"ecb": 32, "us": 1}
+    assert list(rep["unsupported_by_source"]) == ["ecb", "us"]  # sorted by key
+
+
+def test_unsupported_only_sources_stay_out_of_sources():
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={"ecb": 32})
+    assert rep["sources"] == []
+    assert rep["unsupported_by_source"] == {"ecb": 32}
+    assert rep["totals"]["docs_unsupported"] == 32
+
+
+def test_unsupported_empty_dict_still_writes_a_zero_total_and_an_empty_split():
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={})
+    assert rep["totals"]["docs_unsupported"] == 0
+    assert rep["unsupported_by_source"] == {}
+
+
+def test_no_unsupported_count_means_no_split_key():
+    rep = _build_report("cb_corpus", _stats(), "t", corpus="central-bank", ratio=R)
+    assert "unsupported_by_source" not in rep
+
+
+def test_unsupported_by_source_is_swept_into_extra():
+    """Not a runs column: insert_run_report puts it under runs.extra."""
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={"fr": 1, "ecb": 2})
+    conn = FakeConn()
+    insert_run_report(conn, rep)
+    _sql, params = conn.executed[-1]
+    assert json.loads(params[-1]) == {"unsupported_by_source": {"ecb": 2, "fr": 1}}
+
+
+def test_unsupported_empty_split_still_lands_in_extra():
+    """Written on every vault run, even empty, so its presence is reliable:
+    extra is then never NULL on a vault run."""
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={})
+    conn = FakeConn()
+    insert_run_report(conn, rep)
+    _sql, params = conn.executed[-1]
+    assert json.loads(params[-1]) == {"unsupported_by_source": {}}
+
+
+def test_build_report_does_not_mutate_the_stats_breakdown():
+    s = _stats(by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
+    _build_report("vault", s, "t", corpus="central-bank", ratio=R, unsupported={"us": 2})
+    assert s.by_source["us"] == {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}
+
+
+def test_ratio_is_a_required_keyword():
+    """No silent default: every caller states the threshold it applies."""
+    with pytest.raises(TypeError, match="ratio"):
+        _build_report("vault", _stats(), "t", corpus="central-bank")
+
+
+def test_fatal_report_states_the_default_ratio(monkeypatch):
+    from data_orchestrator import cli
+
+    seen = {}
+    real = cli._build_report
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_build_report", spy)
+    cli._fatal_report("vault", "t", RuntimeError("x"), corpus="central-bank")
+    assert seen["ratio"] == DEFAULT_DEGRADED_FAILURE_RATIO
+
+
+def test_fatal_reason_is_truncated_to_the_shared_cap():
+    from data_orchestrator.cli import FATAL_MAX_CHARS, _fatal_report
+    rep = _fatal_report("vault", "t", RuntimeError("x" * 2000), corpus="company")
+    assert len(rep["fatal"]) == FATAL_MAX_CHARS and "error" not in rep
+    assert rep["corpus"] == "company" and rep["exit_code"] == 1
+
+
+def _capture_no_vault_report(monkeypatch):
+    """Fake the engine and capture the --no-vault report append."""
+    from data_orchestrator import cli
+    from data_orchestrator.core import IngestStats
+
+    def fake_run_ingest(items, *, collection, **kwargs):
+        return IngestStats(docs_seen=1, docs_ingested=1,
+                           by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
+
+    captured: list[dict] = []
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    monkeypatch.setattr(cli, "_append_report_jsonl", captured.append)
+    return captured
+
+
+def test_cb_corpus_report_carries_its_implied_corpus(monkeypatch, tmp_path):
+    from data_orchestrator import cli
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
+    captured = _capture_no_vault_report(monkeypatch)
+
+    assert cli.main(["cb_corpus", "--no-vault"]) == 0
+    assert [r["corpus"] for r in captured] == ["central-bank"]
+
+
+def test_company_report_carries_its_implied_corpus(monkeypatch, tmp_path,
+                                                   fake_company_corpus):
+    from data_orchestrator import cli
+
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    captured = _capture_no_vault_report(monkeypatch)
+
+    assert cli.main(["company", "--no-vault", "--ciks", "320193"]) == 0
+    assert [r["corpus"] for r in captured] == ["company"]
+
+
+def test_fatal_report_from_cli_carries_the_corpus(monkeypatch, tmp_path,
+                                                  fake_company_corpus):
+    from data_orchestrator import cli
+
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("engine init failed")
+
+    captured: list[dict] = []
+    monkeypatch.setattr(cli, "run_ingest", boom)
+    monkeypatch.setattr(cli, "_append_report_jsonl", captured.append)
+
+    assert cli.main(["company", "--no-vault"]) == 1
+    assert len(captured) == 1
+    assert captured[0]["corpus"] == "company"
+    assert captured[0]["fatal"] == "RuntimeError: engine init failed"
+
+
+def test_fatal_report_keeps_the_known_split_without_unsupported_only_sources():
+    from data_orchestrator.cli import _fatal_report
+    rep = _fatal_report("vault", "t", RuntimeError("x"), corpus="central-bank",
+                        unsupported={"fr": 1, "ecb": 4})
+    assert rep["sources"] == []
+    assert rep["totals"]["docs_unsupported"] == 5
+    assert rep["unsupported_by_source"] == {"ecb": 4, "fr": 1}
+
+
+def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, capsys,
+                                                      fake_company_corpus):
+    """Same warning as the success path: a report that cannot be appended is
+    never silent, and never masks the fatal outcome."""
+    from data_orchestrator import cli
+
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("engine init failed")
+
+    def append_boom(report):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "run_ingest", boom)
+    monkeypatch.setattr(cli, "_append_report_jsonl", append_boom)
+
+    assert cli.main(["company", "--no-vault"]) == 1
+    err = capsys.readouterr().err
+    assert "warning: failed to append run report: disk full" in err
+    assert "error: fatal: RuntimeError: engine init failed" in err

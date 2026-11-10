@@ -1,6 +1,7 @@
 """Unit tests for the rewired engine internals (fake store/embedder, real chunking on .md)."""
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from data_orchestrator.core import (
     OCR_TO_ENGINE,
     Ledger,
     SourceItem,
+    _ensure_collection,
     _point_id,
     ingest_item,
     run_ingest,
@@ -30,6 +32,11 @@ class FakeClient:
     def __init__(self, log):
         self._log = log
         self.points = []
+        self.sizes = {}  # collection -> stored vector size (set by FakeStore)
+
+    def get_collection(self, collection_name):
+        return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(
+            vectors=SimpleNamespace(size=self.sizes[collection_name]))))
 
     def upsert(self, collection_name, points, **kwargs):
         self._log.append(("qdrant", collection_name, len(points)))
@@ -44,6 +51,7 @@ class FakeStore:
 
     def ensure_collection(self, name, vector_size):
         self.ensured.append((name, vector_size))
+        self.client.sizes.setdefault(name, vector_size)
         return vector_size
 
 
@@ -158,7 +166,7 @@ def test_ledger_failure_is_isolated(tmp_path):
 
 def test_ledger_failure_on_empty_doc_is_isolated_and_run_continues(tmp_path, monkeypatch):
     """The n == 0 ('empty doc') ledger mark must be inside the same
-    per-document isolation as the n > 0 path (item 2 of the fix wave): an
+    per-document isolation as the n > 0 path: an
     empty doc unknown to the vault (FK violation on mark) must count as a
     docs_error for that one doc and let the run continue, not abort."""
     from chunknorris.exceptions import TextNotFoundException
@@ -197,7 +205,7 @@ def test_ledger_failure_on_empty_doc_is_isolated_and_run_continues(tmp_path, mon
 
 def test_ensure_collection_failure_still_releases_owned_embedder(tmp_path, monkeypatch):
     """ensure_collection() must be inside the try/finally that releases an
-    *owned* embedder (item 6 of the fix wave) — otherwise a raising
+    *owned* embedder — otherwise a raising
     ensure_collection leaks the loaded model."""
     import data_orchestrator.core as core
 
@@ -227,7 +235,7 @@ def test_ensure_collection_failure_still_releases_owned_embedder(tmp_path, monke
 
 def test_ingest_item_omits_page_key_when_start_page_is_none(tmp_path):
     """Non-paginated formats (e.g. markdown) must not fake a 'page': 0 in the
-    payload (item 7 of the fix wave) — the point id still resolves the
+    payload — the point id still resolves the
     missing page to 0 for determinism, but the payload key is absent."""
     log = []
     store, embedder = FakeStore(log), FakeEmbedder()
@@ -350,3 +358,298 @@ def test_run_ingest_counts_path_derived_metadata_items(tmp_path):
                        store=FakeStore(log), embedder=FakeEmbedder())
     assert stats.docs_path_metadata == 2
     assert stats.docs_skipped_resume == 1
+
+
+class RacingClient:
+    def __init__(self, exists, size=8, exists_raises=False):
+        self._exists, self._size, self._raises = exists, size, exists_raises
+
+    def collection_exists(self, name):
+        if self._raises:
+            raise ConnectionError("qdrant down")
+        return self._exists
+
+    def get_collection(self, collection_name):
+        return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(
+            vectors=SimpleNamespace(size=self._size))))
+
+
+class RacingStore:
+    def __init__(self, client):
+        self.client = client
+
+    def ensure_collection(self, name, vector_size):
+        raise RuntimeError("Wrong input: Collection c already exists!")
+
+
+def test_losing_the_creation_race_is_not_fatal():
+    _ensure_collection(RacingStore(RacingClient(exists=True)), "c", 8)
+
+
+def test_a_failure_that_left_no_collection_is_reraised_unchanged():
+    with pytest.raises(RuntimeError, match="already exists"):
+        _ensure_collection(RacingStore(RacingClient(exists=False)), "c", 8)
+
+
+def test_an_unreachable_store_reraises_the_original_error():
+    with pytest.raises(RuntimeError, match="already exists"):
+        _ensure_collection(RacingStore(RacingClient(exists=True, exists_raises=True)), "c", 8)
+
+
+def test_race_winner_with_another_dimension_is_refused():
+    with pytest.raises(RuntimeError, match="384-d"):
+        _ensure_collection(RacingStore(RacingClient(exists=True, size=384)), "c", 8)
+
+
+class _ExistingStore:
+    """ensure_collection succeeds (the collection already exists); the stored
+    configuration is only known through client.get_collection."""
+
+    def __init__(self, size, get_raises=None):
+        self.client = RacingClient(exists=True, size=size)
+        if get_raises is not None:
+            def boom(collection_name):
+                raise get_raises
+            self.client.get_collection = boom
+
+    def ensure_collection(self, name, vector_size):
+        return vector_size  # eigenmind's answer for a named-vector collection
+
+
+def test_existing_collection_with_another_dimension_is_refused():
+    with pytest.raises(RuntimeError, match="384-d"):
+        _ensure_collection(_ExistingStore(size=384), "c", 768)
+
+
+def test_existing_collection_with_the_model_dimension_is_accepted():
+    _ensure_collection(_ExistingStore(size=768), "c", 768)
+
+
+def test_existing_named_vector_collection_is_refused_on_the_normal_path():
+    with pytest.raises(RuntimeError,
+                       match="cannot verify the dimension of a named-vector collection"):
+        _ensure_collection(_ExistingStore(size=None), "c", 768)
+
+
+def test_a_failing_verification_on_the_normal_path_propagates():
+    with pytest.raises(ConnectionError, match="qdrant went away"):
+        _ensure_collection(_ExistingStore(size=768,
+                                          get_raises=ConnectionError("qdrant went away")),
+                           "c", 768)
+
+
+def test_real_qdrant_store_refuses_a_pre_existing_named_vector_collection():
+    qdrant_client = pytest.importorskip("qdrant_client")
+    store_mod = pytest.importorskip("eigenmind.vectordb.store")
+    from qdrant_client import models
+
+    inner = qdrant_client.QdrantClient(":memory:")
+    inner.create_collection(
+        collection_name="c",
+        vectors_config={"text": models.VectorParams(size=8,
+                                                    distance=models.Distance.COSINE)},
+    )
+    store = store_mod.QdrantStore.__new__(store_mod.QdrantStore)
+    store._client = inner
+    with pytest.raises(RuntimeError,
+                       match="cannot verify the dimension of a named-vector collection"):
+        _ensure_collection(store, "c", 8)
+
+
+def test_run_ingest_refuses_a_wrong_dimension_before_touching_any_document(tmp_path):
+    log = []
+    store = FakeStore(log)
+    store.client.sizes["c"] = FakeEmbedder.dim * 2
+    with pytest.raises(RuntimeError, match="-d vectors"):
+        run_ingest([_md_item(tmp_path)], collection="c", ledger=RecordingLedger(log),
+                   store=store, embedder=FakeEmbedder())
+    assert log == []
+
+
+def test_race_winner_with_named_vectors_is_refused():
+    """A named-vector collection has no single ``size``: the dimension cannot
+    be verified, so the fallback refuses it rather than assuming a match."""
+    client = RacingClient(exists=True, size=None)
+    with pytest.raises(RuntimeError, match="cannot verify the dimension of a named-vector collection"):
+        _ensure_collection(RacingStore(client), "c", 8)
+
+
+def test_a_failing_get_collection_after_the_race_reraises_the_original_error():
+    class GetFails(RacingClient):
+        def get_collection(self, collection_name):
+            raise ConnectionError("qdrant went away")
+
+    with pytest.raises(RuntimeError, match="already exists") as excinfo:
+        _ensure_collection(RacingStore(GetFails(exists=True)), "c", 8)
+    assert excinfo.value.__suppress_context__  # raised "from None"
+
+
+def test_an_unreachable_store_reraises_the_original_error_from_none():
+    with pytest.raises(RuntimeError, match="already exists") as excinfo:
+        _ensure_collection(RacingStore(RacingClient(exists=True, exists_raises=True)), "c", 8)
+    assert excinfo.value.__suppress_context__
+
+
+def _racing_qdrant_store(other_dim):
+    """eigenmind's real QdrantStore over an in-memory Qdrant, raced.
+
+    eigenmind's ensure_collection is get-then-create. The wrapper makes its
+    first get_collection see nothing, then lets "another process" create the
+    collection (at ``other_dim``) just before eigenmind's own create, which the
+    real client then refuses ("already exists").
+    """
+    qdrant_client = pytest.importorskip("qdrant_client")
+    store_mod = pytest.importorskip("eigenmind.vectordb.store")
+    from qdrant_client import models
+
+    inner = qdrant_client.QdrantClient(":memory:")
+
+    class Racing:
+        def __init__(self):
+            self.gets = 0
+
+        def get_collection(self, collection_name):
+            self.gets += 1
+            if self.gets == 1:
+                raise ValueError(f"Collection {collection_name} not found")
+            return inner.get_collection(collection_name=collection_name)
+
+        def create_collection(self, collection_name, vectors_config):
+            inner.create_collection(  # the concurrent winner
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(size=other_dim,
+                                                   distance=models.Distance.COSINE),
+            )
+            return inner.create_collection(collection_name=collection_name,
+                                           vectors_config=vectors_config)
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+    store = store_mod.QdrantStore.__new__(store_mod.QdrantStore)
+    store._client = Racing()
+    return store, inner
+
+
+def test_real_qdrant_store_losing_the_race_is_not_fatal():
+    store, inner = _racing_qdrant_store(other_dim=8)
+    with pytest.raises(ValueError, match="Collection c already exists"):
+        store.ensure_collection("c", 8)  # the bare engine call does lose the race
+    store2, inner2 = _racing_qdrant_store(other_dim=8)
+    _ensure_collection(store2, "c", 8)
+    assert inner2.collection_exists("c")
+
+
+def test_real_qdrant_store_race_winner_with_another_dimension_is_refused():
+    store, _inner = _racing_qdrant_store(other_dim=384)
+    with pytest.raises(RuntimeError, match="384-d"):
+        _ensure_collection(store, "c", 8)
+
+
+# ---------------------------------------------------------------------------
+# batch_size: an explicit value is honoured as given (never `or`-defaulted),
+# and a value below 1 is refused before any store/engine work.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad", [0, -1])
+def test_run_ingest_refuses_a_batch_size_below_one_before_any_work(tmp_path, bad):
+    log = []
+    store = FakeStore(log)
+    with pytest.raises(ValueError, match="batch_size"):
+        run_ingest([_md_item(tmp_path)], collection="coll", ledger=RecordingLedger(log),
+                   store=store, embedder=FakeEmbedder(), batch_size=bad)
+    assert store.ensured == [] and log == []
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_ingest_item_refuses_a_batch_size_below_one(tmp_path, bad):
+    with pytest.raises(ValueError, match="batch_size"):
+        ingest_item(_md_item(tmp_path), "coll", store=FakeStore([]),
+                    embedder=FakeEmbedder(), batch_size=bad)
+
+
+def test_batch_size_one_upserts_one_point_per_call(tmp_path):
+    log = []
+    store = FakeStore(log)
+    n = ingest_item(_md_item(tmp_path), "coll", store=store, embedder=FakeEmbedder(),
+                    batch_size=1)
+    assert n >= 1
+    assert [e[2] for e in log if e[0] == "qdrant"] == [1] * n
+
+
+def test_batch_size_none_uses_the_engine_default(tmp_path, monkeypatch):
+    import data_orchestrator.core as core_mod
+    monkeypatch.setattr(core_mod, "_default_batch_size", lambda: 1)
+    log = []
+    n = ingest_item(_md_item(tmp_path), "coll", store=FakeStore(log), embedder=FakeEmbedder())
+    assert [e[2] for e in log if e[0] == "qdrant"] == [1] * n
+
+
+# ---------------------------------------------------------------------------
+# on_target: the Qdrant the run writes to, read from the CONSTRUCTED store
+# (after eigenmind's own loader ran), reported once before any collection work.
+# ---------------------------------------------------------------------------
+def test_on_target_reports_the_constructed_store_once_before_collection_work(tmp_path):
+    log = []
+    store = FakeStore(log)
+    store.host, store.port = "qdrant.lan", 6433
+    calls = []
+
+    def on_target(host, port):
+        calls.append((host, port, list(store.ensured)))
+
+    run_ingest([_md_item(tmp_path)], collection="c", store=store,
+               embedder=FakeEmbedder(), on_target=on_target)
+    assert calls == [("qdrant.lan", 6433, [])]
+
+
+def test_on_target_reads_the_default_store_after_construction(tmp_path, monkeypatch):
+    import data_orchestrator.core as core
+
+    built = []
+
+    def fake_store():
+        store = FakeStore([])
+        store.host, store.port = "built", 7000
+        built.append(store)
+        return store
+
+    monkeypatch.setattr(core, "QdrantStore", fake_store)
+    calls = []
+    run_ingest([], collection="c", embedder=FakeEmbedder(),
+               on_target=lambda h, p: calls.append((h, p)))
+    assert len(built) == 1 and calls == [("built", 7000)]
+
+
+def test_on_target_survives_a_store_without_host_or_port(tmp_path):
+    calls = []
+    run_ingest([], collection="c", store=FakeStore([]), embedder=FakeEmbedder(),
+               on_target=lambda h, p: calls.append((h, p)))
+    assert calls == [(None, None)]
+
+
+# ---------------------------------------------------------------------------
+# source_label: ONE rule for sources[] keys, the unsupported count and the
+# count-only breakdown (source_code, then bank_code, then corpus, then unknown).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("payload, corpus, expected", [
+    ({"source_code": "ecb", "bank_code": "fr", "corpus": "central-bank"}, None, "ecb"),
+    ({"bank_code": "fr", "corpus": "central-bank"}, None, "fr"),
+    ({"source_code": None, "corpus": "central-bank"}, None, "central-bank"),
+    ({"source_code": None}, "central-bank", "central-bank"),
+    ({"corpus": "company"}, "central-bank", "company"),
+    ({}, None, "unknown"),
+    ("ecb", "central-bank", "ecb"),
+    (None, "central-bank", "central-bank"),
+    ("", "central-bank", "central-bank"),
+    (None, None, "unknown"),
+])
+def test_source_label(payload, corpus, expected):
+    from data_orchestrator.core import source_label
+    assert source_label(payload, corpus) == expected
+
+
+def test_bump_files_a_null_source_vault_item_under_its_corpus():
+    from data_orchestrator.core import IngestStats, _bump
+    stats = IngestStats()
+    _bump(stats, SourceItem("d", Path("x.pdf"), {"corpus": "central-bank"}), new=1)
+    assert list(stats.by_source) == ["central-bank"]

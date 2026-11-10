@@ -11,7 +11,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture()
 def corpus_dir(tmp_path):
-    """Vault-realistic corpus root, overriding conftest's flat wave-1 fixture.
+    """Vault-realistic corpus root, overriding conftest's flat disk-source fixture.
 
     Real vault rows have local_path values like "data/raw/<doc_id>.pdf"
     (relative to the cb_corpus REPO root), while CB_CORPUS_ROOT points at the

@@ -111,7 +111,7 @@ def test_mark_rolls_back_and_reraises_on_upsert_failure():
     """A raising execute (e.g. an FK violation) must leave the shared
     connection healthy for the *next* mark() call — not aborted — or every
     later mark on this connection raises InFailedSqlTransaction regardless
-    of that document's own health (item 1 of the fix wave)."""
+    of that document's own health."""
     conn = FailOnceConn(fail_exc=RuntimeError("FK violation"))
     led = _ledger(conn)
     with pytest.raises(RuntimeError, match="FK violation"):
