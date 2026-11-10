@@ -57,6 +57,8 @@ via their own connector (`--no-vault`) in the meantime:
    PyPI). This repo must itself be an **editable** install (`pip install -e .`)
    for the repo-root `.env` fallback below to find its `.env`:
 
+   With `$EIGENMIND_PATH` = your eigenmind clone:
+
    ```bash
    git -C $EIGENMIND_PATH checkout 84d2ac4   # the CI pin, see Testing
    pip install -e $EIGENMIND_PATH
@@ -71,9 +73,9 @@ via their own connector (`--no-vault`) in the meantime:
    | `DATABASE_URL` | vault Postgres, e.g. `postgresql://user:pass@host:5432/documents` |
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `COMPANY_CORPUS_ROOT` | local root of the company_corpus (SEC EDGAR) data dir — optional, only needed for the `company` disk fallback; unset falls back to company_corpus's own default data dir |
-   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port>` and warns on stderr when the port is 6333 |
+   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port>` (the engine's store, as constructed) and warns on stderr when the port is 6333 |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
-   | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching; a missing file is an error (exit 2) |
+   | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching (a relative path is resolved against the current directory; the absolute path is what is read and printed); a missing file is an error (exit 2 from the CLI, `FileNotFoundError` for a library caller) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
    | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
    | `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO` | optional plain decimal in `[0, 1]`, default `0.10` (see [Run reports](#run-reports-and-exit-codes)); anything else is an error (exit 2) |
@@ -87,20 +89,30 @@ via their own connector (`--no-vault`) in the meantime:
   eigenmind's own python-dotenv (`override=False`) runs at its first import and
   can then only *add* keys this file did not set: ours wins.
 - **Which file.** `DATA_ORCHESTRATOR_DOTENV` if set — read from the real
-  environment only, never from a `.env`; a missing file is an `error:` and
-  exit 2 before any work — else the nearest `.env` in the current directory or
+  environment only, never from a `.env`, a relative path resolved against the
+  current directory; a missing file is an `error:` and exit 2 before any work
+  — else the nearest `.env` in the current directory or
   its parents, else the `.env` at this repo's root (found next to the
   installed package, hence the editable install).
-- **Traceability.** Every run prints `Config: .env = <path>` (or
-  `Config: no .env file found`) first, and the ingest paths (`vault` run,
-  `cb_corpus`, `company`) print `Qdrant: <host>:<port>` as eigenmind will
-  resolve it, with a stderr `warning:` on port 6333 (the legacy store).
+- **Traceability.** Every run prints `Config: .env = <absolute path>` (or
+  `Config: no .env file found`) first. Every ingest run (`vault`, `cb_corpus`,
+  `company`, not `--count-only`) then prints `Qdrant: <host>:<port>` once the
+  engine's store is constructed — read from that store, i.e. after
+  eigenmind's own python-dotenv ran at its first import (which can still set
+  a `QDRANT_*` key our `.env` left unset) — with a stderr `warning:` on port
+  6333 (the legacy store; compared numerically, an empty value reads as the
+  default). `--count-only` and `probe` never touch Qdrant and print no
+  `Qdrant:` line.
 - **Literal values.** No `$VAR` expansion, surrounding quotes stripped, and
   **no inline comments**: a `#` after a value is part of the value. A key
   already set in the real environment always wins over the file.
-- **Library callers** (`run_ingest` & co. without the CLI) get no loader: load
-  the `.env` yourself (`data_orchestrator.config.load_dotenv()`) before
-  importing anything that reaches eigenmind.
+- **Library callers** (`run_ingest` & co. without the CLI) get no loader
+  *first*: `vault.connect()` and `routing.corpus_root()` call
+  `config.load_dotenv()` lazily (raising `FileNotFoundError` when
+  `DATA_ORCHESTRATOR_DOTENV` names a missing file), which may be after
+  eigenmind's python-dotenv already ran. Call
+  `data_orchestrator.config.load_dotenv()` yourself before importing
+  anything that reaches eigenmind.
 
 ## Disk sources
 
@@ -235,22 +247,23 @@ data-orchestrator vault --corpus central-bank --ocr always
 | flag | meaning |
 |---|---|
 | `--corpus NAME` | vault corpus to operate on (default: per-source — `central-bank` for `vault`/`cb_corpus`/`probe`, `company` for `company`) |
-| `--no-vault` | use the local JSON-lines file ledger instead of the vault's `rag_ingestions` (no vault state is read or written); only valid with the `cb_corpus`/`company` disk sources |
+| `--no-vault` | (cb_corpus/company) use the local JSON-lines file ledger instead of the vault's `rag_ingestions`, and append the run report to `state_dir()/runs.jsonl` (no vault state is read or written). Rejected for the `vault` source (exit 2); **ignored by `probe`**, which always reads and writes the vault |
+| `--ledger PATH` | (cb_corpus/company with `--no-vault`) path of the file ledger (default `state_dir()/<collection>.jsonl`); ignored otherwise |
 | `--ocr auto\|always\|never` | OCR fallback for scanned pages (default `auto`: defers to the engine's tesseract availability check) |
 | `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` via `routing.collection_name` — the same resolution for every source, using `--corpus` or the source's implied corpus) |
 | `--source-codes a,b` | (vault source) only these `source_code` values, e.g. `ecb,fr` |
-| `--doctypes C1,A3` | only these doc-type codes (cb_corpus); `A1` etc. for company |
+| `--doctypes C1,A3` | only these doc-type codes (cb_corpus, vault); `A1` etc. for company |
 | `--languages en,fr` | (vault source) only these language codes |
-| `--year-min` / `--year-max` | inclusive year bounds |
+| `--year-min` / `--year-max` | inclusive year bounds (cb_corpus, company, vault) |
 | `--banks a,b` | (cb_corpus source) only these bank codes |
 | `--groups a,b` | (cb_corpus source) comma list of doc groups, e.g. A,C |
 | `--ciks 320193,789019` | (company source) only these SEC CIK numbers |
 | `--prefer pdf\|text` | (company source) rendered PDF (default) or cleaned text |
 | `--root PATH` | (cb_corpus/company sources) corpus root override |
-| `--limit N` | stop after N newly ingested docs (`N >= 1`; `0` or negative is an error, exit 2) |
+| `--limit N` | stop after N newly ingested docs; for `probe`, probe at most N documents (`N >= 1`; `0` or negative is an error, exit 2) |
 | `--progress-every N` | progress line every N documents (`N >= 1`, default 25) |
 | `--no-resume` | (disk sources) ignore the resume ledger, re-ingest everything. **Rejected for the `vault` source** (exit 2), by design: its resume *is* the `documents`/`rag_ingestions` anti-join, and a policy change means a fresh collection — re-ingest into a new `--collection` name. Re-ingesting into the same collection would leave stale chunks behind when the new chunking yields fewer chunks than the points already stored |
-| `--count-only` | just count matching documents, do not ingest (every source); for `vault`, also the unsupported documents and their per-source split; a NULL `source_code`/`doc_type` is counted as `unknown` |
+| `--count-only` | just count matching documents, do not ingest (cb_corpus, company, vault; **ignored by `probe`**, which runs); for `vault`, also the unsupported documents and their per-source split. A NULL `source_code` is counted under the corpus name — the label the run report's `sources[]` uses (`core.source_label`) — and a NULL `doc_type` as `unknown`. No run report, no `Qdrant:` line |
 
 `--include-html` was removed (argparse rejects it, exit 2): eigenmind has no
 HTML reader, so every such file was a per-document error. HTML is converted to
@@ -284,7 +297,8 @@ dropped (`text/plain; charset=utf-8` → `text/plain`), whitespace trimmed, blan
 `.html`) and a row with no `local_path` are unsupported. Unsupported rows are
 never offered to the engine; they are counted as `docs_unsupported` (run
 report totals and each `sources[]` entry, also for a source code that has only
-unsupported documents) and never degrade a run. Disk sources do not report the
+unsupported documents; a NULL `source_code` is filed under the corpus name, as
+for the ingested ones) and never degrade a run. Disk sources do not report the
 key (they cannot know).
 
 ## The write protocol
@@ -302,9 +316,13 @@ built here.
 
 ## Run reports and exit codes
 
-Every run writes a telemetry row to the vault's `runs` table (or appends
-`state_dir()/runs.jsonl` with `--no-vault`): run id, `corpus`, per-source
-counters and the outcome. Exit codes are honest:
+Every ingest run (`vault`, `cb_corpus`, `company`) writes a telemetry row to
+the vault's `runs` table (or appends `state_dir()/runs.jsonl` with
+`--no-vault`): run id, `corpus`, per-source counters and the outcome — on a
+fatal error too, best effort (a vault that cannot be reached cannot record it;
+the failure is said on stderr). **No report** is written by `--count-only`, by
+`probe`, or by a run stopped by a pre-flight error (exit 1 or 2, before any
+work). Exit codes are honest:
 
 - `0` **ok**;
 - `3` **degraded** when (a) nothing was ingested while attempts failed, or
@@ -315,7 +333,14 @@ counters and the outcome. Exit codes are honest:
 - `1` **failed**: a fatal error (e.g. Qdrant unreachable, a collection stored
   with another vector dimension, or a named-vector collection, whose
   dimension cannot be verified: either one is refused before any document,
-  whether it pre-existed or a concurrent run just created it).
+  whether it pre-existed or a concurrent run just created it); also a
+  pre-flight error (unknown `--corpus`, missing corpus root or `--root`, a
+  cb_corpus root without manifest), with no report;
+- `2` **usage/config error**, before any work and with no report: bad
+  arguments (argparse), `--limit`/`--progress-every` below 1, `--no-vault` or
+  `--no-resume` on the `vault` source, a missing `DATA_ORCHESTRATOR_DOTENV`
+  file, an invalid `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` or
+  `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`.
 
 `runs.corpus` is now written on every report (success and fatal, all
 sources). **Caveat:** the vault health views `runs_sources`,
@@ -388,8 +413,8 @@ counted as an error, while every other document in the batch still commits.
 Integration tests spin up throwaway Postgres and Qdrant containers via
 `docker run` (skipped automatically if Docker is unavailable) and use a tiny
 embedding model (`DATA_ORCHESTRATOR_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`)
-to keep CI fast. CI (`.github/workflows/tests.yml`) runs both suites on every
-push/PR, checking out this repo and the `MyOpenFund/eigenmind` fork side by
+to keep CI fast. CI (`.github/workflows/tests.yml`) runs both suites on pushes
+to `main` and on pull requests, checking out this repo and the `MyOpenFund/eigenmind` fork side by
 side, the fork **pinned by commit** (`ref:
 84d2ac41fb06704bdbc012afd1a010e758bcb5a1`; upstream rewrote its history on
 2026-11-08). To match CI locally:
