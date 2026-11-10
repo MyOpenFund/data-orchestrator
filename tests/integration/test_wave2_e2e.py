@@ -68,7 +68,9 @@ def test_cli_vault_ingests_selection_and_records_state(
 ):
     _seed(clean_state, corpus_dir)
     rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
-    assert rc == 0
+    # doc-gone is 1 failure of 3 attempted (33 %), above the 10 % default
+    # failure ratio (policy.py): the run ingested something but is degraded.
+    assert rc == 3
     conn = psycopg2.connect(clean_state)
     with conn.cursor() as cur:
         cur.execute("SELECT doc_id FROM rag_ingestions ORDER BY doc_id")
@@ -80,9 +82,9 @@ def test_cli_vault_ingests_selection_and_records_state(
     assert client.count(_coll()).count > 0
 
     with psycopg2.connect(clean_state) as conn2, conn2.cursor() as cur:
-        cur.execute("SELECT tool, outcome FROM runs")
+        cur.execute("SELECT tool, outcome, corpus FROM runs")
         runs = cur.fetchall()
-    assert runs and runs[0][0] == "data-orchestrator"
+    assert runs == [("data-orchestrator", "degraded", "central-bank")]
 
 
 def test_cli_vault_second_run_selects_nothing(

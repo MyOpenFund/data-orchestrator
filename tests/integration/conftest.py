@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS runs (
     exit_code INTEGER NOT NULL,
     totals JSONB,
     sources JSONB,
+    corpus TEXT,
     extra JSONB,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

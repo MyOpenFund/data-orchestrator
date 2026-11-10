@@ -41,6 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import policy
 from .core import Ledger, SourceItem, run_ingest, IngestStats
 from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
@@ -152,42 +153,60 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
 # Run reports — the shared contract shape written to the vault's ``runs``
 # table (or, with --no-vault, appended to STATE_DIR/runs.jsonl).
 #
-# Doctrine (fixed): degraded/exit 3 iff docs_ingested == 0 and docs_error > 0
-# (a run that touched documents and got none of them in); otherwise ok/0. A
-# fatal exception is reported separately as failed/exit 1 (_fatal_report).
+# The ok/degraded rule (incl. the failure-ratio threshold) lives in
+# ``policy.py``; a fatal exception is reported separately as failed/exit 1
+# (_fatal_report).
 # ---------------------------------------------------------------------------
-def _build_report(command: str, stats: IngestStats, started_at: str) -> dict:
+
+# Same cap as central-bank-corpus runreport.py (the other writer of runs.extra->>'fatal').
+FATAL_MAX_CHARS = 500
+
+
+def _build_report(command: str, stats: IngestStats, started_at: str, *,
+                  corpus: str, ratio: float = policy.DEFAULT_DEGRADED_FAILURE_RATIO,
+                  unsupported: dict[str, int] | None = None) -> dict:
     totals = {
         "docs_seen": stats.docs_seen,
         "docs_new": stats.docs_ingested,
         "docs_failed": stats.docs_error,
         "docs_path_metadata": stats.docs_path_metadata,
     }
-    sources = [
-        {"source_code": code, **counts}
-        for code, counts in sorted(stats.by_source.items())
-    ]
-    degraded = stats.docs_ingested == 0 and stats.docs_error > 0
+    by_source = {code: dict(counts) for code, counts in stats.by_source.items()}
+    if unsupported is not None:
+        totals["docs_unsupported"] = sum(unsupported.values())
+        for code in unsupported:
+            by_source.setdefault(code, {"docs_seen": 0, "docs_new": 0, "docs_failed": 0})
+        for code, counts in by_source.items():
+            counts["docs_unsupported"] = unsupported.get(code, 0)
+    sources = [{"source_code": code, **counts} for code, counts in sorted(by_source.items())]
+    outcome, exit_code = policy.run_outcome(
+        docs_ingested=stats.docs_ingested, docs_empty=stats.docs_empty,
+        docs_failed=stats.docs_error, ratio=ratio,
+    )
     return {
         "run_id": str(uuid.uuid4()),
         "tool": "data-orchestrator",
         "command": command,
+        "corpus": corpus,
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
-        "outcome": "degraded" if degraded else "ok",
-        "exit_code": 3 if degraded else 0,
+        "outcome": outcome,
+        "exit_code": exit_code,
         "totals": totals,
         "sources": sources,
     }
 
 
-def _fatal_report(command: str, started_at: str, exc: Exception) -> dict:
-    """Best-effort report for a run that never reached a normal IngestStats
-    outcome (e.g. the vault connection or the engine itself failed)."""
-    rep = _build_report(command, IngestStats(), started_at)
+def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str) -> dict:
+    """Best-effort report for a run that never reached a normal outcome.
+
+    The reason goes under ``fatal`` (runs.extra->>'fatal'), the key
+    central-bank-corpus already writes; it was ``error`` before 2026-11.
+    """
+    rep = _build_report(command, IngestStats(), started_at, corpus=corpus)
     rep["outcome"] = "failed"
     rep["exit_code"] = 1
-    rep["error"] = f"{type(exc).__name__}: {exc}"
+    rep["fatal"] = f"{type(exc).__name__}: {exc}"[:FATAL_MAX_CHARS]
     return rep
 
 
@@ -404,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
 
-        rep = _build_report(args.source, stats, started_at)
+        rep = _build_report(args.source, stats, started_at, corpus=args.corpus)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -434,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
                     report_conn.close()
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report(args.source, started_at, exc)
+        rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -503,14 +522,14 @@ def _run_vault_source(args, collection: str) -> int:
         )
         _print_summary(stats)
 
-        rep = _build_report("vault", stats, started_at)
+        rep = _build_report("vault", stats, started_at, corpus=args.corpus)
         try:
             vault_mod.insert_run_report(conn, rep)
         except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
             print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report("vault", started_at, exc)
+        rep = _fatal_report("vault", started_at, exc, corpus=args.corpus)
         if conn is not None:
             try:
                 vault_mod.insert_run_report(conn, rep)

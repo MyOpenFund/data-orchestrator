@@ -20,13 +20,12 @@ RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
 # The `runs` columns this writer fills, in INSERT order. Single source of
 # truth: the SQL below is built from it, and `insert_run_report` sweeps every
 # report key that is NOT in it into `extra` (JSONB). Mirrors the vault
-# ingester's `KNOWN_FIELDS` (`vault/ingestion/ingest_runs.py`). The vault's
-# `runs.corpus` column (nullable; being added by the vault substrate chantier)
-# is deliberately NOT written here: the orchestrator is corpus-agnostic and
-# leaves it NULL, so this insert needs no schema coordination.
+# ingester's `KNOWN_FIELDS` (`vault/ingestion/ingest_runs.py`). `corpus`
+# (vault `runs.corpus`, issue #18) is the resolved `--corpus`, the same value
+# as `rag_ingestions.corpus`.
 _RUN_COLUMNS = (
     "run_id", "tool", "command", "started_at", "finished_at",
-    "outcome", "exit_code", "totals", "sources",
+    "outcome", "exit_code", "totals", "sources", "corpus",
 )
 
 # Columns whose report value must be JSON-encoded before it hits the driver.
@@ -75,7 +74,7 @@ def insert_run_report(conn, report: dict) -> None:
     tolerates a raising insert with a warning rather than letting it mask
     the run's own outcome.
 
-    Report keys outside ``_RUN_COLUMNS`` (notably ``error``, set by
+    Report keys outside ``_RUN_COLUMNS`` (notably ``fatal``, set by
     ``cli._fatal_report``) are swept into ``extra``; an empty sweep writes SQL
     NULL rather than ``'{}'``, so ``extra IS NULL`` means the same thing here
     as in the vault ingester.
