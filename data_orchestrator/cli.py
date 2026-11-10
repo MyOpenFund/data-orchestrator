@@ -41,19 +41,26 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import policy
+from . import config, policy
 from .core import Ledger, SourceItem, run_ingest, IngestStats
 from .routing import collection_name
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
 
-# Ledger lives at the repo root (one level above this package), or wherever
-# ``DATA_ORCHESTRATOR_STATE_DIR`` points (useful once installed site-wide).
-STATE_DIR = Path(
-    os.environ.get(
-        "DATA_ORCHESTRATOR_STATE_DIR", Path(__file__).resolve().parents[1] / "state"
-    )
-)
+
+def state_dir() -> Path:
+    """Directory of the ``--no-vault`` file ledger and run reports.
+
+    ``DATA_ORCHESTRATOR_STATE_DIR`` (useful once installed site-wide), else
+    ``<repo>/state`` (one level above this package). Read at call time, never
+    at import: the key may come from the ``.env`` that ``main()`` loads first.
+    """
+    value = os.environ.get("DATA_ORCHESTRATOR_STATE_DIR")
+    if value:
+        return Path(value)
+    return Path(__file__).resolve().parents[1] / "state"
+
+
 # Selectable sources.
 SOURCES = ("cb_corpus", "company", "vault", "probe")
 
@@ -151,7 +158,7 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
 
 # ---------------------------------------------------------------------------
 # Run reports — the shared contract shape written to the vault's ``runs``
-# table (or, with --no-vault, appended to STATE_DIR/runs.jsonl).
+# table (or, with --no-vault, appended to state_dir()/runs.jsonl).
 #
 # The ok/degraded rule (incl. the failure-ratio threshold) lives in
 # ``policy.py``; a fatal exception is reported separately as failed/exit 1
@@ -211,9 +218,10 @@ def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str)
 
 
 def _append_report_jsonl(report: dict) -> None:
-    """--no-vault fallback: a single atomic append to STATE_DIR/runs.jsonl."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with (STATE_DIR / "runs.jsonl").open("a", encoding="utf-8") as fh:
+    """--no-vault fallback: a single atomic append to state_dir()/runs.jsonl."""
+    folder = state_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / "runs.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(report) + "\n")
 
 
@@ -282,6 +290,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
+    # The one .env loader (issue #8), run before anything can import eigenmind:
+    # eigenmind's own python-dotenv (override=False) runs at its first import
+    # and can then only add keys this file did not set. No $VAR interpolation
+    # here — values are taken literally, surrounding quotes stripped.
+    config.load_dotenv()
 
     # Guard against invalid --progress-every early, before any engine/DB work.
     if getattr(args, "progress_every", 1) <= 0:
@@ -393,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.no_resume:
             if args.no_vault:
-                ledger_path = Path(args.ledger) if args.ledger else STATE_DIR / f"{collection}.jsonl"
+                ledger_path = Path(args.ledger) if args.ledger else state_dir() / f"{collection}.jsonl"
                 ledger = Ledger(ledger_path)
                 print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
             else:

@@ -271,7 +271,7 @@ def test_cb_corpus_report_carries_its_implied_corpus(monkeypatch, tmp_path):
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
-    monkeypatch.setattr(cli, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "raw").mkdir()
     (tmp_path / "manifest").mkdir()
     (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
@@ -286,7 +286,7 @@ def test_company_report_carries_its_implied_corpus(monkeypatch, tmp_path,
     from data_orchestrator import cli
 
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
-    monkeypatch.setattr(cli, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
     captured = _capture_no_vault_report(monkeypatch)
 
     assert cli.main(["company", "--no-vault", "--ciks", "320193"]) == 0
@@ -298,7 +298,7 @@ def test_fatal_report_from_cli_carries_the_corpus(monkeypatch, tmp_path,
     from data_orchestrator import cli
 
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
-    monkeypatch.setattr(cli, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
 
     def boom(*args, **kwargs):
         raise RuntimeError("engine init failed")

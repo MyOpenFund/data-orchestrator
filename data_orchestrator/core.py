@@ -14,6 +14,12 @@ Responsibilities the core owns (so sources don't have to):
   spans documents.
 
 A *source* only has to yield :class:`SourceItem` objects.
+
+eigenmind is imported on first use, never at import: ``cli.main`` must load
+this repo's ``.env`` before eigenmind's python-dotenv runs (issue #8). The
+engine entry points below are thin lazy wrappers kept as module attributes, so
+tests can still monkeypatch ``core.chunk_with_chunknorris``, ``core.detect_device``,
+``core.EmbeddingModel`` and ``core.QdrantStore``.
 """
 from __future__ import annotations
 
@@ -26,13 +32,38 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from chunknorris.exceptions import TextNotFoundException
-from eigenmind.config import BATCH_SIZE
-from eigenmind.core.chunking import chunk_with_chunknorris
-from eigenmind.core.embeddings import EmbeddingModel, detect_device
-from eigenmind.vectordb.store import QdrantStore
 from qdrant_client.models import PointStruct
 
 from .routing import embedding_model_name
+
+# ---------------------------------------------------------------------------
+# Lazy engine entry points (issue #8: no eigenmind import at module import)
+# ---------------------------------------------------------------------------
+def chunk_with_chunknorris(filepath, use_ocr=None):
+    from eigenmind.core.chunking import chunk_with_chunknorris as _chunk
+    return _chunk(filepath, use_ocr=use_ocr)
+
+
+def detect_device():
+    from eigenmind.core.embeddings import detect_device as _detect
+    return _detect()
+
+
+def EmbeddingModel(**kwargs):  # noqa: N802 — stands in for the engine class
+    from eigenmind.core.embeddings import EmbeddingModel as _Model
+    return _Model(**kwargs)
+
+
+def QdrantStore():  # noqa: N802 — stands in for the engine class
+    from eigenmind.vectordb.store import QdrantStore as _Store
+    return _Store()
+
+
+def _default_batch_size() -> int:
+    """eigenmind's upsert batch size, read on first use (not at import)."""
+    from eigenmind.config import BATCH_SIZE
+    return BATCH_SIZE
+
 
 # CLI --ocr mode -> engine use_ocr argument. "auto" defers to the engine's
 # availability check (None), so a machine without tesseract degrades to
@@ -159,10 +190,10 @@ def ingest_item(
     item: SourceItem,
     collection: str,
     *,
-    store: QdrantStore,
-    embedder: EmbeddingModel,
+    store: object,
+    embedder: object,
     ocr: str = "auto",
-    batch_size: int = BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> int:
     """Chunk, embed and upsert one document. Returns chunks written.
 
@@ -220,6 +251,7 @@ def ingest_item(
             payload=payload,
         ))
 
+    batch_size = batch_size or _default_batch_size()
     for start in range(0, len(points), batch_size):
         store.client.upsert(collection_name=collection, points=points[start:start + batch_size])
 
@@ -261,11 +293,11 @@ def run_ingest(
     collection: str,
     ledger=None,
     ocr: str = "auto",
-    batch_size: int = BATCH_SIZE,
+    batch_size: int | None = None,
     limit: Optional[int] = None,
     on_progress: Optional[Callable[[IngestStats, SourceItem, str], None]] = None,
-    store: QdrantStore | None = None,
-    embedder: EmbeddingModel | None = None,
+    store: object | None = None,
+    embedder: object | None = None,
 ) -> IngestStats:
     """Ingest a stream of items into ``collection``.
 
@@ -277,6 +309,7 @@ def run_ingest(
     and the embedder is released at the end.
     """
     stats = IngestStats()
+    batch_size = batch_size or _default_batch_size()
     owns_embedder = embedder is None
     store = store or QdrantStore()
     embedder = embedder or EmbeddingModel(
