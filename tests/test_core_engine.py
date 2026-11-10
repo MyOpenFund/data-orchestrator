@@ -414,3 +414,83 @@ def test_run_ingest_refuses_a_wrong_dimension_before_touching_any_document(tmp_p
         run_ingest([_md_item(tmp_path)], collection="c", ledger=RecordingLedger(log),
                    store=store, embedder=FakeEmbedder())
     assert log == []
+
+
+def test_race_winner_with_named_vectors_is_refused():
+    """A named-vector collection has no single ``size``: the dimension cannot
+    be verified, so the fallback refuses it rather than assuming a match."""
+    client = RacingClient(exists=True, size=None)
+    with pytest.raises(RuntimeError, match="cannot verify the dimension of a named-vector collection"):
+        _ensure_collection(RacingStore(client), "c", 8)
+
+
+def test_a_failing_get_collection_after_the_race_reraises_the_original_error():
+    class GetFails(RacingClient):
+        def get_collection(self, collection_name):
+            raise ConnectionError("qdrant went away")
+
+    with pytest.raises(RuntimeError, match="already exists") as excinfo:
+        _ensure_collection(RacingStore(GetFails(exists=True)), "c", 8)
+    assert excinfo.value.__suppress_context__  # raised "from None"
+
+
+def test_an_unreachable_store_reraises_the_original_error_from_none():
+    with pytest.raises(RuntimeError, match="already exists") as excinfo:
+        _ensure_collection(RacingStore(RacingClient(exists=True, exists_raises=True)), "c", 8)
+    assert excinfo.value.__suppress_context__
+
+
+def _racing_qdrant_store(other_dim):
+    """eigenmind's real QdrantStore over an in-memory Qdrant, raced.
+
+    eigenmind's ensure_collection is get-then-create. The wrapper makes its
+    first get_collection see nothing, then lets "another process" create the
+    collection (at ``other_dim``) just before eigenmind's own create, which the
+    real client then refuses ("already exists").
+    """
+    qdrant_client = pytest.importorskip("qdrant_client")
+    store_mod = pytest.importorskip("eigenmind.vectordb.store")
+    from qdrant_client import models
+
+    inner = qdrant_client.QdrantClient(":memory:")
+
+    class Racing:
+        def __init__(self):
+            self.gets = 0
+
+        def get_collection(self, collection_name):
+            self.gets += 1
+            if self.gets == 1:
+                raise ValueError(f"Collection {collection_name} not found")
+            return inner.get_collection(collection_name=collection_name)
+
+        def create_collection(self, collection_name, vectors_config):
+            inner.create_collection(  # the concurrent winner
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(size=other_dim,
+                                                   distance=models.Distance.COSINE),
+            )
+            return inner.create_collection(collection_name=collection_name,
+                                           vectors_config=vectors_config)
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+    store = store_mod.QdrantStore.__new__(store_mod.QdrantStore)
+    store._client = Racing()
+    return store, inner
+
+
+def test_real_qdrant_store_losing_the_race_is_not_fatal():
+    store, inner = _racing_qdrant_store(other_dim=8)
+    with pytest.raises(Exception):  # the bare engine call does lose the race
+        store.ensure_collection("c", 8)
+    store2, inner2 = _racing_qdrant_store(other_dim=8)
+    _ensure_collection(store2, "c", 8)
+    assert inner2.collection_exists("c")
+
+
+def test_real_qdrant_store_race_winner_with_another_dimension_is_refused():
+    store, _inner = _racing_qdrant_store(other_dim=384)
+    with pytest.raises(RuntimeError, match="384-d"):
+        _ensure_collection(store, "c", 8)

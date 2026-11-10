@@ -264,22 +264,34 @@ def _ensure_collection(store, name: str, dim: int) -> None:
     eigenmind's ``ensure_collection`` is get-then-create: two first runs both
     see "not found" and the loser's create raises a 409. If the collection
     exists once the call has failed, the other process created it: carry on.
-    Any other failure is re-raised as it was. Then refuse a collection whose
-    stored dimension differs from the model's (a 768-d upsert into a 384-d
-    collection would fail every document).
+    Any other failure — including one while checking for the race — is
+    re-raised as the original error. Then refuse a collection whose stored
+    dimension differs from the model's (a 768-d upsert into a 384-d
+    collection would fail every document), or cannot be read (named vectors).
     """
     try:
         stored = store.ensure_collection(name, dim)
     except Exception as exc:
+        # Any failure while checking the race reports the ORIGINAL error: it
+        # is the one the operator needs; the follow-up is noise.
         try:
             exists = store.client.collection_exists(name)
         except Exception:
-            raise exc
+            raise exc from None
         if not exists:
             raise
-        info = store.client.get_collection(collection_name=name)
+        try:
+            info = store.client.get_collection(collection_name=name)
+        except Exception:
+            raise exc from None
         size = getattr(info.config.params.vectors, "size", None)
-        stored = int(size) if size is not None else dim
+        if size is None:
+            raise RuntimeError(
+                f"collection {name!r}: cannot verify the dimension of a "
+                f"named-vector collection (the embedding model produces {dim}-d): "
+                "use another --collection"
+            ) from None
+        stored = int(size)
     if stored != dim:
         raise RuntimeError(
             f"collection {name!r} stores {stored}-d vectors but the embedding "
