@@ -101,7 +101,9 @@ via their own connector (`--no-vault`) in the meantime:
   eigenmind's own python-dotenv ran at its first import (which can still set
   a `QDRANT_*` key our `.env` left unset) — with a stderr `warning:` on port
   6333 (the legacy store; compared numerically, `06333` is 6333). A
-  `QDRANT_PORT` that is set but is not a plain integer in `1..65535` (empty
+  `QDRANT_PORT` that is set (in the real environment or in our `.env`; a value
+  only eigenmind's own `.env` provides is checked by the engine itself, which
+  fails the run as fatal) but is not a plain integer in `1..65535` (empty
   included) stops an ingest run with an `error:` and exit 2 before any work,
   rather than let the engine fail mid-run. `--count-only` and `probe` never
   touch Qdrant, do not check `QDRANT_PORT` and print no `Qdrant:` line.
@@ -302,12 +304,12 @@ three ways: `totals.docs_unsupported` (the sum); `docs_unsupported` on each
 `sources[]` entry (`0` when none) — `sources[]` lists only the source codes
 the run actually touched, so a source code with only unsupported documents is
 not there; and the full per-source split, every source code included, as
-`unsupported_by_source` (a JSON object sorted by key, stored in
+`unsupported_by_source` (a JSON object, keys sorted in the report — Postgres JSONB keeps its own key order — stored in
 `runs.extra->'unsupported_by_source'`, written on every vault run, `{}` when
 there are none; a fatal run keeps it when the count was computed before the
 failure). A NULL `source_code` is filed under the corpus name, as for
-the ingested ones. Before each run the CLI prints `Skipping N document(s)…`
-with the count. Disk sources report none of these keys (they cannot know).
+the ingested ones. Before each run that has any, the CLI prints
+`Skipping N document(s)…` with the count. Disk sources report none of these keys (they cannot know).
 
 ## The write protocol
 

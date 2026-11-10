@@ -61,7 +61,7 @@ MIME_EXTENSIONS: dict[str, tuple[str, ...]] = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": (".pptx",),
 }
 SUPPORTED_MIME_ENV = "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES"
-# Default = everything the engine reads (Marc, 2026-11-10). text/html is
+# Default = everything the engine reads (decided 2026-11-10). text/html is
 # deliberately absent: HTML is converted to .md or PDF before eigenmind.
 DEFAULT_SUPPORTED_MIME_TYPES: tuple[str, ...] = tuple(MIME_EXTENSIONS)
 
