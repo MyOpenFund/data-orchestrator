@@ -17,31 +17,35 @@ still reported ``ok``.
 """
 from __future__ import annotations
 
-import math
 import os
+import re
 
 DEGRADED_RATIO_ENV = "DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO"
 # Off-spec choice made explicit (Marc, 2026-11-10): above 10 % failures the
 # run is degraded. 0 = any failure degrades; 1 = rule (b) off.
 DEFAULT_DEGRADED_FAILURE_RATIO = 0.10
+# Plain decimal only: "0", "0.25", ".5". float() alone would also take
+# "0_1", "1e-1", "inf" or "nan", none of which an operator means as a ratio.
+_DECIMAL = re.compile(r"\d+(\.\d+)?|\.\d+", re.ASCII)
 
 
 def degraded_failure_ratio() -> float:
     """The configured threshold. Unset or blank -> default.
 
     Raises ``ValueError`` (caller turns it into exit 2) for a value that is not
-    a number in ``[0, 1]``.
+    a plain decimal (``0``, ``0.25``, ``.5``; surrounding whitespace ignored)
+    in ``[0, 1]``.
     """
     raw = os.environ.get(DEGRADED_RATIO_ENV)
     if raw is None or not raw.strip():
         return DEFAULT_DEGRADED_FAILURE_RATIO
-    try:
-        value = float(raw.strip())
-    except ValueError:
+    text = raw.strip()
+    if not _DECIMAL.fullmatch(text):
         raise ValueError(
-            f"{DEGRADED_RATIO_ENV}={raw!r} is not a number (expected 0..1)"
-        ) from None
-    if math.isnan(value) or not 0.0 <= value <= 1.0:
+            f"{DEGRADED_RATIO_ENV}={raw!r} is not a plain decimal number (expected 0..1)"
+        )
+    value = float(text)
+    if not 0.0 <= value <= 1.0:
         raise ValueError(f"{DEGRADED_RATIO_ENV}={raw!r} is outside 0..1")
     return value
 

@@ -84,17 +84,33 @@ def supported_mime_types() -> tuple[str, ...]:
             mimes.append(mime)
     if not mimes:
         raise ValueError(f"{SUPPORTED_MIME_ENV}={raw!r} lists no mime type")
-    unknown = [m for m in mimes if m not in MIME_EXTENSIONS]
+    return validate_mimes(mimes, origin=SUPPORTED_MIME_ENV)
+
+
+def validate_mimes(mimes, *, origin: str) -> tuple[str, ...]:
+    """``mimes`` as a tuple, checked against the engine's table.
+
+    Entries must already be normalised (trimmed, lower-cased, no parameters):
+    anything that is not a key of ``MIME_EXTENSIONS`` is refused. ``origin``
+    names where the list came from, for the message. Raises ``ValueError`` on
+    an empty list or on an entry the engine cannot read.
+    """
+    if isinstance(mimes, str):
+        raise ValueError(f"{origin} must be a sequence of mime types, not the string {mimes!r}")
+    mimes = tuple(mimes)
+    if not mimes:
+        raise ValueError(f"{origin} lists no mime type")
+    unknown = [str(m) for m in mimes if m not in MIME_EXTENSIONS]
     if unknown:
         raise ValueError(
-            f"{SUPPORTED_MIME_ENV}: the engine cannot read {', '.join(unknown)} "
+            f"{origin}: the engine cannot read {', '.join(unknown)} "
             f"(known: {', '.join(MIME_EXTENSIONS)})"
         )
-    return tuple(mimes)
+    return mimes
 
 
 def supported_extensions(mimes) -> tuple[str, ...]:
-    """File extensions of ``mimes`` (for vault rows whose mime_type is NULL)."""
+    """File extensions of ``mimes`` (the vault selection requires one on every row)."""
     exts: list[str] = []
     for mime in mimes:
         for ext in MIME_EXTENSIONS[mime]:

@@ -2,9 +2,11 @@
 import logging
 from datetime import date
 
+import pytest
+
 from data_orchestrator.sources.vault import (
-    _SELECT_COLUMNS, build_selection_sql, build_unsupported_sql, count_unsupported,
-    iter_items, row_to_item,
+    _SELECT_COLUMNS, _SUPPORTED_PREDICATE, _where, build_selection_sql,
+    build_unsupported_sql, count_unsupported, iter_items, row_to_item,
 )
 
 from .conftest import DescribedFakeConn
@@ -126,13 +128,16 @@ def test_iter_items_stays_quiet_when_every_row_has_a_path(
     assert caplog.text == ""
 
 
-def test_selection_restricts_to_supported_types_with_extension_fallback():
+def test_selection_requires_a_supported_extension_and_a_null_or_supported_mime():
     sql, params = build_selection_sql("central-bank", "c",
                                       supported_mimes=("application/pdf",))
     flat = " ".join(sql.split())
-    assert "= ANY(%(supported_mimes)s)" in flat
-    assert "lower(d.local_path) LIKE ANY(%(supported_ext_patterns)s)" in flat
-    assert "split_part(lower(d.mime_type), ';', 1)" in flat
+    # the engine dispatches on the extension: the path test is unconditional
+    assert ("lower(rtrim(d.local_path, E' \\t\\r\\n')) "
+            "LIKE ANY(%(supported_ext_patterns)s) AND") in flat
+    assert "IS NULL OR" in flat and "= ANY(%(supported_mimes)s)" in flat
+    assert "btrim(split_part(lower(d.mime_type), ';', 1), E' \\t\\r\\n')" in flat
+    assert flat.count("coalesce(") == 1
     assert params["supported_mimes"] == ["application/pdf"]
     assert params["supported_ext_patterns"] == ["%.pdf"]
 
@@ -144,15 +149,61 @@ def test_selection_default_mimes_come_from_routing(monkeypatch):
     assert params["supported_ext_patterns"] == ["%.md"]
 
 
+_ALL_FILTERS = dict(source_codes=["ecb", "fr"], doctypes=["A1"], year_min=2015,
+                    year_max=2020, languages=["en"], supported_mimes=("application/pdf",))
+
+
+def _where_clause(sql):
+    return sql.split("WHERE ", 1)[1].split("\n", 1)[0]
+
+
 def test_unsupported_sql_negates_the_predicate_with_the_same_filters():
-    sel, sel_params = build_selection_sql("central-bank", "c", doctypes=["A1"],
-                                          supported_mimes=("application/pdf",))
-    uns, uns_params = build_unsupported_sql("central-bank", "c", doctypes=["A1"],
-                                            supported_mimes=("application/pdf",))
-    flat = " ".join(uns.split())
-    assert "NOT coalesce(" in flat and "GROUP BY d.source_code" in flat
-    assert "d.doc_type = ANY(%(doctypes)s)" in flat and "r.doc_id IS NULL" in flat
+    sel, sel_params = build_selection_sql("central-bank", "c", **_ALL_FILTERS)
+    uns, uns_params = build_unsupported_sql("central-bank", "c", **_ALL_FILTERS)
+    assert _SUPPORTED_PREDICATE in sel
+    assert f"NOT {_SUPPORTED_PREDICATE}" in uns
+    sel_where, uns_where = _where_clause(sel), _where_clause(uns)
+    # identical WHERE except for the negation: an exact partition of candidates
+    assert uns_where == sel_where.replace(_SUPPORTED_PREDICATE,
+                                          f"NOT {_SUPPORTED_PREDICATE}")
+    assert sel_where.count(_SUPPORTED_PREDICATE) == 1
+    for clause in ("d.source_code = ANY(%(source_codes)s)", "d.doc_type = ANY(%(doctypes)s)",
+                   "d.year >= %(year_min)s", "d.year <= %(year_max)s",
+                   "d.language = ANY(%(languages)s)", "r.doc_id IS NULL",
+                   "d.deleted_at IS NULL", "d.corpus = %(corpus)s"):
+        assert clause in sel_where
+    assert "GROUP BY d.source_code" in uns
     assert uns_params == sel_params
+
+
+def test_where_takes_typed_keywords_only():
+    clauses, params = _where("central-bank", "c", source_codes=["ecb"], year_min=2015,
+                             supported_mimes=("text/markdown",))
+    assert "d.source_code = ANY(%(source_codes)s)" in clauses
+    assert params["supported_ext_patterns"] == ["%.md"]
+    with pytest.raises(TypeError):
+        _where("central-bank", "c", doc_types=["A1"])  # typo is an error
+    with pytest.raises(TypeError):
+        build_selection_sql("central-bank", "c", doc_types=["A1"])
+
+
+@pytest.mark.parametrize("builder", [build_selection_sql, build_unsupported_sql])
+@pytest.mark.parametrize("mimes,match", [
+    ((), "supported_mimes lists no mime type"),
+    (("application/pdf", "text/html"), "supported_mimes: the engine cannot read text/html"),
+    (("Application/PDF",), "the engine cannot read Application/PDF"),
+    ((" text/plain",), "the engine cannot read  text/plain"),
+])
+def test_explicit_supported_mimes_are_validated(builder, mimes, match):
+    with pytest.raises(ValueError, match=match):
+        builder("central-bank", "c", supported_mimes=mimes)
+
+
+def test_count_unsupported_validates_explicit_mimes_before_querying():
+    conn = DescribedFakeConn(rows=[])
+    with pytest.raises(ValueError, match="text/html"):
+        count_unsupported(conn, "central-bank", "c", supported_mimes=("text/html",))
+    assert conn.executed == []
 
 
 def test_count_unsupported_folds_null_source_code_into_unknown():

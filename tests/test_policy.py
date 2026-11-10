@@ -27,6 +27,21 @@ def test_ratio_zero_degrades_on_any_failure():
     assert _outcome(1000, 0, 1, ratio=0.0) == ("degraded", 3)
 
 
+def test_nothing_ingested_with_empties_and_a_failure_is_degraded():
+    # rule (a) wins even though 1/6 attempted is the only failure
+    assert _outcome(0, 5, 1) == ("degraded", 3)
+
+
+def test_ratio_quarter_boundary():
+    assert _outcome(3, 0, 1, ratio=0.25) == ("ok", 0)        # 1/4 = 0.25, not above
+    assert _outcome(5, 0, 2, ratio=0.25) == ("degraded", 3)  # 2/7 > 0.25
+
+
+def test_ratio_boundary_at_scale():
+    assert _outcome(900, 0, 100) == ("ok", 0)        # 100/1000 = 0.10
+    assert _outcome(899, 0, 101) == ("degraded", 3)  # 101/1000 > 0.10
+
+
 def test_ratio_one_disables_rule_b():
     assert _outcome(1, 0, 99, ratio=1.0) == ("ok", 0)
 
@@ -40,7 +55,8 @@ def test_empty_only_run_is_ok():
 
 
 @pytest.mark.parametrize("raw,expected", [(None, 0.10), ("", 0.10), ("  ", 0.10),
-                                          ("0", 0.0), ("1", 1.0), (" 0.25 ", 0.25)])
+                                          ("0", 0.0), ("1", 1.0), (" 0.25 ", 0.25),
+                                          (".5", 0.5), ("1.0", 1.0), ("0.10", 0.10)])
 def test_ratio_env_parsing(monkeypatch, raw, expected):
     if raw is None:
         monkeypatch.delenv(policy.DEGRADED_RATIO_ENV, raising=False)
@@ -49,7 +65,8 @@ def test_ratio_env_parsing(monkeypatch, raw, expected):
     assert policy.degraded_failure_ratio() == expected
 
 
-@pytest.mark.parametrize("raw", ["-0.1", "1.5", "abc", "nan", "10%"])
+@pytest.mark.parametrize("raw", ["-0.1", "1.5", "abc", "nan", "10%", "0_1", "inf",
+                                 "-inf", "1e-1", "0,1", "NaN", "+0.1", "1."])
 def test_ratio_env_rejects_bad_values(monkeypatch, raw):
     monkeypatch.setenv(policy.DEGRADED_RATIO_ENV, raw)
     with pytest.raises(ValueError, match=policy.DEGRADED_RATIO_ENV):
@@ -87,3 +104,27 @@ def test_mime_env_with_a_type_the_engine_cannot_read_is_rejected(monkeypatch):
     monkeypatch.setenv(routing.SUPPORTED_MIME_ENV, "application/pdf,text/html")
     with pytest.raises(ValueError, match="text/html"):
         routing.supported_mime_types()
+
+
+def test_validate_mimes_returns_a_tuple_of_known_types():
+    assert routing.validate_mimes(["application/pdf", "text/markdown"], origin="x") == (
+        "application/pdf", "text/markdown")
+
+
+@pytest.mark.parametrize("mimes", [(), []])
+def test_validate_mimes_rejects_an_empty_list(mimes):
+    with pytest.raises(ValueError, match="supported_mimes lists no mime type"):
+        routing.validate_mimes(mimes, origin="supported_mimes")
+
+
+@pytest.mark.parametrize("bad", ["text/html", "Application/PDF", " application/pdf",
+                                 "text/plain; charset=utf-8"])
+def test_validate_mimes_rejects_unknown_or_non_normalised_entries(bad):
+    with pytest.raises(ValueError,
+                       match=r"supported_mimes: the engine cannot read .*\(known: "):
+        routing.validate_mimes(("application/pdf", bad), origin="supported_mimes")
+
+
+def test_validate_mimes_rejects_a_bare_string():
+    with pytest.raises(ValueError, match="not the string"):
+        routing.validate_mimes("application/pdf", origin="supported_mimes")

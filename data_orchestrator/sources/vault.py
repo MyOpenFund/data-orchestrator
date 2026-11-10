@@ -2,9 +2,13 @@
 
 "New document detection" is this query — everything the vault knows for a
 corpus that the target collection has not ingested yet, restricted to the
-types the engine can read (``routing.supported_mime_types``; a row with no
-usable mime_type falls back on its file extension). The candidates it leaves
-out are counted per source by ``count_unsupported``, never silently. Payloads
+types the engine can read (``routing.supported_mime_types``). The engine
+dispatches on the file extension, so a row is supported iff its
+``local_path`` ends with an extension of a supported type AND its mime_type
+is either unusable (NULL/blank) or itself supported; a supported mime with a
+foreign or missing extension, or a NULL ``local_path``, is unsupported. The
+candidates it leaves out are counted per source by ``count_unsupported``,
+never silently. Payloads
 are built from the vault's normalized columns merged with the
 corpus-specific ``extra`` fields (columns always win). File paths join the per-machine corpus root
 (routing) with the vault's relative ``local_path``.
@@ -12,10 +16,12 @@ corpus-specific ``extra`` fields (columns always win). File paths join the per-m
 from __future__ import annotations
 
 import logging
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from ..core import SourceItem
-from ..routing import resolve_local_path, supported_extensions, supported_mime_types
+from ..routing import (
+    resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,25 +33,48 @@ _PAYLOAD_COLUMNS = (
 _SELECT_COLUMNS = _PAYLOAD_COLUMNS + ("local_path", "extra")
 
 
-# A vault mime_type normalised for comparison: lower-cased, parameters dropped
-# ("text/plain; charset=utf-8" -> "text/plain"), blank treated as NULL.
-_MIME_EXPR = "nullif(btrim(split_part(lower(d.mime_type), ';', 1)), '')"
+# Whitespace stripped from both ends of mime_type and the end of local_path.
+_WS = "E' \\t\\r\\n'"
 
-# Supported = a supported mime, or (no usable mime) a supported file extension.
-# coalesce(..., false): a row with neither mime nor local_path is unsupported,
-# never "unknown" (a bare NULL would drop it from both the selection and the
-# unsupported count).
+# A vault mime_type normalised for comparison: lower-cased, parameters dropped
+# ("text/plain; charset=utf-8" -> "text/plain"), spaces/tabs/CR/LF trimmed,
+# blank treated as NULL.
+_MIME_EXPR = f"nullif(btrim(split_part(lower(d.mime_type), ';', 1), {_WS}), '')"
+_PATH_EXPR = f"lower(rtrim(d.local_path, {_WS}))"
+
+# Supported = the path ends with a supported extension (the engine dispatches
+# on it) AND the mime is unusable or supported. A supported mime on a foreign
+# extension ("application/pdf" + ".html") or on no extension is unsupported.
+# coalesce(..., false): a NULL local_path makes the whole test NULL, which
+# would drop the row from both the selection and the unsupported count; with
+# it, the selection and its NOT form an exact partition of the candidates.
 _SUPPORTED_PREDICATE = (
-    f"coalesce(({_MIME_EXPR} = ANY(%(supported_mimes)s)) OR "
-    f"({_MIME_EXPR} IS NULL AND lower(d.local_path) LIKE ANY(%(supported_ext_patterns)s)), "
+    f"coalesce({_PATH_EXPR} LIKE ANY(%(supported_ext_patterns)s) AND "
+    f"({_MIME_EXPR} IS NULL OR {_MIME_EXPR} = ANY(%(supported_mimes)s)), "
     "false)"
 )
 
 
-def _where(corpus, collection, *, supported_mimes, source_codes=None, doctypes=None,
-           year_min=None, year_max=None, languages=None) -> tuple[list[str], dict]:
+def _where(
+    corpus: str,
+    collection: str,
+    *,
+    supported_mimes: Sequence[str] | None = None,
+    source_codes: Sequence[str] | None = None,
+    doctypes: Sequence[str] | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    languages: Sequence[str] | None = None,
+) -> tuple[list[str], dict]:
+    """Candidate clauses (without the supported-type term) and their params.
+
+    ``supported_mimes`` None -> ``routing.supported_mime_types()``; an explicit
+    list is validated by ``routing.validate_mimes`` (``ValueError``).
+    """
     if supported_mimes is None:
         supported_mimes = supported_mime_types()
+    else:
+        supported_mimes = validate_mimes(supported_mimes, origin="supported_mimes")
     clauses = ["d.corpus = %(corpus)s", "d.deleted_at IS NULL", "r.doc_id IS NULL"]
     params: dict = {
         "corpus": corpus, "collection": collection,
