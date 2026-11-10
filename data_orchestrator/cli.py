@@ -57,7 +57,7 @@ def state_dir() -> Path:
     """
     value = os.environ.get("DATA_ORCHESTRATOR_STATE_DIR")
     if value:
-        return Path(value)
+        return Path(value).expanduser()  # .env values are literal: no shell ~
     return Path(__file__).resolve().parents[1] / "state"
 
 
@@ -227,6 +227,27 @@ def _append_report_jsonl(report: dict) -> None:
         fh.write(json.dumps(report) + "\n")
 
 
+# eigenmind's own defaults (eigenmind/config.py qdrant_host/qdrant_port),
+# restated here so the target can be printed without importing eigenmind
+# (whose import runs its python-dotenv). 6333 is the LEGACY store.
+QDRANT_DEFAULT_HOST = "localhost"
+QDRANT_DEFAULT_PORT = "6333"
+
+
+def _print_qdrant_target() -> None:
+    """Print the Qdrant the engine will write to, as eigenmind will resolve it
+    from ``QDRANT_HOST``/``QDRANT_PORT``; warn on the legacy port."""
+    # Same lookups as eigenmind (os.getenv with a default: a key set empty
+    # is used as is, not defaulted).
+    host = os.environ.get("QDRANT_HOST", QDRANT_DEFAULT_HOST)
+    port = os.environ.get("QDRANT_PORT", QDRANT_DEFAULT_PORT).strip()
+    print(f"Qdrant: {host}:{port}")
+    if port == QDRANT_DEFAULT_PORT:
+        print(f"warning: Qdrant port {port} is the legacy store (eigenmind's default); "
+              "set QDRANT_PORT to the dedicated one unless this is intended",
+              file=sys.stderr)
+
+
 def _validate_corpus_root(corpus: str) -> int | None:
     """Eagerly resolve ``routing.corpus_root(corpus)`` before any ledger/engine
     work starts. Prints an ``error:`` line to stderr and returns the exit code
@@ -298,7 +319,15 @@ def main(argv: list[str] | None = None) -> int:
     # eigenmind's own python-dotenv (override=False) runs at its first import
     # and can then only add keys this file did not set. No $VAR interpolation
     # here — values are taken literally, surrounding quotes stripped.
-    config.load_dotenv()
+    # DATA_ORCHESTRATOR_DOTENV (real environment only) names the file
+    # explicitly; a missing one is an operator error, before any work.
+    try:
+        config.load_dotenv()
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    loaded = config.loaded_dotenv()
+    print(f"Config: .env = {loaded}" if loaded else "Config: no .env file found")
 
     # Guard against invalid --progress-every early, before any engine/DB work.
     if getattr(args, "progress_every", 1) <= 0:
@@ -381,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         collection = args.collection or collection_name(args.corpus)
         if args.count_only:
             return _count_vault_source(args, collection)
+        _print_qdrant_target()
         return _run_vault_source(args, collection)
 
     if args.source == "probe":
@@ -400,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     # "cb_corpus" collection name, which a 768-d upsert would be rejected
     # from on any machine that still has it.
     collection = args.collection or collection_name(args.corpus)
+    _print_qdrant_target()
 
     if args.count_only:
         key1, key2 = COUNT_KEYS[args.source]

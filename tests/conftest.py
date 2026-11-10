@@ -40,6 +40,7 @@ DOTENV_KEYS = (
     "DATA_ORCHESTRATOR_EMBEDDING_MODEL",
     "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES",
     "DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO",
+    "DATA_ORCHESTRATOR_DOTENV",
 )
 
 
@@ -81,6 +82,7 @@ def isolated_env(request):
     try:
         patch.setattr(config, "find_dotenv", lambda: None)
         patch.setattr(config, "_LOADED", False)
+        patch.setattr(config, "_LOADED_PATH", None)
         for key in DOTENV_KEYS:
             patch.delenv(key, raising=False)
         yield

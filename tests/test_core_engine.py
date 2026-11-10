@@ -494,3 +494,41 @@ def test_real_qdrant_store_race_winner_with_another_dimension_is_refused():
     store, _inner = _racing_qdrant_store(other_dim=384)
     with pytest.raises(RuntimeError, match="384-d"):
         _ensure_collection(store, "c", 8)
+
+
+# ---------------------------------------------------------------------------
+# batch_size: an explicit value is honoured as given (never `or`-defaulted),
+# and a value below 1 is refused before any store/engine work.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad", [0, -1])
+def test_run_ingest_refuses_a_batch_size_below_one_before_any_work(tmp_path, bad):
+    log = []
+    store = FakeStore(log)
+    with pytest.raises(ValueError, match="batch_size"):
+        run_ingest([_md_item(tmp_path)], collection="coll", ledger=RecordingLedger(log),
+                   store=store, embedder=FakeEmbedder(), batch_size=bad)
+    assert store.ensured == [] and log == []
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_ingest_item_refuses_a_batch_size_below_one(tmp_path, bad):
+    with pytest.raises(ValueError, match="batch_size"):
+        ingest_item(_md_item(tmp_path), "coll", store=FakeStore([]),
+                    embedder=FakeEmbedder(), batch_size=bad)
+
+
+def test_batch_size_one_upserts_one_point_per_call(tmp_path):
+    log = []
+    store = FakeStore(log)
+    n = ingest_item(_md_item(tmp_path), "coll", store=store, embedder=FakeEmbedder(),
+                    batch_size=1)
+    assert n >= 1
+    assert [e[2] for e in log if e[0] == "qdrant"] == [1] * n
+
+
+def test_batch_size_none_uses_the_engine_default(tmp_path, monkeypatch):
+    import data_orchestrator.core as core_mod
+    monkeypatch.setattr(core_mod, "_default_batch_size", lambda: 1)
+    log = []
+    n = ingest_item(_md_item(tmp_path), "coll", store=FakeStore(log), embedder=FakeEmbedder())
+    assert [e[2] for e in log if e[0] == "qdrant"] == [1] * n

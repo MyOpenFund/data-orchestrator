@@ -7,6 +7,10 @@ source roots live in a ``.env`` file (git-ignored) instead of being hard-coded.
 This is a self-contained loader (no python-dotenv dependency). It only sets keys
 that are *not already present* in the real environment, so an explicit
 ``set CB_CORPUS_ROOT=...`` (or a CLI ``--root``) always wins.
+
+``DATA_ORCHESTRATOR_DOTENV`` (read from the real environment only, never from
+a ``.env``) names the file explicitly and disables the search; a missing file
+is an error. :func:`loaded_dotenv` tells which file the search-based load read.
 """
 from __future__ import annotations
 
@@ -15,6 +19,11 @@ from pathlib import Path
 from typing import Optional
 
 _LOADED = False
+# The file the one search-based load read (None: none found, or not loaded yet).
+_LOADED_PATH: Optional[Path] = None
+
+# Explicit .env path, read from the real environment only.
+DOTENV_ENV = "DATA_ORCHESTRATOR_DOTENV"
 
 
 def find_dotenv() -> Optional[Path]:
@@ -38,18 +47,42 @@ def find_dotenv() -> Optional[Path]:
     return None
 
 
+def dotenv_path() -> Optional[Path]:
+    """The ``.env`` the search-based load reads.
+
+    ``DATA_ORCHESTRATOR_DOTENV`` when set (raises ``FileNotFoundError`` if that
+    file does not exist: an explicit path never falls back to the search),
+    else :func:`find_dotenv`.
+    """
+    explicit = os.environ.get(DOTENV_ENV)
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"{DOTENV_ENV}={explicit}: no such file")
+        return path
+    return find_dotenv()
+
+
+def loaded_dotenv() -> Optional[Path]:
+    """The file the search-based :func:`load_dotenv` read, or ``None``."""
+    return _LOADED_PATH
+
+
 def load_dotenv(path: Optional[Path] = None, *, override: bool = False) -> bool:
     """Parse a ``.env`` file and populate ``os.environ``.
 
     Returns ``True`` if a file was found and read. Idempotent: only runs once
-    per process unless an explicit ``path`` is given.
+    per process unless an explicit ``path`` is given. Without ``path`` the file
+    is :func:`dotenv_path` (``DATA_ORCHESTRATOR_DOTENV`` or the search), and
+    :func:`loaded_dotenv` reports it afterwards.
     """
-    global _LOADED
+    global _LOADED, _LOADED_PATH
     if path is None:
         if _LOADED:
             return False
-        path = find_dotenv()
+        path = dotenv_path()  # may raise: an explicit path that does not exist
         _LOADED = True
+        _LOADED_PATH = path
     if path is None or not Path(path).is_file():
         return False
 

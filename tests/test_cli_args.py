@@ -406,3 +406,87 @@ def test_vault_count_only_prints_the_unsupported_split(monkeypatch, tmp_path, ca
     assert "Unsupported (not offered to the engine): 35" in out
     assert "by source_code: {'ecb': 32, 'fr': 3}" in out
     assert conn.selection_params["supported_mimes"]
+
+
+# ---------------------------------------------------------------------------
+# Traceability (#8 review): which .env was read, and which Qdrant the engine
+# will write to, are printed before any work.
+# ---------------------------------------------------------------------------
+def _minimal_cb_corpus(tmp_path):
+    root = tmp_path / "cbc"
+    (root / "raw").mkdir(parents=True)
+    (root / "manifest").mkdir()
+    (root / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
+    return root
+
+
+def _cb_count(tmp_path):
+    return cli.main(["cb_corpus", "--no-vault", "--count-only",
+                     "--root", str(_minimal_cb_corpus(tmp_path))])
+
+
+def test_main_prints_the_dotenv_it_read_first(tmp_path, monkeypatch, capsys):
+    from data_orchestrator import config
+    env = tmp_path / ".env"
+    env.write_text("QDRANT_PORT=6433\n", encoding="utf-8")
+    monkeypatch.setattr(config, "find_dotenv", lambda: env)
+    assert _cb_count(tmp_path) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == f"Config: .env = {env}"
+    assert out[1] == "Qdrant: localhost:6433"
+
+
+def test_main_says_when_no_dotenv_was_found(tmp_path, capsys):
+    assert _cb_count(tmp_path) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "Config: no .env file found"
+
+
+def test_the_config_line_is_printed_for_every_source(capsys):
+    cli.main(["vault", "--no-vault"])  # rejected (exit 2) after the load
+    assert capsys.readouterr().out.splitlines()[0] == "Config: no .env file found"
+
+
+def test_the_legacy_qdrant_port_draws_a_warning(tmp_path, capsys):
+    """eigenmind's defaults (localhost:6333) are the LEGACY store."""
+    assert _cb_count(tmp_path) == 0
+    cap = capsys.readouterr()
+    assert "Qdrant: localhost:6333" in cap.out.splitlines()
+    assert "warning:" in cap.err and "6333" in cap.err and "legacy" in cap.err.lower()
+
+
+def test_an_explicit_qdrant_target_draws_no_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("QDRANT_HOST", "qdrant.lan")
+    monkeypatch.setenv("QDRANT_PORT", "6433")
+    assert _cb_count(tmp_path) == 0
+    cap = capsys.readouterr()
+    assert "Qdrant: qdrant.lan:6433" in cap.out.splitlines()
+    assert "warning:" not in cap.err
+
+
+def test_company_prints_the_qdrant_target(fake_company_corpus, capsys):
+    assert cli.main(["company", "--count-only"]) == 0
+    assert "Qdrant: localhost:6333" in capsys.readouterr().out.splitlines()
+
+
+def test_vault_run_prints_the_qdrant_target_before_engine_work(monkeypatch, capsys):
+    seen = {}
+
+    def fake_run(args, collection):
+        seen["out"] = capsys.readouterr().out
+        return 0
+
+    monkeypatch.setenv("QDRANT_PORT", "6433")
+    monkeypatch.setattr(cli, "_run_vault_source", fake_run)
+    monkeypatch.setattr(cli, "_validate_corpus_root", lambda corpus: None)
+    assert cli.main(["vault"]) == 0
+    assert "Qdrant: localhost:6433" in seen["out"].splitlines()
+
+
+def test_a_missing_explicit_dotenv_is_an_operator_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_DOTENV", str(tmp_path / "missing.env"))
+    monkeypatch.setattr(cli, "_validate_corpus_root",
+                        lambda corpus: pytest.fail("work started"))
+    assert cli.main(["vault"]) == 2
+    cap = capsys.readouterr()
+    assert cap.err.startswith("error:") and "DATA_ORCHESTRATOR_DOTENV" in cap.err
+    assert "Config:" not in cap.out

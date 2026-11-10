@@ -65,6 +65,16 @@ def _default_batch_size() -> int:
     return BATCH_SIZE
 
 
+def _resolve_batch_size(batch_size: int | None) -> int:
+    """``None`` -> the engine default; an explicit value is used as given and
+    must be >= 1 (``0`` would otherwise silently fall back to the default)."""
+    if batch_size is None:
+        return _default_batch_size()
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    return batch_size
+
+
 # CLI --ocr mode -> engine use_ocr argument. "auto" defers to the engine's
 # availability check (None), so a machine without tesseract degrades to
 # "never" instead of crashing; "always"/"never" are explicit demands.
@@ -200,6 +210,7 @@ def ingest_item(
     All of this document's points reach Qdrant before the caller records it
     in the ledger (write protocol) — batching never spans documents.
     """
+    batch_size = _resolve_batch_size(batch_size)
     try:
         chunks = chunk_with_chunknorris(str(item.path), use_ocr=OCR_TO_ENGINE[ocr])
     except TextNotFoundException:
@@ -251,7 +262,6 @@ def ingest_item(
             payload=payload,
         ))
 
-    batch_size = batch_size or _default_batch_size()
     for start in range(0, len(points), batch_size):
         store.client.upsert(collection_name=collection, points=points[start:start + batch_size])
 
@@ -321,7 +331,7 @@ def run_ingest(
     and the embedder is released at the end.
     """
     stats = IngestStats()
-    batch_size = batch_size or _default_batch_size()
+    batch_size = _resolve_batch_size(batch_size)
     owns_embedder = embedder is None
     store = store or QdrantStore()
     embedder = embedder or EmbeddingModel(

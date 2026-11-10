@@ -82,3 +82,11 @@ def test_the_legacy_state_dir_env_is_ignored(monkeypatch, tmp_path):
         resolved = cli.state_dir()
     assert resolved == Path(cli.__file__).resolve().parents[1] / "state"
     assert resolved != tmp_path / "legacy-state"
+
+
+def test_state_dir_expands_a_tilde(monkeypatch, tmp_path):
+    """A ``.env`` value is literal (no shell expansion), so ``~/state`` must be
+    expanded by the code, not written to a folder literally named ``~``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", "~/do-state")
+    assert cli.state_dir() == tmp_path / "do-state"

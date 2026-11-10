@@ -68,6 +68,7 @@ via their own connector (`--no-vault`) in the meantime:
    | `COMPANY_CORPUS_ROOT` | local root of the company_corpus (SEC EDGAR) data dir — optional, only needed for the `company` disk fallback; unset falls back to company_corpus's own default data dir |
    | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
+   | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching; a missing file is an error (exit 2) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
