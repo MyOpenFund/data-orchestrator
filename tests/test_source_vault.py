@@ -3,7 +3,8 @@ import logging
 from datetime import date
 
 from data_orchestrator.sources.vault import (
-    _SELECT_COLUMNS, build_selection_sql, iter_items, row_to_item,
+    _SELECT_COLUMNS, build_selection_sql, build_unsupported_sql, count_unsupported,
+    iter_items, row_to_item,
 )
 
 from .conftest import DescribedFakeConn
@@ -34,8 +35,10 @@ def test_sql_filters_compose():
 
 def test_sql_no_filters_no_clauses():
     sql, _ = build_selection_sql("central-bank", "c")
-    # No filter clauses: no ANY() for sequences, no year range conditions
-    assert "ANY(" not in sql
+    # No filter clauses: no ANY() for filter sequences, no year range conditions
+    # (the supported-type predicate always carries its own ANY())
+    for param in ("source_codes", "doctypes", "languages"):
+        assert f"ANY(%({param})s)" not in sql
     assert "year >=" not in sql and "year <=" not in sql
 
 
@@ -121,3 +124,39 @@ def test_iter_items_stays_quiet_when_every_row_has_a_path(
         assert len(list(iter_items(conn, "central-bank", "central-bank-e5b-v1"))) == 1
 
     assert caplog.text == ""
+
+
+def test_selection_restricts_to_supported_types_with_extension_fallback():
+    sql, params = build_selection_sql("central-bank", "c",
+                                      supported_mimes=("application/pdf",))
+    flat = " ".join(sql.split())
+    assert "= ANY(%(supported_mimes)s)" in flat
+    assert "lower(d.local_path) LIKE ANY(%(supported_ext_patterns)s)" in flat
+    assert "split_part(lower(d.mime_type), ';', 1)" in flat
+    assert params["supported_mimes"] == ["application/pdf"]
+    assert params["supported_ext_patterns"] == ["%.pdf"]
+
+
+def test_selection_default_mimes_come_from_routing(monkeypatch):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES", "text/markdown")
+    _sql, params = build_selection_sql("central-bank", "c")
+    assert params["supported_mimes"] == ["text/markdown"]
+    assert params["supported_ext_patterns"] == ["%.md"]
+
+
+def test_unsupported_sql_negates_the_predicate_with_the_same_filters():
+    sel, sel_params = build_selection_sql("central-bank", "c", doctypes=["A1"],
+                                          supported_mimes=("application/pdf",))
+    uns, uns_params = build_unsupported_sql("central-bank", "c", doctypes=["A1"],
+                                            supported_mimes=("application/pdf",))
+    flat = " ".join(uns.split())
+    assert "NOT coalesce(" in flat and "GROUP BY d.source_code" in flat
+    assert "d.doc_type = ANY(%(doctypes)s)" in flat and "r.doc_id IS NULL" in flat
+    assert uns_params == sel_params
+
+
+def test_count_unsupported_folds_null_source_code_into_unknown():
+    conn = DescribedFakeConn(rows=[("ecb", 3), (None, 2), ("us", 1)])
+    assert count_unsupported(conn, "central-bank", "c",
+                             supported_mimes=("application/pdf",)) == {
+        "ecb": 3, "unknown": 2, "us": 1}

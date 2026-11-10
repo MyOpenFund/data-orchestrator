@@ -1,18 +1,21 @@
 """Vault selection source: the anti-join over documents/rag_ingestions.
 
 "New document detection" is this query — everything the vault knows for a
-corpus that the target collection has not ingested yet. Payloads are built
-from the vault's normalized columns merged with the corpus-specific ``extra``
-fields (columns always win). File paths join the per-machine corpus root
+corpus that the target collection has not ingested yet, restricted to the
+types the engine can read (``routing.supported_mime_types``; a row with no
+usable mime_type falls back on its file extension). The candidates it leaves
+out are counted per source by ``count_unsupported``, never silently. Payloads
+are built from the vault's normalized columns merged with the
+corpus-specific ``extra`` fields (columns always win). File paths join the per-machine corpus root
 (routing) with the vault's relative ``local_path``.
 """
 from __future__ import annotations
 
 import logging
-from typing import Iterator, Optional, Sequence
+from typing import Iterator
 
 from ..core import SourceItem
-from ..routing import resolve_local_path
+from ..routing import resolve_local_path, supported_extensions, supported_mime_types
 
 logger = logging.getLogger(__name__)
 
@@ -24,23 +27,31 @@ _PAYLOAD_COLUMNS = (
 _SELECT_COLUMNS = _PAYLOAD_COLUMNS + ("local_path", "extra")
 
 
-def build_selection_sql(
-    corpus: str,
-    collection: str,
-    *,
-    source_codes: Optional[Sequence[str]] = None,
-    doctypes: Optional[Sequence[str]] = None,
-    year_min: Optional[int] = None,
-    year_max: Optional[int] = None,
-    languages: Optional[Sequence[str]] = None,
-) -> tuple[str, dict]:
-    """The anti-join with optional filters. Returns (sql, named params)."""
-    clauses = [
-        "d.corpus = %(corpus)s",
-        "d.deleted_at IS NULL",
-        "r.doc_id IS NULL",
-    ]
-    params: dict = {"corpus": corpus, "collection": collection}
+# A vault mime_type normalised for comparison: lower-cased, parameters dropped
+# ("text/plain; charset=utf-8" -> "text/plain"), blank treated as NULL.
+_MIME_EXPR = "nullif(btrim(split_part(lower(d.mime_type), ';', 1)), '')"
+
+# Supported = a supported mime, or (no usable mime) a supported file extension.
+# coalesce(..., false): a row with neither mime nor local_path is unsupported,
+# never "unknown" (a bare NULL would drop it from both the selection and the
+# unsupported count).
+_SUPPORTED_PREDICATE = (
+    f"coalesce(({_MIME_EXPR} = ANY(%(supported_mimes)s)) OR "
+    f"({_MIME_EXPR} IS NULL AND lower(d.local_path) LIKE ANY(%(supported_ext_patterns)s)), "
+    "false)"
+)
+
+
+def _where(corpus, collection, *, supported_mimes, source_codes=None, doctypes=None,
+           year_min=None, year_max=None, languages=None) -> tuple[list[str], dict]:
+    if supported_mimes is None:
+        supported_mimes = supported_mime_types()
+    clauses = ["d.corpus = %(corpus)s", "d.deleted_at IS NULL", "r.doc_id IS NULL"]
+    params: dict = {
+        "corpus": corpus, "collection": collection,
+        "supported_mimes": list(supported_mimes),
+        "supported_ext_patterns": [f"%{ext}" for ext in supported_extensions(supported_mimes)],
+    }
     if source_codes:
         clauses.append("d.source_code = ANY(%(source_codes)s)")
         params["source_codes"] = list(source_codes)
@@ -56,16 +67,49 @@ def build_selection_sql(
     if languages:
         clauses.append("d.language = ANY(%(languages)s)")
         params["languages"] = list(languages)
+    return clauses, params
 
-    sql = (
-        f"SELECT {', '.join('d.' + c for c in _SELECT_COLUMNS)}\n"
-        "FROM documents d\n"
-        "LEFT JOIN rag_ingestions r\n"
-        "  ON r.doc_id = d.doc_id AND r.collection = %(collection)s\n"
-        f"WHERE {' AND '.join(clauses)}\n"
-        "ORDER BY d.doc_id"
-    )
+
+_FROM = ("FROM documents d\n"
+         "LEFT JOIN rag_ingestions r\n"
+         "  ON r.doc_id = d.doc_id AND r.collection = %(collection)s\n")
+
+
+def build_selection_sql(corpus, collection, *, supported_mimes=None, **filters):
+    """The anti-join restricted to supported types. Returns (sql, params).
+
+    ``supported_mimes`` None -> ``routing.supported_mime_types()``.
+    """
+    clauses, params = _where(corpus, collection, supported_mimes=supported_mimes, **filters)
+    clauses.append(_SUPPORTED_PREDICATE)
+    sql = (f"SELECT {', '.join('d.' + c for c in _SELECT_COLUMNS)}\n" + _FROM +
+           f"WHERE {' AND '.join(clauses)}\nORDER BY d.doc_id")
     return sql, params
+
+
+def build_unsupported_sql(corpus, collection, *, supported_mimes=None, **filters):
+    """Same candidates as the selection, but the unsupported ones, per source_code."""
+    clauses, params = _where(corpus, collection, supported_mimes=supported_mimes, **filters)
+    clauses.append(f"NOT {_SUPPORTED_PREDICATE}")
+    sql = ("SELECT d.source_code, count(*)\n" + _FROM +
+           f"WHERE {' AND '.join(clauses)}\nGROUP BY d.source_code\nORDER BY d.source_code")
+    return sql, params
+
+
+def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
+    """{source_code: n} of not-yet-ingested candidates the engine cannot read.
+
+    A NULL source_code is reported as ``"unknown"`` (same fallback as
+    ``core._bump``).
+    """
+    sql, params = build_unsupported_sql(corpus, collection, **kwargs)
+    out: dict[str, int] = {}
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        for code, n in cur.fetchall():
+            key = code or "unknown"
+            out[key] = out.get(key, 0) + int(n)
+    return out
 
 
 def row_to_item(row: dict, corpus: str) -> SourceItem | None:
