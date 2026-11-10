@@ -169,7 +169,7 @@ FATAL_MAX_CHARS = 500
 
 
 def _build_report(command: str, stats: IngestStats, started_at: str, *,
-                  corpus: str, ratio: float = policy.DEFAULT_DEGRADED_FAILURE_RATIO,
+                  corpus: str, ratio: float,
                   unsupported: dict[str, int] | None = None) -> dict:
     totals = {
         "docs_seen": stats.docs_seen,
@@ -209,7 +209,10 @@ def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str)
     The reason goes under ``fatal`` (runs.extra->>'fatal'), the key
     central-bank-corpus already writes; it was ``error`` before 2026-11.
     """
-    rep = _build_report(command, IngestStats(), started_at, corpus=corpus)
+    # The ratio is irrelevant to a fatal outcome (overwritten below); the
+    # default is stated explicitly since _build_report has no default.
+    rep = _build_report(command, IngestStats(), started_at, corpus=corpus,
+                        ratio=policy.DEFAULT_DEGRADED_FAILURE_RATIO)
     rep["outcome"] = "failed"
     rep["exit_code"] = 1
     rep["fatal"] = f"{type(exc).__name__}: {exc}"[:FATAL_MAX_CHARS]

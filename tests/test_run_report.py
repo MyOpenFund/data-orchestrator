@@ -1,8 +1,12 @@
 import json
 
+import pytest
+
 from data_orchestrator.cli import _build_report
 from data_orchestrator.core import IngestStats
-from tests.test_company_corpus import fake_company_corpus  # noqa: F401 — pytest fixture
+from data_orchestrator.policy import DEFAULT_DEGRADED_FAILURE_RATIO
+
+R = DEFAULT_DEGRADED_FAILURE_RATIO
 
 
 def _stats(**over):
@@ -13,17 +17,16 @@ def _stats(**over):
 
 
 def test_report_shape_and_ok_outcome():
-    s = _stats(docs_seen=5, docs_ingested=4, docs_error=1,
-               by_source={"us": {"docs_seen": 5, "docs_new": 4, "docs_failed": 1}})
-    # 1 failure in 5 is 20 %, above the 0.10 default: an explicit ratio keeps
-    # this a shape test (the ratio rule has its own tests below).
+    # 1 failure in 10 attempted is exactly the 10 % default: not above it, ok.
+    s = _stats(docs_seen=10, docs_ingested=9, docs_error=1,
+               by_source={"us": {"docs_seen": 10, "docs_new": 9, "docs_failed": 1}})
     rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00",
-                        corpus="central-bank", ratio=0.5)
+                        corpus="central-bank", ratio=DEFAULT_DEGRADED_FAILURE_RATIO)
     assert rep["tool"] == "data-orchestrator" and rep["command"] == "vault"
     assert rep["corpus"] == "central-bank"
     assert "docs_unsupported" not in rep["totals"]
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
-    assert rep["totals"] == {"docs_seen": 5, "docs_new": 4, "docs_failed": 1,
+    assert rep["totals"] == {"docs_seen": 10, "docs_new": 9, "docs_failed": 1,
                              "docs_path_metadata": 0}
     assert rep["sources"][0]["source_code"] == "us"
     assert set(rep) >= {"run_id", "started_at", "finished_at"}
@@ -32,7 +35,8 @@ def test_report_shape_and_ok_outcome():
 def test_all_failed_is_degraded_exit_three():
     s = _stats(docs_seen=3, docs_ingested=0, docs_error=3,
                by_source={"us": {"docs_seen": 3, "docs_new": 0, "docs_failed": 3}})
-    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00", corpus="central-bank")
+    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00", corpus="central-bank",
+                        ratio=R)
     assert rep["outcome"] == "degraded" and rep["exit_code"] == 3
 
 
@@ -151,7 +155,8 @@ def test_report_totals_carry_the_path_metadata_counter():
     card can chart it without null-handling, and it never affects the outcome."""
     s = _stats(docs_seen=5, docs_ingested=5, docs_path_metadata=5,
                by_source={"us": {"docs_seen": 5, "docs_new": 5, "docs_failed": 0}})
-    rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00", corpus="central-bank")
+    rep = _build_report("cb_corpus", s, "2026-09-03T00:00:00+00:00", corpus="central-bank",
+                        ratio=R)
     assert rep["totals"]["docs_path_metadata"] == 5
     assert rep["outcome"] == "ok" and rep["exit_code"] == 0
 
@@ -223,7 +228,7 @@ def test_failure_ratio_above_threshold_degrades_a_run_that_ingested_something():
 def test_unsupported_counts_land_in_totals_and_per_source_without_degrading():
     s = _stats(docs_seen=1, docs_ingested=1,
                by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
-    rep = _build_report("vault", s, "t", corpus="central-bank",
+    rep = _build_report("vault", s, "t", corpus="central-bank", ratio=R,
                         unsupported={"ecb": 32, "us": 1})
     assert rep["outcome"] == "ok"
     assert rep["totals"]["docs_unsupported"] == 33
@@ -234,14 +239,36 @@ def test_unsupported_counts_land_in_totals_and_per_source_without_degrading():
 
 
 def test_unsupported_empty_dict_still_writes_a_zero_total():
-    rep = _build_report("vault", _stats(), "t", corpus="central-bank", unsupported={})
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={})
     assert rep["totals"]["docs_unsupported"] == 0
 
 
 def test_build_report_does_not_mutate_the_stats_breakdown():
     s = _stats(by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
-    _build_report("vault", s, "t", corpus="central-bank", unsupported={"us": 2})
+    _build_report("vault", s, "t", corpus="central-bank", ratio=R, unsupported={"us": 2})
     assert s.by_source["us"] == {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}
+
+
+def test_ratio_is_a_required_keyword():
+    """No silent default: every caller states the threshold it applies."""
+    with pytest.raises(TypeError, match="ratio"):
+        _build_report("vault", _stats(), "t", corpus="central-bank")
+
+
+def test_fatal_report_states_the_default_ratio(monkeypatch):
+    from data_orchestrator import cli
+
+    seen = {}
+    real = cli._build_report
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_build_report", spy)
+    cli._fatal_report("vault", "t", RuntimeError("x"), corpus="central-bank")
+    assert seen["ratio"] == DEFAULT_DEGRADED_FAILURE_RATIO
 
 
 def test_fatal_reason_is_truncated_to_the_shared_cap():

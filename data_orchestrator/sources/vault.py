@@ -144,6 +144,10 @@ def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
 def row_to_item(row: dict, corpus: str) -> SourceItem | None:
     """Map one selection row to a SourceItem. None when local_path is NULL."""
     local_path = row.get("local_path")
+    if local_path:
+        # Same trailing-whitespace trim as the SQL predicate (_PATH_EXPR), so
+        # the file opened is the one whose extension was matched.
+        local_path = local_path.rstrip(" \t\r\n")
     if not local_path:
         return None
     extra = row.get("extra") or {}

@@ -100,6 +100,9 @@ def validate_mimes(mimes, *, origin: str) -> tuple[str, ...]:
     mimes = tuple(mimes)
     if not mimes:
         raise ValueError(f"{origin} lists no mime type")
+    not_str = [m for m in mimes if not isinstance(m, str)]
+    if not_str:
+        raise ValueError(f"{origin}: every entry must be a mime-type string, got {not_str!r}")
     unknown = [str(m) for m in mimes if m not in MIME_EXTENSIONS]
     if unknown:
         raise ValueError(

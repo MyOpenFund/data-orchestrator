@@ -125,6 +125,12 @@ def test_validate_mimes_rejects_unknown_or_non_normalised_entries(bad):
         routing.validate_mimes(("application/pdf", bad), origin="supported_mimes")
 
 
+@pytest.mark.parametrize("bad", [["application/pdf"], 3, None, b"application/pdf"])
+def test_validate_mimes_rejects_a_non_string_entry_with_a_value_error(bad):
+    with pytest.raises(ValueError, match="supported_mimes"):
+        routing.validate_mimes(("application/pdf", bad), origin="supported_mimes")
+
+
 def test_validate_mimes_rejects_a_bare_string():
     with pytest.raises(ValueError, match="not the string"):
         routing.validate_mimes("application/pdf", origin="supported_mimes")

@@ -86,6 +86,15 @@ def test_row_to_item_null_local_path_is_none():
     assert row_to_item(_row(local_path=None), "central-bank") is None
 
 
+@pytest.mark.parametrize("tail", [" ", "\t", "\r\n", " \t\r\n "])
+def test_row_to_item_strips_trailing_whitespace_from_local_path(monkeypatch, tmp_path, tail):
+    """The SQL compares on rtrim(local_path, ' \\t\\r\\n'): a row it selected as
+    '.pdf' must resolve to the '.pdf' file, not to a name ending in blanks."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(local_path="data/raw/us/C1/2015/d1.pdf" + tail), "central-bank")
+    assert item.path == tmp_path / "raw" / "us" / "C1" / "2015" / "d1.pdf"
+
+
 def _tuple_row(**over):
     """One selection row as the driver returns it: a tuple in _SELECT_COLUMNS order."""
     row = _row(**over)

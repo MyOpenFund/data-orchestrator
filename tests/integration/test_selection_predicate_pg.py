@@ -2,7 +2,8 @@
 
 The unit tests only see SQL text; this checks what Postgres actually does with
 NULL mime/path, mime parameters, blank and tab-padded mimes, upper-case
-extensions and a supported mime on a foreign extension — and that the
+extensions, a supported mime on a foreign extension and an unsupported mime
+on a supported extension — and that the
 selection and the unsupported count partition the candidates exactly.
 """
 import psycopg2
@@ -27,6 +28,7 @@ MATRIX = [
     ("pdf-mime-no-ext", "fr", "application/pdf", "data/raw/fr/noext", False),
     ("null-mime-null-path", "us", None, None, False),
     ("html-html", "ecb", "text/html", "data/raw/ecb/p.html", False),
+    ("html-mime-pdf-ext", "ecb", "text/html", "data/raw/ecb/q.pdf", False),
     ("pdf-trailing-ws", "us", "APPLICATION/PDF ", "data/raw/us/y.pdf\n", True),
     ("no-source-unsupported", None, "text/html", "data/raw/x/p.html", False),
 ]
@@ -74,7 +76,7 @@ def test_predicate_matrix_partitions_the_candidates(seeded):
     assert selected == sorted(d for d, *_, ok in MATRIX if ok)
 
     unsupported = count_unsupported(seeded, CORPUS, COLLECTION)
-    assert unsupported == {"ecb": 1, "fr": 2, "unknown": 1, "us": 2}
+    assert unsupported == {"ecb": 2, "fr": 2, "unknown": 1, "us": 2}
 
     assert len(selected) + sum(unsupported.values()) == len(MATRIX)
 
@@ -87,4 +89,6 @@ def test_narrowed_mimes_move_rows_to_unsupported(seeded):
     assert selected == ["blank-mime-md"]
     unsupported = count_unsupported(seeded, CORPUS, COLLECTION,
                                     supported_mimes=("text/markdown",))
+    # Every candidate but the markdown one, per source (NULL source -> unknown).
+    assert unsupported == {"ecb": 3, "fr": 3, "unknown": 1, "us": 4}
     assert len(selected) + sum(unsupported.values()) == len(MATRIX)

@@ -7,6 +7,7 @@ a real production database.
 """
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -142,3 +143,41 @@ class DescribedFakeConn:
     def commit(self):
         self.commits += 1
         self.executed.append(("COMMIT", None))
+
+
+@pytest.fixture
+def fake_company_corpus(monkeypatch):
+    """Install a fake ``company_corpus.rag`` module and capture call kwargs.
+
+    Shared: used by ``test_company_corpus.py`` and ``test_run_report.py``.
+
+    Returns the ``captured`` dict (filled when the shim calls ``iter_items``) and
+    lets each test set the items the fake should yield via ``set_items``.
+    """
+    captured: dict = {}
+    state: dict = {"items": []}
+
+    def iter_items(root=None, *, ciks=None, doctypes=None,
+                   year_min=None, year_max=None, prefer="pdf"):
+        if doctypes is not None and not isinstance(doctypes, str):
+            raise TypeError(
+                f"doctypes must be a comma-separated str or None, got {type(doctypes)!r}"
+            )
+        captured.update(
+            root=root, ciks=ciks, doctypes=doctypes,
+            year_min=year_min, year_max=year_max, prefer=prefer,
+        )
+        yield from state["items"]
+
+    pkg = types.ModuleType("company_corpus")
+    rag = types.ModuleType("company_corpus.rag")
+    rag.iter_items = iter_items
+    pkg.rag = rag
+    monkeypatch.setitem(sys.modules, "company_corpus", pkg)
+    monkeypatch.setitem(sys.modules, "company_corpus.rag", rag)
+
+    def set_items(items):
+        state["items"] = items
+
+    captured["set_items"] = set_items
+    return captured
