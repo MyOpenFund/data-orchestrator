@@ -250,7 +250,7 @@ data-orchestrator vault --corpus central-bank --ocr always
 | `--limit N` | stop after N newly ingested docs (`N >= 1`; `0` or negative is an error, exit 2) |
 | `--progress-every N` | progress line every N documents (`N >= 1`, default 25) |
 | `--no-resume` | (disk sources) ignore the resume ledger, re-ingest everything. **Rejected for the `vault` source** (exit 2), by design: its resume *is* the `documents`/`rag_ingestions` anti-join, and a policy change means a fresh collection — re-ingest into a new `--collection` name. Re-ingesting into the same collection would leave stale chunks behind when the new chunking yields fewer chunks than the points already stored |
-| `--count-only` | just count matching documents, do not ingest (every source); for `vault`, also the unsupported documents and their per-source split |
+| `--count-only` | just count matching documents, do not ingest (every source); for `vault`, also the unsupported documents and their per-source split; a NULL `source_code`/`doc_type` is counted as `unknown` |
 
 `--include-html` was removed (argparse rejects it, exit 2): eigenmind has no
 HTML reader, so every such file was a per-document error. HTML is converted to
@@ -313,7 +313,9 @@ counters and the outcome. Exit codes are honest:
   ratio is `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, default `0.10`; `0` =
   any failure degrades, `1` = rule (b) off. `docs_unsupported` never degrades;
 - `1` **failed**: a fatal error (e.g. Qdrant unreachable, a collection stored
-  with another vector dimension).
+  with another vector dimension, or a named-vector collection, whose
+  dimension cannot be verified: either one is refused before any document,
+  whether it pre-existed or a concurrent run just created it).
 
 `runs.corpus` is now written on every report (success and fatal, all
 sources). **Caveat:** the vault health views `runs_sources`,

@@ -272,9 +272,28 @@ def test_summary_is_silent_on_stderr_when_no_path_metadata(capsys):
 # Task 6 — CLI wiring: validations, --include-html removal, unsupported count
 # ---------------------------------------------------------------------------
 
+# Every source and mode an operator-error check must precede.
+_ALL_SOURCE_ARGVS = [
+    ["vault"],
+    ["vault", "--count-only"],
+    ["probe"],
+    ["cb_corpus", "--no-vault"],
+    ["company", "--no-vault"],
+]
+
+
+def _forbid_any_work(monkeypatch):
+    import data_orchestrator.vault as vault_mod
+    monkeypatch.setattr(vault_mod, "connect", lambda: pytest.fail("connected"))
+    monkeypatch.setattr(cli, "run_ingest",
+                        lambda *a, **k: pytest.fail("run_ingest called"))
+
+
+@pytest.mark.parametrize("argv", _ALL_SOURCE_ARGVS, ids=" ".join)
 @pytest.mark.parametrize("value", ["0", "-3"])
-def test_limit_below_one_is_rejected(capsys, value):
-    rc = cli.main(["cb_corpus", "--limit", value])
+def test_limit_below_one_is_rejected(monkeypatch, capsys, argv, value):
+    _forbid_any_work(monkeypatch)
+    rc = cli.main(argv + ["--limit", value])
     assert rc == 2 and "--limit" in capsys.readouterr().err
 
 
@@ -284,15 +303,15 @@ def test_include_html_no_longer_exists():
     assert exc.value.code == 2
 
 
+@pytest.mark.parametrize("argv", _ALL_SOURCE_ARGVS, ids=" ".join)
 @pytest.mark.parametrize("key,value", [
     ("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", "2"),
     ("DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES", "text/html"),
 ])
-def test_bad_policy_env_fails_before_any_work(monkeypatch, capsys, key, value):
-    import data_orchestrator.vault as vault_mod
+def test_bad_policy_env_fails_before_any_work(monkeypatch, capsys, argv, key, value):
     monkeypatch.setenv(key, value)
-    monkeypatch.setattr(vault_mod, "connect", lambda: pytest.fail("connected"))
-    rc = cli.main(["vault"])
+    _forbid_any_work(monkeypatch)
+    rc = cli.main(argv)
     assert rc == 2 and key in capsys.readouterr().err
 
 
@@ -317,15 +336,21 @@ class _DispatchCursor:
         return False
 
     def execute(self, sql, params=None):
+        if self._conn.aborted:  # psycopg: "current transaction is aborted"
+            raise RuntimeError("InFailedSqlTransaction: current transaction is aborted")
         self._conn.executed.append((sql, params))
         if "FROM rag_ingestions WHERE collection" in sql:
             self._rows = []                       # resume ledger: nothing done yet
         elif "GROUP BY d.source_code" in sql:
             self._rows = list(self._conn.unsupported)
+        elif "INSERT INTO runs" in sql:
+            if self._conn.insert_error is not None:
+                raise self._conn.insert_error
+            self._conn.inserted.append(params)
         else:                                     # the selection
             self._conn.selection_params = params
-            self.description = [("doc_id",), ("local_path",)]
-            self._rows = []
+            self.description = [(c,) for c in self._conn.selection_columns]
+            self._rows = list(self._conn.selection_rows)
 
     def fetchall(self):
         return list(self._rows)
@@ -335,10 +360,17 @@ class _DispatchCursor:
 
 
 class _DispatchConn:
-    def __init__(self, unsupported):
+    def __init__(self, unsupported, selection_rows=(),
+                 selection_columns=("doc_id", "local_path")):
         self.unsupported = unsupported
+        self.selection_rows = list(selection_rows)
+        self.selection_columns = tuple(selection_columns)
         self.executed: list = []
         self.selection_params = None
+        self.inserted: list = []      # INSERT INTO runs params (real insert_run_report)
+        self.insert_error = None      # raised by every INSERT INTO runs when set
+        self.aborted = False          # a failed statement poisons the transaction
+        self.rollbacks = 0
         self.closed = False
 
     def cursor(self):
@@ -347,17 +379,21 @@ class _DispatchConn:
     def commit(self):
         pass
 
+    def rollback(self):
+        self.rollbacks += 1
+        self.aborted = False
+
     def close(self):
         self.closed = True
 
 
-def _fake_vault(monkeypatch, tmp_path, unsupported):
+def _fake_vault(monkeypatch, tmp_path, unsupported, **conn_kwargs):
     import data_orchestrator.vault as vault_mod
     from data_orchestrator.core import IngestStats
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
-    conn = _DispatchConn(unsupported)
+    conn = _DispatchConn(unsupported, **conn_kwargs)
     monkeypatch.setattr(vault_mod, "connect", lambda: conn)
     reports: list[dict] = []
     monkeypatch.setattr(vault_mod, "insert_run_report", lambda _c, rep: reports.append(rep))
@@ -389,12 +425,18 @@ def test_vault_run_reports_the_unsupported_count(monkeypatch, tmp_path, capsys):
 def test_vault_run_uses_the_env_narrowed_mimes_for_both_queries(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES", "application/pdf")
     conn, _reports = _fake_vault(monkeypatch, tmp_path, [])
-    assert cli.main(["vault", "--source-codes", "ecb"]) == 0
+    assert cli.main(["vault", "--source-codes", "ecb", "--doctypes", "C1,A3",
+                     "--languages", "en,fr", "--year-min", "2015",
+                     "--year-max", "2020"]) == 0
     unsupported_params = [p for s, p in conn.executed if "GROUP BY d.source_code" in s]
     assert len(unsupported_params) == 1
-    for params in (unsupported_params[0], conn.selection_params):
-        assert params["supported_mimes"] == ["application/pdf"]
-        assert params["source_codes"] == ["ecb"]
+    assert unsupported_params[0] == conn.selection_params  # one filter set, both queries
+    params = conn.selection_params
+    assert params["supported_mimes"] == ["application/pdf"]
+    assert params["source_codes"] == ["ecb"]
+    assert params["doctypes"] == ["C1", "A3"]
+    assert params["languages"] == ["en", "fr"]
+    assert (params["year_min"], params["year_max"]) == (2015, 2020)
 
 
 def test_vault_count_only_prints_the_unsupported_split(monkeypatch, tmp_path, capsys):
@@ -406,6 +448,187 @@ def test_vault_count_only_prints_the_unsupported_split(monkeypatch, tmp_path, ca
     assert "Unsupported (not offered to the engine): 35" in out
     assert "by source_code: {'ecb': 32, 'fr': 3}" in out
     assert conn.selection_params["supported_mimes"]
+
+
+def test_vault_count_only_labels_null_source_codes_unknown(monkeypatch, tmp_path, capsys):
+    """A NULL source_code reads ``unknown`` in BOTH breakdowns — the same label
+    count_unsupported (and core._bump's last fallback) uses."""
+    rows = [("d1", None, "C1", "a.pdf"), ("d2", "ecb", None, "b.pdf")]
+    conn, _reports = _fake_vault(
+        monkeypatch, tmp_path, [(None, 3)], selection_rows=rows,
+        selection_columns=("doc_id", "source_code", "doc_type", "local_path"),
+    )
+    assert cli.main(["vault", "--count-only"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "Matching documents: 2" in lines
+    by_source = [line for line in lines if line.startswith("  by source_code:")]
+    assert by_source == ["  by source_code: {'unknown': 1, 'ecb': 1}",
+                         "  by source_code: {'unknown': 3}"]
+    assert "  by doc_type: {'C1': 1, 'unknown': 1}" in lines
+    assert not any("<unknown>" in line for line in lines)
+
+
+def test_vault_run_mixes_new_and_unsupported_on_one_source(monkeypatch, tmp_path):
+    """One selected row and an unsupported count on the same source_code land
+    in ONE sources[] entry carrying both counters."""
+    from data_orchestrator.core import IngestStats, _bump
+
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4 stub")
+    conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [("ecb", 2)],
+        selection_rows=[("d1", "ecb", "a.pdf")],
+        selection_columns=("doc_id", "source_code", "local_path"),
+    )
+    seen_items = []
+
+    def fake_run_ingest(items, **kwargs):
+        stats = IngestStats()
+        for item in items:
+            seen_items.append(item)
+            stats.docs_seen += 1
+            stats.docs_ingested += 1
+            _bump(stats, item, new=1)
+        return stats
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    assert cli.main(["vault"]) == 0
+    assert [(i.doc_id, i.path) for i in seen_items] == [("d1", tmp_path / "a.pdf")]
+    (rep,) = reports
+    assert rep["sources"] == [{"source_code": "ecb", "docs_seen": 1, "docs_new": 1,
+                               "docs_failed": 0, "docs_unsupported": 2}]
+    assert rep["totals"]["docs_new"] == 1 and rep["totals"]["docs_unsupported"] == 2
+
+
+# ---------------------------------------------------------------------------
+# The failure-ratio env reaches the report through cli.main (every source).
+# ---------------------------------------------------------------------------
+def _one_failure_in_a_hundred(items, **kwargs):
+    from data_orchestrator.core import IngestStats
+    return IngestStats(docs_seen=100, docs_ingested=99, docs_error=1,
+                       by_source={"us": {"docs_seen": 100, "docs_new": 99, "docs_failed": 1}})
+
+
+@pytest.mark.parametrize("ratio,rc,outcome", [("0", 3, "degraded"), (None, 0, "ok")])
+def test_failure_ratio_env_reaches_the_cb_corpus_report(monkeypatch, tmp_path,
+                                                        ratio, rc, outcome):
+    if ratio is not None:
+        monkeypatch.setenv("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", ratio)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    captured: list[dict] = []
+    monkeypatch.setattr(cli, "run_ingest", _one_failure_in_a_hundred)
+    monkeypatch.setattr(cli, "_append_report_jsonl", captured.append)
+    assert cli.main(["cb_corpus", "--no-vault",
+                     "--root", str(_minimal_cb_corpus(tmp_path))]) == rc
+    (rep,) = captured
+    assert (rep["outcome"], rep["exit_code"]) == (outcome, rc)
+
+
+@pytest.mark.parametrize("ratio,rc,outcome", [("0", 3, "degraded"), (None, 0, "ok")])
+def test_failure_ratio_env_reaches_the_vault_report(monkeypatch, tmp_path,
+                                                    ratio, rc, outcome):
+    if ratio is not None:
+        monkeypatch.setenv("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", ratio)
+    conn, reports = _fake_vault(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cli, "run_ingest", _one_failure_in_a_hundred)
+    assert cli.main(["vault"]) == rc
+    (rep,) = reports
+    assert (rep["outcome"], rep["exit_code"]) == (outcome, rc)
+    assert conn.closed
+
+
+# ---------------------------------------------------------------------------
+# Fatal paths: the known unsupported count survives, and the fatal report is
+# written on a rolled-back connection (or the failure is said, never silent).
+# ---------------------------------------------------------------------------
+def _engine_crash(conn=None):
+    def boom(items, **kwargs):
+        if conn is not None:
+            conn.aborted = True  # the failure left the transaction aborted
+        raise RuntimeError("engine init failed")
+    return boom
+
+
+def test_vault_fatal_report_keeps_the_known_unsupported_count(monkeypatch, tmp_path, capsys):
+    conn, reports = _fake_vault(monkeypatch, tmp_path, [("ecb", 4), ("fr", 1)])
+    monkeypatch.setattr(cli, "run_ingest", _engine_crash())
+    assert cli.main(["vault"]) == 1
+    (rep,) = reports
+    assert rep["outcome"] == "failed" and rep["exit_code"] == 1
+    assert rep["corpus"] == "central-bank"
+    assert rep["fatal"] == "RuntimeError: engine init failed" and "error" not in rep
+    assert rep["totals"]["docs_unsupported"] == 5
+    assert {e["source_code"]: e["docs_unsupported"] for e in rep["sources"]} == {"ecb": 4, "fr": 1}
+    assert "error: fatal: RuntimeError: engine init failed" in capsys.readouterr().err
+    assert conn.closed
+
+
+def test_vault_fatal_report_without_a_known_unsupported_count_omits_it(monkeypatch, tmp_path):
+    import data_orchestrator.sources.vault as vault_source
+    conn, reports = _fake_vault(monkeypatch, tmp_path, [])
+
+    def count_boom(*args, **kwargs):
+        raise RuntimeError("count failed")
+
+    monkeypatch.setattr(vault_source, "count_unsupported", count_boom)
+    assert cli.main(["vault"]) == 1
+    (rep,) = reports
+    assert "docs_unsupported" not in rep["totals"]
+
+
+def _real_insert_fake_vault(monkeypatch, tmp_path):
+    """_fake_vault, but the real insert_run_report runs against the fake conn."""
+    import data_orchestrator.vault as vault_mod
+    real_insert = vault_mod.insert_run_report
+    conn, _reports = _fake_vault(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(vault_mod, "insert_run_report", real_insert)
+    return conn
+
+
+def _disk_vault_argv(tmp_path):
+    return ["cb_corpus", "--root", str(_minimal_cb_corpus(tmp_path))]
+
+
+@pytest.mark.parametrize("argv_of", [lambda tmp: ["vault"], _disk_vault_argv],
+                         ids=["vault", "cb_corpus-vault-ledger"])
+def test_fatal_report_is_inserted_after_a_rollback(monkeypatch, tmp_path, capsys, argv_of):
+    conn = _real_insert_fake_vault(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "run_ingest", _engine_crash(conn))
+    assert cli.main(argv_of(tmp_path)) == 1
+    assert conn.rollbacks == 1
+    assert len(conn.inserted) == 1
+    assert "failed to write run report" not in capsys.readouterr().err
+    assert conn.closed
+
+
+@pytest.mark.parametrize("argv_of", [lambda tmp: ["vault"], _disk_vault_argv],
+                         ids=["vault", "cb_corpus-vault-ledger"])
+def test_a_failed_fatal_report_insert_is_said(monkeypatch, tmp_path, capsys, argv_of):
+    conn = _real_insert_fake_vault(monkeypatch, tmp_path)
+    conn.insert_error = RuntimeError("runs table is gone")
+    monkeypatch.setattr(cli, "run_ingest", _engine_crash(conn))
+    assert cli.main(argv_of(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "warning: failed to write run report to vault: runs table is gone" in err
+    assert "error: fatal: RuntimeError: engine init failed" in err
+    assert conn.closed
+
+
+@pytest.mark.parametrize("argv_of", [lambda tmp: ["vault"], _disk_vault_argv],
+                         ids=["vault", "cb_corpus-vault-ledger"])
+def test_a_failing_rollback_does_not_mask_the_fatal_outcome(monkeypatch, tmp_path, capsys,
+                                                            argv_of):
+    conn = _real_insert_fake_vault(monkeypatch, tmp_path)
+
+    def rollback_boom():
+        raise RuntimeError("connection lost")
+
+    conn.rollback = rollback_boom
+    monkeypatch.setattr(cli, "run_ingest", _engine_crash(conn))
+    assert cli.main(argv_of(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "warning: failed to write run report to vault:" in err
+    assert "error: fatal: RuntimeError: engine init failed" in err
+    assert conn.closed
 
 
 # ---------------------------------------------------------------------------

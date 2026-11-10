@@ -203,20 +203,41 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
     }
 
 
-def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str) -> dict:
+def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str,
+                  unsupported: dict[str, int] | None = None) -> dict:
     """Best-effort report for a run that never reached a normal outcome.
 
     The reason goes under ``fatal`` (runs.extra->>'fatal'), the key
     central-bank-corpus already writes; it was ``error`` before 2026-11.
+    ``unsupported`` (the vault source's per-source count, when it was
+    computed before the failure) is passed through so a known
+    ``docs_unsupported`` is not lost.
     """
     # The ratio is irrelevant to a fatal outcome (overwritten below); the
     # default is stated explicitly since _build_report has no default.
     rep = _build_report(command, IngestStats(), started_at, corpus=corpus,
-                        ratio=policy.DEFAULT_DEGRADED_FAILURE_RATIO)
+                        ratio=policy.DEFAULT_DEGRADED_FAILURE_RATIO,
+                        unsupported=unsupported)
     rep["outcome"] = "failed"
     rep["exit_code"] = 1
     rep["fatal"] = f"{type(exc).__name__}: {exc}"[:FATAL_MAX_CHARS]
     return rep
+
+
+def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
+    """Write a fatal report on a connection the failure may have left inside
+    an aborted transaction: roll back first (a failing rollback is not
+    itself fatal; the insert then says whether the connection is usable),
+    and warn on an insert failure — never silent, never masking the run's
+    own fatal outcome."""
+    try:
+        conn.rollback()
+    except Exception:  # noqa: BLE001 — the insert below reports a dead connection
+        pass
+    try:
+        vault_mod.insert_run_report(conn, report)
+    except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+        print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
 
 
 def _append_report_jsonl(report: dict) -> None:
@@ -522,10 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
         elif vault_conn is not None:
-            try:
-                vault_mod.insert_run_report(vault_conn, rep)
-            except Exception:
-                pass
+            _insert_fatal_report(vault_mod, vault_conn, rep)
         else:
             # Same short-lived-connection pattern as the success path above:
             # vault mode, but no ledger connection was ever opened (e.g. a
@@ -566,6 +584,7 @@ def _run_vault_source(args, collection: str) -> int:
 
     started_at = datetime.now(timezone.utc).isoformat()
     conn = None
+    unsupported = None  # known once count_unsupported ran; kept by a fatal report
     try:
         conn = vault_mod.connect()
         # --no-resume is rejected for this source before we ever get here
@@ -603,12 +622,10 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report("vault", started_at, exc, corpus=args.corpus)
+        rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
+                            unsupported=unsupported)
         if conn is not None:
-            try:
-                vault_mod.insert_run_report(conn, rep)
-            except Exception:
-                pass
+            _insert_fatal_report(vault_mod, conn, rep)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:
@@ -621,7 +638,9 @@ def _count_vault_source(args, collection: str) -> int:
 
     Mirrors the cb_corpus ``--count-only`` output format (total + breakdowns),
     using ``source_code``/``doc_type`` — the vault source's payload columns —
-    in place of cb_corpus's ``bank_code``/``doc_type``.
+    in place of cb_corpus's ``bank_code``/``doc_type``. A NULL value is
+    labelled ``unknown`` in every breakdown, the label ``count_unsupported``
+    (and ``core._bump``) use.
     """
     from . import vault as vault_mod
     from .sources import vault as vault_source
@@ -636,8 +655,8 @@ def _count_vault_source(args, collection: str) -> int:
         total = 0
         for it in items:
             total += 1
-            source_code = it.payload.get("source_code", "<unknown>")
-            doc_type = it.payload.get("doc_type", "<unknown>")
+            source_code = it.payload.get("source_code") or "unknown"
+            doc_type = it.payload.get("doc_type") or "unknown"
             by_source[source_code] = by_source.get(source_code, 0) + 1
             by_type[doc_type] = by_type.get(doc_type, 0) + 1
     finally:
