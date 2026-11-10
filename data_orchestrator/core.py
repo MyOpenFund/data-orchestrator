@@ -226,6 +226,35 @@ def ingest_item(
     return len(points)
 
 
+def _ensure_collection(store, name: str, dim: int) -> None:
+    """Create ``name`` if missing, surviving a concurrent creator (issue #6).
+
+    eigenmind's ``ensure_collection`` is get-then-create: two first runs both
+    see "not found" and the loser's create raises a 409. If the collection
+    exists once the call has failed, the other process created it: carry on.
+    Any other failure is re-raised as it was. Then refuse a collection whose
+    stored dimension differs from the model's (a 768-d upsert into a 384-d
+    collection would fail every document).
+    """
+    try:
+        stored = store.ensure_collection(name, dim)
+    except Exception as exc:
+        try:
+            exists = store.client.collection_exists(name)
+        except Exception:
+            raise exc
+        if not exists:
+            raise
+        info = store.client.get_collection(collection_name=name)
+        size = getattr(info.config.params.vectors, "size", None)
+        stored = int(size) if size is not None else dim
+    if stored != dim:
+        raise RuntimeError(
+            f"collection {name!r} stores {stored}-d vectors but the embedding "
+            f"model produces {dim}-d: use another --collection"
+        )
+
+
 def run_ingest(
     items: Iterable[SourceItem],
     *,
@@ -256,7 +285,7 @@ def run_ingest(
     try:
         # Inside the try/finally that releases an owned embedder: a raising
         # ensure_collection must not leak it.
-        store.ensure_collection(collection, embedder.dim)
+        _ensure_collection(store, collection, embedder.dim)
         for item in items:
             stats.docs_seen += 1
 

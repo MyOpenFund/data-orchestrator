@@ -1,6 +1,7 @@
 """Unit tests for the rewired engine internals (fake store/embedder, real chunking on .md)."""
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from data_orchestrator.core import (
     OCR_TO_ENGINE,
     Ledger,
     SourceItem,
+    _ensure_collection,
     _point_id,
     ingest_item,
     run_ingest,
@@ -350,3 +352,65 @@ def test_run_ingest_counts_path_derived_metadata_items(tmp_path):
                        store=FakeStore(log), embedder=FakeEmbedder())
     assert stats.docs_path_metadata == 2
     assert stats.docs_skipped_resume == 1
+
+
+class RacingClient:
+    def __init__(self, exists, size=8, exists_raises=False):
+        self._exists, self._size, self._raises = exists, size, exists_raises
+
+    def collection_exists(self, name):
+        if self._raises:
+            raise ConnectionError("qdrant down")
+        return self._exists
+
+    def get_collection(self, collection_name):
+        return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(
+            vectors=SimpleNamespace(size=self._size))))
+
+
+class RacingStore:
+    def __init__(self, client):
+        self.client = client
+
+    def ensure_collection(self, name, vector_size):
+        raise RuntimeError("Wrong input: Collection c already exists!")
+
+
+def test_losing_the_creation_race_is_not_fatal():
+    _ensure_collection(RacingStore(RacingClient(exists=True)), "c", 8)
+
+
+def test_a_failure_that_left_no_collection_is_reraised_unchanged():
+    with pytest.raises(RuntimeError, match="already exists"):
+        _ensure_collection(RacingStore(RacingClient(exists=False)), "c", 8)
+
+
+def test_an_unreachable_store_reraises_the_original_error():
+    with pytest.raises(RuntimeError, match="already exists"):
+        _ensure_collection(RacingStore(RacingClient(exists=True, exists_raises=True)), "c", 8)
+
+
+def test_race_winner_with_another_dimension_is_refused():
+    with pytest.raises(RuntimeError, match="384-d"):
+        _ensure_collection(RacingStore(RacingClient(exists=True, size=384)), "c", 8)
+
+
+def test_existing_collection_with_another_dimension_is_refused():
+    class Existing:
+        client = None
+
+        def ensure_collection(self, name, vector_size):
+            return 384
+
+    with pytest.raises(RuntimeError, match="384-d"):
+        _ensure_collection(Existing(), "c", 768)
+
+
+def test_run_ingest_refuses_a_wrong_dimension_before_touching_any_document(tmp_path):
+    log = []
+    store = FakeStore(log)
+    store.ensure_collection = lambda name, vector_size: vector_size * 2
+    with pytest.raises(RuntimeError, match="-d vectors"):
+        run_ingest([_md_item(tmp_path)], collection="c", ledger=RecordingLedger(log),
+                   store=store, embedder=FakeEmbedder())
+    assert log == []
