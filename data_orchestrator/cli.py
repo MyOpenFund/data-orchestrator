@@ -43,7 +43,7 @@ from pathlib import Path
 
 from . import config, policy
 from .core import Ledger, SourceItem, run_ingest, IngestStats
-from .routing import collection_name
+from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
 
@@ -95,7 +95,6 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         groups=_csv(args.groups),
         year_min=args.year_min,
         year_max=args.year_max,
-        include_html=args.include_html,
     )
 
 
@@ -265,8 +264,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
     parser.add_argument("--year-min", type=int, help="inclusive lower year bound")
     parser.add_argument("--year-max", type=int, help="inclusive upper year bound")
-    parser.add_argument("--include-html", action="store_true",
-                        help="also ingest .html with no .pdf sibling")
     parser.add_argument("--collection", default=None,
                         help="Qdrant collection (default: {corpus}-{tag}-v1 "
                              "via routing.collection_name — same resolution "
@@ -276,7 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ocr", choices=["auto", "always", "never"], default="auto",
                         help="OCR fallback mode for scanned pages (default: auto)")
     parser.add_argument("--no-resume", action="store_true",
-                        help="ignore the resume ledger (re-ingest everything)")
+                        help="ignore the resume ledger (disk sources only). Rejected "
+                             "for the vault source: its resume is the anti-join; "
+                             "re-ingest into a fresh --collection instead (a re-run "
+                             "into the same collection would leave stale chunks "
+                             "behind).")
     parser.add_argument("--ledger", help="path to the resume ledger JSONL")
     parser.add_argument("--no-vault", action="store_true",
                         help="use the local file ledger instead of the vault "
@@ -299,6 +300,17 @@ def main(argv: list[str] | None = None) -> int:
     # Guard against invalid --progress-every early, before any engine/DB work.
     if getattr(args, "progress_every", 1) <= 0:
         print("error: --progress-every must be >= 1", file=sys.stderr)
+        return 2
+    if args.limit is not None and args.limit < 1:
+        print("error: --limit must be >= 1", file=sys.stderr)
+        return 2
+    # Run policy, read once from the (now loaded) environment: an invalid
+    # value is an operator error (exit 2), caught before any DB/engine work.
+    try:
+        args.degraded_ratio = policy.degraded_failure_ratio()
+        args.supported_mimes = supported_mime_types()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     # Each disk source implies its own vault corpus; an explicit --corpus
@@ -353,7 +365,9 @@ def main(argv: list[str] | None = None) -> int:
                 "its resume IS the documents/rag_ingestions anti-join (a doc "
                 "already recorded for the target collection is never "
                 "selected again, --no-resume or not). To re-ingest, use a "
-                "fresh --collection name instead.",
+                "fresh --collection name instead: a re-run into the same "
+                "collection would leave stale chunks behind (a new chunking "
+                "can yield fewer chunks than the points already stored).",
                 file=sys.stderr,
             )
             return 2
@@ -436,7 +450,8 @@ def main(argv: list[str] | None = None) -> int:
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
 
-        rep = _build_report(args.source, stats, started_at, corpus=args.corpus)
+        rep = _build_report(args.source, stats, started_at, corpus=args.corpus,
+                            ratio=args.degraded_ratio)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -501,6 +516,15 @@ def main(argv: list[str] | None = None) -> int:
             vault_conn.close()
 
 
+def _vault_filters(args) -> dict:
+    """Selection filters shared by the vault selection and its unsupported count."""
+    return dict(
+        source_codes=_csv(args.source_codes), doctypes=_csv(args.doctypes),
+        year_min=args.year_min, year_max=args.year_max,
+        languages=_csv(args.languages), supported_mimes=args.supported_mimes,
+    )
+
+
 def _run_vault_source(args, collection: str) -> int:
     from . import vault as vault_mod
     from .routing import EMBEDDING_VERSION, embedding_model_name
@@ -520,13 +544,15 @@ def _run_vault_source(args, collection: str) -> int:
         )
         print(f"Resume ledger (vault): rag_ingestions/{collection} "
               f"({len(ledger)} docs already done)")
-        items = vault_source.iter_items(
-            conn, args.corpus, collection,
-            source_codes=_csv(args.source_codes),
-            doctypes=_csv(args.doctypes),
-            year_min=args.year_min, year_max=args.year_max,
-            languages=_csv(args.languages),
-        )
+        # One filter set for both queries, so the unsupported count is
+        # exactly the complement of the selection (same candidates).
+        filters = _vault_filters(args)
+        unsupported = vault_source.count_unsupported(conn, args.corpus, collection, **filters)
+        n_unsupported = sum(unsupported.values())
+        if n_unsupported:
+            print(f"Skipping {n_unsupported} document(s) of a type the engine cannot read "
+                  f"(supported: {', '.join(args.supported_mimes)})")
+        items = vault_source.iter_items(conn, args.corpus, collection, **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
               f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
         stats = run_ingest(
@@ -535,7 +561,8 @@ def _run_vault_source(args, collection: str) -> int:
         )
         _print_summary(stats)
 
-        rep = _build_report("vault", stats, started_at, corpus=args.corpus)
+        rep = _build_report("vault", stats, started_at, corpus=args.corpus,
+                            ratio=args.degraded_ratio, unsupported=unsupported)
         try:
             vault_mod.insert_run_report(conn, rep)
         except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
@@ -567,13 +594,9 @@ def _count_vault_source(args, collection: str) -> int:
 
     conn = vault_mod.connect()
     try:
-        items = vault_source.iter_items(
-            conn, args.corpus, collection,
-            source_codes=_csv(args.source_codes),
-            doctypes=_csv(args.doctypes),
-            year_min=args.year_min, year_max=args.year_max,
-            languages=_csv(args.languages),
-        )
+        filters = _vault_filters(args)
+        unsupported = vault_source.count_unsupported(conn, args.corpus, collection, **filters)
+        items = vault_source.iter_items(conn, args.corpus, collection, **filters)
         by_source: dict[str, int] = {}
         by_type: dict[str, int] = {}
         total = 0
@@ -588,6 +611,8 @@ def _count_vault_source(args, collection: str) -> int:
     print(f"Matching documents: {total}")
     print("  by source_code:", dict(sorted(by_source.items(), key=lambda kv: -kv[1])))
     print("  by doc_type:", dict(sorted(by_type.items())))
+    print(f"Unsupported (not offered to the engine): {sum(unsupported.values())}")
+    print("  by source_code:", dict(sorted(unsupported.items(), key=lambda kv: -kv[1])))
     return 0
 
 

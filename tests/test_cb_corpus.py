@@ -66,25 +66,18 @@ def test_year_bounds_are_inclusive(tmp_path):
     assert sorted(_ids(root, year_min=2015, year_max=2016)) == ["b", "c"]
 
 
-def test_html_is_ignored_unless_asked_for(tmp_path):
-    """PDFs are the default artifact: an .html sibling-less page is still not
-    yielded unless the caller opts in with include_html."""
-    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.html")
-    assert _ids(root) == ["a"]
-
-
-def test_html_yielded_only_when_it_has_no_pdf_sibling(tmp_path):
-    """With include_html, an .html that also exists as .pdf must be skipped:
-    both would carry the same doc_id (the filename stem), so yielding both
-    would ingest the same document twice under one id."""
+def test_html_is_never_yielded_and_include_html_is_gone(tmp_path):
+    """HTML is converted to .md/PDF before the engine (issue #17): the walk
+    yields .pdf only, whether or not the .html has a PDF sibling, and the old
+    include_html opt-in no longer exists."""
     root = _corpus(
         tmp_path, "us/C1/2015/both.pdf", "us/C1/2015/both.html",
         "us/C1/2015/online-only.html",
     )
-    items = list(iter_items(root, prefer_manifest=False, include_html=True))
-    assert sorted((i.doc_id, i.payload["ext"]) for i in items) == [
-        ("both", "pdf"), ("online-only", "html"),
-    ]
+    items = list(iter_items(root, prefer_manifest=False))
+    assert [(i.doc_id, i.payload["ext"]) for i in items] == [("both", "pdf")]
+    with pytest.raises(TypeError):
+        list(iter_items(root, prefer_manifest=False, include_html=True))
 
 
 def _manifest(root, bank, *rows):

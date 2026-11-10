@@ -266,3 +266,143 @@ def test_summary_is_silent_on_stderr_when_no_path_metadata(capsys):
     captured = capsys.readouterr()
     assert "path-metadata  : 0" in captured.out
     assert captured.err == ""
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — CLI wiring: validations, --include-html removal, unsupported count
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", ["0", "-3"])
+def test_limit_below_one_is_rejected(capsys, value):
+    rc = cli.main(["cb_corpus", "--limit", value])
+    assert rc == 2 and "--limit" in capsys.readouterr().err
+
+
+def test_include_html_no_longer_exists():
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["cb_corpus", "--include-html"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("key,value", [
+    ("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", "2"),
+    ("DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES", "text/html"),
+])
+def test_bad_policy_env_fails_before_any_work(monkeypatch, capsys, key, value):
+    import data_orchestrator.vault as vault_mod
+    monkeypatch.setenv(key, value)
+    monkeypatch.setattr(vault_mod, "connect", lambda: pytest.fail("connected"))
+    rc = cli.main(["vault"])
+    assert rc == 2 and key in capsys.readouterr().err
+
+
+def test_vault_no_resume_message_explains_the_fresh_collection_rule(capsys):
+    assert cli.main(["vault", "--no-resume"]) == 2
+    err = capsys.readouterr().err
+    assert "fresh --collection" in err and "stale chunks" in err
+
+
+class _DispatchCursor:
+    """Cursor answering by SQL text: resume ledger, unsupported count, selection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._rows: list = []
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql, params=None):
+        self._conn.executed.append((sql, params))
+        if "FROM rag_ingestions WHERE collection" in sql:
+            self._rows = []                       # resume ledger: nothing done yet
+        elif "GROUP BY d.source_code" in sql:
+            self._rows = list(self._conn.unsupported)
+        else:                                     # the selection
+            self._conn.selection_params = params
+            self.description = [("doc_id",), ("local_path",)]
+            self._rows = []
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _DispatchConn:
+    def __init__(self, unsupported):
+        self.unsupported = unsupported
+        self.executed: list = []
+        self.selection_params = None
+        self.closed = False
+
+    def cursor(self):
+        return _DispatchCursor(self)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_vault(monkeypatch, tmp_path, unsupported):
+    import data_orchestrator.vault as vault_mod
+    from data_orchestrator.core import IngestStats
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    conn = _DispatchConn(unsupported)
+    monkeypatch.setattr(vault_mod, "connect", lambda: conn)
+    reports: list[dict] = []
+    monkeypatch.setattr(vault_mod, "insert_run_report", lambda _c, rep: reports.append(rep))
+
+    def fake_run_ingest(items, **kwargs):
+        list(items)  # drain: the selection query runs
+        return IngestStats()
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    return conn, reports
+
+
+def test_vault_run_reports_the_unsupported_count(monkeypatch, tmp_path, capsys):
+    from data_orchestrator.routing import DEFAULT_SUPPORTED_MIME_TYPES
+
+    conn, reports = _fake_vault(monkeypatch, tmp_path, [("ecb", 32)])
+    rc = cli.main(["vault"])
+    assert rc == 0
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep["totals"]["docs_unsupported"] == 32
+    assert rep["corpus"] == "central-bank"
+    assert {e["source_code"]: e["docs_unsupported"] for e in rep["sources"]} == {"ecb": 32}
+    assert conn.selection_params["supported_mimes"] == list(DEFAULT_SUPPORTED_MIME_TYPES)
+    assert "Skipping 32 document(s)" in capsys.readouterr().out
+    assert conn.closed
+
+
+def test_vault_run_uses_the_env_narrowed_mimes_for_both_queries(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES", "application/pdf")
+    conn, _reports = _fake_vault(monkeypatch, tmp_path, [])
+    assert cli.main(["vault", "--source-codes", "ecb"]) == 0
+    unsupported_params = [p for s, p in conn.executed if "GROUP BY d.source_code" in s]
+    assert len(unsupported_params) == 1
+    for params in (unsupported_params[0], conn.selection_params):
+        assert params["supported_mimes"] == ["application/pdf"]
+        assert params["source_codes"] == ["ecb"]
+
+
+def test_vault_count_only_prints_the_unsupported_split(monkeypatch, tmp_path, capsys):
+    conn, reports = _fake_vault(monkeypatch, tmp_path, [("ecb", 32), ("fr", 3)])
+    rc = cli.main(["vault", "--count-only"])
+    assert rc == 0 and reports == []
+    out = capsys.readouterr().out
+    assert "Matching documents: 0" in out
+    assert "Unsupported (not offered to the engine): 35" in out
+    assert "by source_code: {'ecb': 32, 'fr': 3}" in out
+    assert conn.selection_params["supported_mimes"]

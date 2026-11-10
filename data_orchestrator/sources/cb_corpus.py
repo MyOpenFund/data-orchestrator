@@ -85,10 +85,6 @@ def _parse_year(value: str) -> Optional[int]:
     return int(value) if value.isdigit() else None
 
 
-def _has_pdf_sibling(html_path: Path) -> bool:
-    return html_path.with_suffix(".pdf").exists()
-
-
 def _manifest_files(root: Path) -> list[Path]:
     """Per-bank manifest files ``<root>/manifest/<bank>.jsonl`` (sorted).
 
@@ -195,7 +191,6 @@ def iter_items(
     groups: Optional[Sequence[str]] = None,
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
-    include_html: bool = False,
     prefer_manifest: bool = True,
 ) -> Iterator[SourceItem]:
     """Walk the corpus and yield one :class:`SourceItem` per document.
@@ -210,10 +205,6 @@ def iter_items(
         ``["C1", "A3"]``, ``["A", "C"]``). ``None`` means "all".
     year_min / year_max:
         Inclusive year bounds.
-    include_html:
-        If False (default) only ``.pdf`` files are yielded. If True, ``.html``
-        files are also yielded — but only when they have no ``.pdf`` sibling
-        (the PDF is the canonical artifact when both exist).
     prefer_manifest:
         If True (default) on-disk files are enriched with manifest metadata when
         their ``doc_id`` is indexed, and a missing/empty ``manifest/`` is a
@@ -282,13 +273,10 @@ def iter_items(
                     if not f.is_file():
                         continue
                     ext = f.suffix.lower()
-                    if ext == ".pdf":
-                        pass
-                    elif ext == ".html" and include_html:
-                        if _has_pdf_sibling(f):
-                            continue  # PDF sibling is canonical
-                    else:
-                        continue  # .DS_Store, .html (when PDF exists / excluded), etc.
+                    # .pdf only: HTML is converted to .md/PDF before the
+                    # engine; see issue #17. (.DS_Store, .html, etc. skipped.)
+                    if ext != ".pdf":
+                        continue
 
                     doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
                     rel = f"{bank_code}/{doc_type}/{year_dir.name}/{f.name}"
