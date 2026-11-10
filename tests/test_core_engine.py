@@ -32,6 +32,11 @@ class FakeClient:
     def __init__(self, log):
         self._log = log
         self.points = []
+        self.sizes = {}  # collection -> stored vector size (set by FakeStore)
+
+    def get_collection(self, collection_name):
+        return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(
+            vectors=SimpleNamespace(size=self.sizes[collection_name]))))
 
     def upsert(self, collection_name, points, **kwargs):
         self._log.append(("qdrant", collection_name, len(points)))
@@ -46,6 +51,7 @@ class FakeStore:
 
     def ensure_collection(self, name, vector_size):
         self.ensured.append((name, vector_size))
+        self.client.sizes.setdefault(name, vector_size)
         return vector_size
 
 
@@ -395,21 +401,65 @@ def test_race_winner_with_another_dimension_is_refused():
         _ensure_collection(RacingStore(RacingClient(exists=True, size=384)), "c", 8)
 
 
+class _ExistingStore:
+    """ensure_collection succeeds (the collection already exists); the stored
+    configuration is only known through client.get_collection."""
+
+    def __init__(self, size, get_raises=None):
+        self.client = RacingClient(exists=True, size=size)
+        if get_raises is not None:
+            def boom(collection_name):
+                raise get_raises
+            self.client.get_collection = boom
+
+    def ensure_collection(self, name, vector_size):
+        return vector_size  # eigenmind's answer for a named-vector collection
+
+
 def test_existing_collection_with_another_dimension_is_refused():
-    class Existing:
-        client = None
-
-        def ensure_collection(self, name, vector_size):
-            return 384
-
     with pytest.raises(RuntimeError, match="384-d"):
-        _ensure_collection(Existing(), "c", 768)
+        _ensure_collection(_ExistingStore(size=384), "c", 768)
+
+
+def test_existing_collection_with_the_model_dimension_is_accepted():
+    _ensure_collection(_ExistingStore(size=768), "c", 768)
+
+
+def test_existing_named_vector_collection_is_refused_on_the_normal_path():
+    with pytest.raises(RuntimeError,
+                       match="cannot verify the dimension of a named-vector collection"):
+        _ensure_collection(_ExistingStore(size=None), "c", 768)
+
+
+def test_a_failing_verification_on_the_normal_path_propagates():
+    with pytest.raises(ConnectionError, match="qdrant went away"):
+        _ensure_collection(_ExistingStore(size=768,
+                                          get_raises=ConnectionError("qdrant went away")),
+                           "c", 768)
+
+
+def test_real_qdrant_store_refuses_a_pre_existing_named_vector_collection():
+    qdrant_client = pytest.importorskip("qdrant_client")
+    store_mod = pytest.importorskip("eigenmind.vectordb.store")
+    from qdrant_client import models
+
+    inner = qdrant_client.QdrantClient(":memory:")
+    inner.create_collection(
+        collection_name="c",
+        vectors_config={"text": models.VectorParams(size=8,
+                                                    distance=models.Distance.COSINE)},
+    )
+    store = store_mod.QdrantStore.__new__(store_mod.QdrantStore)
+    store._client = inner
+    with pytest.raises(RuntimeError,
+                       match="cannot verify the dimension of a named-vector collection"):
+        _ensure_collection(store, "c", 8)
 
 
 def test_run_ingest_refuses_a_wrong_dimension_before_touching_any_document(tmp_path):
     log = []
     store = FakeStore(log)
-    store.ensure_collection = lambda name, vector_size: vector_size * 2
+    store.client.sizes["c"] = FakeEmbedder.dim * 2
     with pytest.raises(RuntimeError, match="-d vectors"):
         run_ingest([_md_item(tmp_path)], collection="c", ledger=RecordingLedger(log),
                    store=store, embedder=FakeEmbedder())
@@ -483,8 +533,8 @@ def _racing_qdrant_store(other_dim):
 
 def test_real_qdrant_store_losing_the_race_is_not_fatal():
     store, inner = _racing_qdrant_store(other_dim=8)
-    with pytest.raises(Exception):  # the bare engine call does lose the race
-        store.ensure_collection("c", 8)
+    with pytest.raises(ValueError, match="Collection c already exists"):
+        store.ensure_collection("c", 8)  # the bare engine call does lose the race
     store2, inner2 = _racing_qdrant_store(other_dim=8)
     _ensure_collection(store2, "c", 8)
     assert inner2.collection_exists("c")

@@ -269,18 +269,28 @@ def ingest_item(
 
 
 def _ensure_collection(store, name: str, dim: int) -> None:
-    """Create ``name`` if missing, surviving a concurrent creator (issue #6).
+    """Create ``name`` if missing, surviving a concurrent creator (issue #6),
+    then verify the stored vector configuration against the model.
 
     eigenmind's ``ensure_collection`` is get-then-create: two first runs both
     see "not found" and the loser's create raises a 409. If the collection
     exists once the call has failed, the other process created it: carry on.
     Any other failure — including one while checking for the race — is
-    re-raised as the original error. Then refuse a collection whose stored
-    dimension differs from the model's (a 768-d upsert into a 384-d
-    collection would fail every document), or cannot be read (named vectors).
+    re-raised as the original error (``from None``).
+
+    One verification path follows, whether ``ensure_collection`` returned or
+    the race was lost: ``store.client.get_collection`` is read once and the
+    collection is refused when its vectors have no single ``size`` (a
+    named-vector collection: its dimension cannot be verified, and
+    eigenmind's own return value would merely echo the requested one) or a
+    size other than the model's (a 768-d upsert into a 384-d collection
+    would fail every document). If that read fails on the normal path the
+    failure propagates as is; after a lost race it reports the original
+    error, as above.
     """
+    lost_race: Exception | None = None
     try:
-        stored = store.ensure_collection(name, dim)
+        store.ensure_collection(name, dim)
     except Exception as exc:
         # Any failure while checking the race reports the ORIGINAL error: it
         # is the one the operator needs; the follow-up is noise.
@@ -290,18 +300,21 @@ def _ensure_collection(store, name: str, dim: int) -> None:
             raise exc from None
         if not exists:
             raise
-        try:
-            info = store.client.get_collection(collection_name=name)
-        except Exception:
-            raise exc from None
-        size = getattr(info.config.params.vectors, "size", None)
-        if size is None:
-            raise RuntimeError(
-                f"collection {name!r}: cannot verify the dimension of a "
-                f"named-vector collection (the embedding model produces {dim}-d): "
-                "use another --collection"
-            ) from None
-        stored = int(size)
+        lost_race = exc
+    try:
+        info = store.client.get_collection(collection_name=name)
+    except Exception:
+        if lost_race is None:
+            raise
+        raise lost_race from None
+    size = getattr(info.config.params.vectors, "size", None)
+    if size is None:
+        raise RuntimeError(
+            f"collection {name!r}: cannot verify the dimension of a "
+            f"named-vector collection (the embedding model produces {dim}-d): "
+            "use another --collection"
+        )
+    stored = int(size)
     if stored != dim:
         raise RuntimeError(
             f"collection {name!r} stores {stored}-d vectors but the embedding "
