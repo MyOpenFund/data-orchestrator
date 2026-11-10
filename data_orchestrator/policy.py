@@ -21,8 +21,9 @@ import os
 import re
 
 DEGRADED_RATIO_ENV = "DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO"
-# Off-spec choice made explicit (Marc, 2026-11-10): above 10 % failures the
-# run is degraded. 0 = any failure degrades; 1 = rule (b) off.
+# Default threshold (decided 2026-11-10, configurable through
+# DEGRADED_RATIO_ENV): above 10 % failures the run is degraded.
+# 0 = any failure degrades; 1 = rule (b) off.
 DEFAULT_DEGRADED_FAILURE_RATIO = 0.10
 # Plain decimal only: "0", "0.25", ".5". float() alone would also take
 # "0_1", "1e-1", "inf" or "nan", none of which an operator means as a ratio.

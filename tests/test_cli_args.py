@@ -34,7 +34,7 @@ def test_default_collection_for_vault_source(monkeypatch, tmp_path):
 def test_default_collection_for_cb_corpus_source_matches_vault_routing(monkeypatch, tmp_path):
     """The cb_corpus fallback must never default to the legacy 384-d
     'cb_corpus' collection name — it uses the same routing.collection_name
-    resolution as the vault source (item 5 of the fix wave)."""
+    resolution as the vault source."""
     seen = {}
 
     def fake_run_ingest(items, *, collection, **kwargs):
@@ -55,7 +55,7 @@ def test_default_collection_for_cb_corpus_source_matches_vault_routing(monkeypat
 
 def test_vault_rejects_no_resume(capsys):
     """The vault source's resume IS the documents/rag_ingestions anti-join —
-    --no-resume there is an incoherent combo (item 4 of the fix wave): reject
+    --no-resume there is an incoherent combo: reject
     it with a clear error instead of silently ignoring the ledger while the
     anti-join still filters."""
     rc = cli.main(["vault", "--no-resume"])
@@ -76,8 +76,7 @@ def test_vault_source_connect_failure_returns_fatal_report_not_exception(
 ):
     """A vault.connect() failure inside _run_vault_source (e.g. DATABASE_URL
     unset) must not escape cli.main() as an uncaught exception — it must
-    produce the best-effort failed/1 report, same as every other fatal path
-    (finding 1 of the fix wave)."""
+    produce the best-effort failed/1 report, same as every other fatal path."""
     import data_orchestrator.vault as vault_mod
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
@@ -119,7 +118,7 @@ def test_cb_corpus_missing_root_fails_before_any_engine_work(monkeypatch, capsys
     cb_corpus's iter_items() is a generator, so without this eager
     pre-flight the root is only validated at its first next() — by then the
     ledger/vault connection is already open and an orphan collection may
-    already have been created (item 1 of the fix wave)."""
+    already have been created."""
     monkeypatch.delenv("CB_CORPUS_ROOT", raising=False)
     called = {"connect": False, "run_ingest": False}
     import data_orchestrator.vault as vault_mod
@@ -233,7 +232,7 @@ def test_cb_corpus_count_only_missing_manifest_fails_cleanly(tmp_path, capsys):
 
 
 def test_unknown_corpus_error_message_lists_known_corpora(capsys):
-    """MINOR (item 2 of the fix wave): an unknown --corpus must not surface
+    """An unknown --corpus must not surface
     as a bare KeyError repr — catch it separately and derive the known list
     from routing.ROUTING rather than hardcoding it."""
     from data_orchestrator.routing import ROUTING
@@ -271,7 +270,7 @@ def test_summary_is_silent_on_stderr_when_no_path_metadata(capsys):
 
 
 # ---------------------------------------------------------------------------
-# Task 6 — CLI wiring: validations, --include-html removal, unsupported count
+# CLI wiring: validations, --include-html removal, unsupported count
 # ---------------------------------------------------------------------------
 
 # Every source and mode an operator-error check must precede.
@@ -418,10 +417,22 @@ def test_vault_run_reports_the_unsupported_count(monkeypatch, tmp_path, capsys):
     rep = reports[0]
     assert rep["totals"]["docs_unsupported"] == 32
     assert rep["corpus"] == "central-bank"
-    assert {e["source_code"]: e["docs_unsupported"] for e in rep["sources"]} == {"ecb": 32}
+    assert rep["sources"] == []  # ecb was not touched by the run
+    assert rep["unsupported_by_source"] == {"ecb": 32}
     assert conn.selection_params["supported_mimes"] == list(DEFAULT_SUPPORTED_MIME_TYPES)
-    assert "Skipping 32 document(s)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Skipping 32 document(s)" in out
     assert conn.closed
+
+
+def test_the_skipping_line_points_to_the_setting_instead_of_listing_mimes(
+        monkeypatch, tmp_path, capsys):
+    _conn, _reports = _fake_vault(monkeypatch, tmp_path, [("ecb", 3)])
+    assert cli.main(["vault"]) == 0
+    (line,) = [l for l in capsys.readouterr().out.splitlines() if l.startswith("Skipping")]
+    assert "Skipping 3 document(s)" in line
+    assert "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES" in line and "README" in line
+    assert "application/" not in line
 
 
 def test_vault_run_uses_the_env_narrowed_mimes_for_both_queries(monkeypatch, tmp_path):
@@ -528,6 +539,37 @@ def test_vault_run_mixes_new_and_unsupported_on_one_source(monkeypatch, tmp_path
     assert rep["sources"] == [{"source_code": "ecb", "docs_seen": 1, "docs_new": 1,
                                "docs_failed": 0, "docs_unsupported": 2}]
     assert rep["totals"]["docs_new"] == 1 and rep["totals"]["docs_unsupported"] == 2
+    assert rep["unsupported_by_source"] == {"ecb": 2}
+
+
+def test_vault_run_keeps_unsupported_only_sources_out_of_sources(monkeypatch, tmp_path):
+    """A touched source carries its own docs_unsupported (0 when none); a
+    source with only unsupported documents appears in unsupported_by_source
+    only."""
+    from data_orchestrator.core import IngestStats, _bump
+
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4 stub")
+    _conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [("fr", 2)],
+        selection_rows=[("d1", "ecb", "a.pdf")],
+        selection_columns=("doc_id", "source_code", "local_path"),
+    )
+
+    def fake_run_ingest(items, **kwargs):
+        stats = IngestStats()
+        for item in items:
+            stats.docs_seen += 1
+            stats.docs_ingested += 1
+            _bump(stats, item, new=1)
+        return stats
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    assert cli.main(["vault"]) == 0
+    (rep,) = reports
+    assert rep["sources"] == [{"source_code": "ecb", "docs_seen": 1, "docs_new": 1,
+                               "docs_failed": 0, "docs_unsupported": 0}]
+    assert rep["unsupported_by_source"] == {"fr": 2}
+    assert rep["totals"]["docs_unsupported"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +630,8 @@ def test_vault_fatal_report_keeps_the_known_unsupported_count(monkeypatch, tmp_p
     assert rep["corpus"] == "central-bank"
     assert rep["fatal"] == "RuntimeError: engine init failed" and "error" not in rep
     assert rep["totals"]["docs_unsupported"] == 5
-    assert {e["source_code"]: e["docs_unsupported"] for e in rep["sources"]} == {"ecb": 4, "fr": 1}
+    assert rep["sources"] == []  # no unsupported-only entries on a fatal report
+    assert rep["unsupported_by_source"] == {"ecb": 4, "fr": 1}
     assert "error: fatal: RuntimeError: engine init failed" in capsys.readouterr().err
     assert conn.closed
 
@@ -604,6 +647,7 @@ def test_vault_fatal_report_without_a_known_unsupported_count_omits_it(monkeypat
     assert cli.main(["vault"]) == 1
     (rep,) = reports
     assert "docs_unsupported" not in rep["totals"]
+    assert "unsupported_by_source" not in rep
 
 
 def _real_insert_fake_vault(monkeypatch, tmp_path):
@@ -663,7 +707,7 @@ def test_a_failing_rollback_does_not_mask_the_fatal_outcome(monkeypatch, tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# Traceability (#8 review): which .env was read, and which Qdrant the engine
+# Traceability (issue #8): which .env was read, and which Qdrant the engine
 # will write to, are printed before any work.
 # ---------------------------------------------------------------------------
 def _minimal_cb_corpus(tmp_path):
@@ -789,3 +833,106 @@ def test_a_missing_explicit_dotenv_is_an_operator_error(tmp_path, monkeypatch, c
     cap = capsys.readouterr()
     assert cap.err.startswith("error:") and "DATA_ORCHESTRATOR_DOTENV" in cap.err
     assert "Config:" not in cap.out
+
+
+# ---------------------------------------------------------------------------
+# probe: flags it does not support are rejected; a DB failure is a clean
+# fatal line, never a traceback.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("flags", [["--count-only"], ["--no-vault"], ["--no-resume"],
+                                   ["--ledger", "x.jsonl"]], ids=" ".join)
+def test_probe_rejects_flags_it_does_not_support(monkeypatch, capsys, flags):
+    _forbid_any_work(monkeypatch)
+    assert cli.main(["probe", *flags]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "not supported by probe" in err
+    assert flags[0] in err
+
+
+def test_probe_without_database_url_is_a_clean_fatal(monkeypatch, capsys):
+    monkeypatch.setenv("CB_CORPUS_ROOT", "/nonexistent")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert cli.main(["probe"]) == 1
+    err = capsys.readouterr().err
+    assert "error: fatal: RuntimeError: DATABASE_URL is not set" in err
+    assert "Traceback" not in err
+
+
+def test_probe_query_failure_is_a_clean_fatal_and_closes(monkeypatch, capsys):
+    import data_orchestrator.probe as probe_mod
+    import data_orchestrator.vault as vault_mod
+
+    conn = _DispatchConn([])
+    monkeypatch.setattr(vault_mod, "connect", lambda: conn)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("relation documents does not exist")
+
+    monkeypatch.setattr(probe_mod, "run_probe", boom)
+    assert cli.main(["probe"]) == 1
+    assert ("error: fatal: RuntimeError: relation documents does not exist"
+            in capsys.readouterr().err)
+    assert conn.closed
+
+
+def test_vault_count_only_without_database_url_is_a_clean_fatal(monkeypatch, tmp_path,
+                                                                capsys):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert cli.main(["vault", "--count-only"]) == 1
+    err = capsys.readouterr().err
+    assert "error: fatal: RuntimeError: DATABASE_URL is not set" in err
+
+
+def test_vault_count_only_query_failure_is_a_clean_fatal_and_closes(monkeypatch, tmp_path,
+                                                                    capsys):
+    import data_orchestrator.sources.vault as vault_source
+    conn, _reports = _fake_vault(monkeypatch, tmp_path, [])
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("count failed")
+
+    monkeypatch.setattr(vault_source, "count_unsupported", boom)
+    assert cli.main(["vault", "--count-only"]) == 1
+    assert "error: fatal: RuntimeError: count failed" in capsys.readouterr().err
+    assert conn.closed
+
+
+# ---------------------------------------------------------------------------
+# QDRANT_PORT pre-flight: an ingest run refuses a port that is not a plain
+# integer in 1..65535 before any DB/engine work.
+# ---------------------------------------------------------------------------
+_INGEST_ARGVS = [["vault"], ["cb_corpus", "--no-vault"], ["company", "--no-vault"],
+                 ["cb_corpus"], ["company"]]
+
+
+@pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
+@pytest.mark.parametrize("value", ["", "  ", "abc", "0", "65536", "-1", "+6333",
+                                   "6433 # comment", "6433.0", "６４３３"])
+def test_invalid_qdrant_port_fails_an_ingest_run_before_any_work(monkeypatch, capsys,
+                                                                 argv, value):
+    monkeypatch.setenv("QDRANT_PORT", value)
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "QDRANT_PORT" in err
+
+
+@pytest.mark.parametrize("value", ["6433", " 6433 ", "1", "65535"])
+def test_valid_qdrant_port_passes_the_preflight(value):
+    assert cli._qdrant_port_error({"QDRANT_PORT": value}) is None
+
+
+def test_absent_qdrant_port_passes_the_preflight():
+    assert cli._qdrant_port_error({}) is None
+
+
+@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["probe"],
+                                  ["company", "--count-only"]], ids=" ".join)
+def test_qdrant_port_is_not_checked_when_qdrant_is_never_touched(monkeypatch, tmp_path,
+                                                                 capsys, argv,
+                                                                 fake_company_corpus):
+    monkeypatch.setenv("QDRANT_PORT", "abc")
+    _fake_vault(monkeypatch, tmp_path, [])
+    cli.main(argv)
+    assert "QDRANT_PORT" not in capsys.readouterr().err

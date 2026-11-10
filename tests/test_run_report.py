@@ -83,8 +83,7 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
     """cb_corpus + --no-resume, vault mode (no --no-vault): the resume-ledger
     vault_conn stays None because --no-resume skips the "if not
     args.no_resume" block entirely, so the success-path report write must
-    open its own short-lived connection rather than silently doing nothing
-    (finding 2 of the fix wave)."""
+    open its own short-lived connection rather than silently doing nothing."""
     from data_orchestrator import cli
     from data_orchestrator.core import IngestStats
     import data_orchestrator.vault as vault_mod
@@ -119,7 +118,7 @@ def test_cb_corpus_no_resume_vault_mode_still_writes_report(monkeypatch, tmp_pat
 def test_no_vault_report_append_failure_does_not_mask_clean_run(
     monkeypatch, tmp_path, capsys
 ):
-    """MINOR (item 4 of the fix wave): on the --no-vault success path,
+    """On the --no-vault success path,
     _append_report_jsonl() was unguarded — a failed append cascaded into the
     fatal handler and flipped a clean run's exit code, contradicting the
     "report write never masks the run's outcome" contract that already
@@ -225,23 +224,72 @@ def test_failure_ratio_above_threshold_degrades_a_run_that_ingested_something():
     assert rep["outcome"] == "degraded" and rep["exit_code"] == 3
 
 
-def test_unsupported_counts_land_in_totals_and_per_source_without_degrading():
-    s = _stats(docs_seen=1, docs_ingested=1,
-               by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
+def test_unsupported_counts_land_in_totals_and_touched_sources_without_degrading():
+    """sources[] lists only the source codes the run touched; each carries its
+    own docs_unsupported. A source with only unsupported documents is not in
+    sources[]: the full split is ``unsupported_by_source``."""
+    s = _stats(docs_seen=2, docs_ingested=2,
+               by_source={"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0},
+                          "fr": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0}})
     rep = _build_report("vault", s, "t", corpus="central-bank", ratio=R,
-                        unsupported={"ecb": 32, "us": 1})
+                        unsupported={"us": 1, "ecb": 32})
     assert rep["outcome"] == "ok"
     assert rep["totals"]["docs_unsupported"] == 33
-    by_code = {e["source_code"]: e for e in rep["sources"]}
-    assert by_code["ecb"] == {"source_code": "ecb", "docs_seen": 0, "docs_new": 0,
-                              "docs_failed": 0, "docs_unsupported": 32}
-    assert by_code["us"]["docs_unsupported"] == 1 and by_code["us"]["docs_new"] == 1
+    assert rep["sources"] == [
+        {"source_code": "fr", "docs_seen": 1, "docs_new": 1, "docs_failed": 0,
+         "docs_unsupported": 0},
+        {"source_code": "us", "docs_seen": 1, "docs_new": 1, "docs_failed": 0,
+         "docs_unsupported": 1},
+    ]
+    assert rep["unsupported_by_source"] == {"ecb": 32, "us": 1}
+    assert list(rep["unsupported_by_source"]) == ["ecb", "us"]  # sorted by key
 
 
-def test_unsupported_empty_dict_still_writes_a_zero_total():
+def test_unsupported_only_sources_stay_out_of_sources():
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={"ecb": 32})
+    assert rep["sources"] == []
+    assert rep["unsupported_by_source"] == {"ecb": 32}
+    assert rep["totals"]["docs_unsupported"] == 32
+
+
+def test_unsupported_empty_dict_still_writes_a_zero_total_and_an_empty_split():
     rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
                         unsupported={})
     assert rep["totals"]["docs_unsupported"] == 0
+    assert rep["unsupported_by_source"] == {}
+
+
+def test_no_unsupported_count_means_no_split_key():
+    rep = _build_report("cb_corpus", _stats(), "t", corpus="central-bank", ratio=R)
+    assert "unsupported_by_source" not in rep
+
+
+def test_unsupported_by_source_is_swept_into_extra():
+    """Not a runs column: insert_run_report puts it under runs.extra."""
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={"fr": 1, "ecb": 2})
+    conn = FakeConn()
+    insert_run_report(conn, rep)
+    _sql, params = conn.executed[-1]
+    assert json.loads(params[-1]) == {"unsupported_by_source": {"ecb": 2, "fr": 1}}
+
+
+def test_unsupported_empty_split_still_lands_in_extra():
+    """Written on every vault run, even empty, so its presence is reliable:
+    extra is then never NULL on a vault run."""
+    from data_orchestrator.vault import insert_run_report
+    from tests.test_vault_ledger import FakeConn
+
+    rep = _build_report("vault", _stats(), "t", corpus="central-bank", ratio=R,
+                        unsupported={})
+    conn = FakeConn()
+    insert_run_report(conn, rep)
+    _sql, params = conn.executed[-1]
+    assert json.loads(params[-1]) == {"unsupported_by_source": {}}
 
 
 def test_build_report_does_not_mutate_the_stats_breakdown():
@@ -338,3 +386,36 @@ def test_fatal_report_from_cli_carries_the_corpus(monkeypatch, tmp_path,
     assert len(captured) == 1
     assert captured[0]["corpus"] == "company"
     assert captured[0]["fatal"] == "RuntimeError: engine init failed"
+
+
+def test_fatal_report_keeps_the_known_split_without_unsupported_only_sources():
+    from data_orchestrator.cli import _fatal_report
+    rep = _fatal_report("vault", "t", RuntimeError("x"), corpus="central-bank",
+                        unsupported={"fr": 1, "ecb": 4})
+    assert rep["sources"] == []
+    assert rep["totals"]["docs_unsupported"] == 5
+    assert rep["unsupported_by_source"] == {"ecb": 4, "fr": 1}
+
+
+def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, capsys,
+                                                      fake_company_corpus):
+    """Same warning as the success path: a report that cannot be appended is
+    never silent, and never masks the fatal outcome."""
+    from data_orchestrator import cli
+
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("engine init failed")
+
+    def append_boom(report):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "run_ingest", boom)
+    monkeypatch.setattr(cli, "_append_report_jsonl", append_boom)
+
+    assert cli.main(["company", "--no-vault"]) == 1
+    err = capsys.readouterr().err
+    assert "warning: failed to append run report: disk full" in err
+    assert "error: fatal: RuntimeError: engine init failed" in err

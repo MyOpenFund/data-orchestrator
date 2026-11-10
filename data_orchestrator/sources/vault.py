@@ -151,6 +151,8 @@ def row_to_item(row: dict, corpus: str) -> SourceItem | None:
         # the file opened is the one whose extension was matched.
         local_path = local_path.rstrip(" \t\r\n")
     if not local_path:
+        # Defensive only: the selection's SQL predicate already excludes a
+        # NULL/blank local_path, so this guard should never fire.
         return None
     extra = row.get("extra") or {}
     payload = dict(extra)

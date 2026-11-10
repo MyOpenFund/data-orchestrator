@@ -1,4 +1,4 @@
-"""End-to-end wave 2: vault-selected documents through the full chain via the CLI."""
+"""End-to-end, vault source: vault-selected documents through the full chain via the CLI."""
 import socket
 
 import psycopg2
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture()
 def corpus_dir(tmp_path):
-    """Vault-realistic corpus root, overriding conftest's flat wave-1 fixture.
+    """Vault-realistic corpus root, overriding conftest's flat disk-source fixture.
 
     Real vault rows have local_path values like "data/raw/us/C1/2010/<doc_id>.pdf"
     (relative to the cb_corpus REPO root), while CB_CORPUS_ROOT points at the
@@ -97,7 +97,7 @@ def test_cli_vault_second_run_selects_nothing(
     _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
     before = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).count(_coll()).count
     rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
-    # Honest exit code (item 9/C1): the anti-join leaves only doc-gone as a
+    # Honest exit code: the anti-join leaves only doc-gone as a
     # candidate on the second run, and it re-errors (missing file), so this
     # run has docs_ingested == 0 and docs_error > 0 — degraded, exit 3 — not
     # the old always-0 behavior.
@@ -120,8 +120,8 @@ def test_cli_vault_filters(clean_state, qdrant_addr, corpus_dir, monkeypatch):
 def test_cli_vault_count_only_does_not_ingest(
     clean_state, qdrant_addr, corpus_dir, capsys, monkeypatch
 ):
-    """`vault --count-only` must only count (item 3 of the fix wave): no
-    engine work, no ledger writes, no Qdrant collection created."""
+    """`vault --count-only` must only count: no engine work, no ledger
+    writes, no Qdrant collection created."""
     _seed(clean_state, corpus_dir)
     rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir, ["--count-only"])
     assert rc == 0
@@ -149,7 +149,9 @@ PROSE = ("Central banks track consumer prices closely and adjust policy rates "
 
 
 def _seed_mixed_types(pg_url, corpus_dir):
-    """One row per edge of the supported-type predicate (spec D2 + amendment)."""
+    """One row per edge of the supported-type predicate: typed PDF, an
+    unsupported mime, a NULL mime on an upper-case extension, a mime with
+    parameters, a blank mime, and no local_path."""
     base = corpus_dir / "raw" / "us" / "C1" / "2015"
     write_text_pdf(base / "typed.pdf")
     write_text_pdf(base / "UPPER.PDF")
@@ -182,13 +184,18 @@ def test_cli_vault_offers_only_supported_types_and_counts_the_rest(
         cur.execute("SELECT doc_id FROM rag_ingestions ORDER BY doc_id")
         done = [r[0] for r in cur.fetchall()]
         cur.execute("SELECT outcome, corpus, totals->>'docs_unsupported', "
-                    "totals->>'docs_failed', sources, extra FROM runs")
-        (outcome, corpus, unsupported, failed, sources, extra), = cur.fetchall()
+                    "totals->>'docs_failed', sources, extra->'unsupported_by_source', "
+                    "extra ? 'fatal', extra ? 'error' FROM runs")
+        (outcome, corpus, unsupported, failed, sources, split,
+         has_fatal, has_error), = cur.fetchall()
     # html: unsupported mime; nopath: no file extension to dispatch on.
     assert done == ["doc-blank", "doc-charset", "doc-pdf", "doc-upper"]
     assert (outcome, corpus, unsupported, failed) == ("ok", "central-bank", "2", "0")
+    # "us" was touched by the run, so its entry carries its unsupported count.
     assert [(s["source_code"], s["docs_unsupported"]) for s in sources] == [("us", 2)]
-    assert extra is None
+    # The full split is a report field without a runs column: swept into extra.
+    assert split == {"us": 2}
+    assert (has_fatal, has_error) == (False, False)
 
 
 def _closed_port():

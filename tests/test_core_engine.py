@@ -166,7 +166,7 @@ def test_ledger_failure_is_isolated(tmp_path):
 
 def test_ledger_failure_on_empty_doc_is_isolated_and_run_continues(tmp_path, monkeypatch):
     """The n == 0 ('empty doc') ledger mark must be inside the same
-    per-document isolation as the n > 0 path (item 2 of the fix wave): an
+    per-document isolation as the n > 0 path: an
     empty doc unknown to the vault (FK violation on mark) must count as a
     docs_error for that one doc and let the run continue, not abort."""
     from chunknorris.exceptions import TextNotFoundException
@@ -205,7 +205,7 @@ def test_ledger_failure_on_empty_doc_is_isolated_and_run_continues(tmp_path, mon
 
 def test_ensure_collection_failure_still_releases_owned_embedder(tmp_path, monkeypatch):
     """ensure_collection() must be inside the try/finally that releases an
-    *owned* embedder (item 6 of the fix wave) — otherwise a raising
+    *owned* embedder — otherwise a raising
     ensure_collection leaks the loaded model."""
     import data_orchestrator.core as core
 
@@ -235,7 +235,7 @@ def test_ensure_collection_failure_still_releases_owned_embedder(tmp_path, monke
 
 def test_ingest_item_omits_page_key_when_start_page_is_none(tmp_path):
     """Non-paginated formats (e.g. markdown) must not fake a 'page': 0 in the
-    payload (item 7 of the fix wave) — the point id still resolves the
+    payload — the point id still resolves the
     missing page to 0 for determinism, but the payload key is absent."""
     log = []
     store, embedder = FakeStore(log), FakeEmbedder()

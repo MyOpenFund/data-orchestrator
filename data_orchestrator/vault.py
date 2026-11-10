@@ -80,7 +80,8 @@ def insert_run_report(conn, report: dict) -> None:
     the run's own outcome.
 
     Report keys outside ``_RUN_COLUMNS`` (notably ``fatal``, set by
-    ``cli._fatal_report``) are swept into ``extra``; an empty sweep writes SQL
+    ``cli._fatal_report``, and the vault source's ``unsupported_by_source``)
+    are swept into ``extra``; an empty sweep writes SQL
     NULL rather than ``'{}'``, so ``extra IS NULL`` means the same thing here
     as in the vault ingester.
 

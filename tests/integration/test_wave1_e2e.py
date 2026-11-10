@@ -1,4 +1,4 @@
-"""End-to-end wave 1: disk-provided items -> eigenmind engine -> Qdrant + vault."""
+"""End-to-end, disk source: disk-provided items -> eigenmind engine -> Qdrant + vault."""
 import psycopg2
 import pytest
 from qdrant_client import QdrantClient
@@ -106,7 +106,7 @@ def test_e2e_doc_unknown_to_vault_is_isolated_fk_error(clean_state, qdrant_addr,
 
 
 def test_e2e_poisoned_doc_first_does_not_block_convergence(clean_state, qdrant_addr, corpus_dir):
-    """Regression for item 1 of the fix wave: a doc_id unknown to the vault
+    """Regression: a doc_id unknown to the vault
     (FK violation on VaultLedger.mark) processed FIRST must not poison the
     shared psycopg2 connection for every document processed after it.
 
@@ -118,9 +118,8 @@ def test_e2e_poisoned_doc_first_does_not_block_convergence(clean_state, qdrant_a
     first) so it FK-fails first, and assert the two later healthy docs still
     converge: both ingested AND their rag_ingestions rows persisted.
 
-    (Verified this fails without the fix: reverting the vault.py rollback
-    made this test fail with docs_ingested == 0 / docs_error == 3 — see the
-    fix-wave report for the captured evidence.)
+    (Reverting the vault.py rollback makes this test fail with
+    docs_ingested == 0 / docs_error == 3.)
     """
     insert_documents(clean_state, [
         {"doc_id": "doc-b-text", "corpus": "central-bank", "source_code": "us"},
