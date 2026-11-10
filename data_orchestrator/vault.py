@@ -56,7 +56,12 @@ ON CONFLICT (doc_id, collection) DO UPDATE SET
 
 
 def connect():
-    """Connect to the vault Postgres (DATABASE_URL from .env / environment)."""
+    """Connect to the vault Postgres (DATABASE_URL from .env / environment).
+
+    Runs ``config.load_dotenv()`` first (a no-op once loaded): a library
+    caller whose ``DATA_ORCHESTRATOR_DOTENV`` names a missing file gets
+    ``FileNotFoundError`` here.
+    """
     load_dotenv()
     url = os.environ.get("DATABASE_URL")
     if not url:

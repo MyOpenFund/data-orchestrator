@@ -41,6 +41,29 @@ def _cb_count_code(root):
     """
 
 
+def _cb_run_code(root):
+    """A real (non-count) cb_corpus --no-vault run on an empty corpus: eigenmind's
+    REAL QdrantStore is constructed (no network until first use), only the
+    embedder and the collection check are faked — so the ``Qdrant:`` line is
+    what the engine resolved, after eigenmind's own loader ran."""
+    return f"""
+        import sys
+        from types import SimpleNamespace
+        import numpy as np
+        from data_orchestrator import cli, core
+        print("module:", cli.__file__)
+        core.detect_device = lambda: "cpu"
+        core.EmbeddingModel = lambda **kw: SimpleNamespace(
+            dim=8, encode_passage=lambda t: np.zeros((len(t), 8)), release=lambda: None)
+        core._ensure_collection = lambda store, name, dim: None
+        sys.exit(cli.main(["cb_corpus", "--no-vault", "--root", {str(root)!r}]))
+    """
+
+
+def _qdrant_lines(out):
+    return [line for line in out.stdout.splitlines() if line.startswith("Qdrant:")]
+
+
 def test_importing_the_cli_does_not_import_eigenmind(tmp_path):
     out = _run(tmp_path, """
         import sys
@@ -74,22 +97,58 @@ def test_main_loads_the_dotenv_before_eigenmind_and_without_interpolation(tmp_pa
 
 
 def test_the_repo_root_fallback_is_used_from_an_unrelated_cwd(tmp_path):
-    """The literal #8 scenario: the CLI is launched from a folder with no
-    ``.env`` anywhere above it; the ``.env`` next to the package's repo root
-    is the one read (the editable-install layout)."""
+    """The literal #8 scenario: a copy of the package with its repo-root
+    ``.env``, the CLI launched from an unrelated folder (no
+    DATA_ORCHESTRATOR_DOTENV): the repo-root file is the one read and the run
+    — through eigenmind's real store — targets QDRANT_PORT=6433."""
+    pytest.importorskip("eigenmind.vectordb.store")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    above = [d / ".env" for d in (elsewhere, *elsewhere.parents) if (d / ".env").is_file()]
+    if above:
+        pytest.skip(f"an ancestor of the temp dir has a .env ({above[0]}): the cwd "
+                    "search would find it before the repo-root fallback")
     repo = tmp_path / "repo"
     shutil.copytree(ROOT / "data_orchestrator", repo / "data_orchestrator",
                     ignore=shutil.ignore_patterns("__pycache__"))
     (repo / ".env").write_text("QDRANT_PORT=6433\n", encoding="utf-8")
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    out = _run(elsewhere, _cb_count_code(_minimal_cb_corpus(tmp_path)), path=repo)
+    out = _run(elsewhere, _cb_run_code(_minimal_cb_corpus(tmp_path)), path=repo,
+               extra_env={"DATA_ORCHESTRATOR_STATE_DIR": str(tmp_path / "state")})
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
     assert lines[0] == f"module: {repo / 'data_orchestrator' / 'cli.py'}"
     assert lines[1] == f"Config: .env = {repo / '.env'}"
-    assert lines[2] == "Qdrant: localhost:6433"
+    assert _qdrant_lines(out) == ["Qdrant: localhost:6433"]
     assert "warning:" not in out.stderr
+
+
+def test_the_qdrant_line_follows_a_port_only_eigenmind_s_loader_set(tmp_path):
+    """The bug the store-based line fixes: our .env leaves QDRANT_PORT unset,
+    eigenmind's own python-dotenv sets it at first import (simulated: set just
+    before the real store is built, i.e. after our loader). The line shows
+    that value, not eigenmind's default, and draws no legacy warning."""
+    pytest.importorskip("eigenmind.vectordb.store")
+    (tmp_path / ".env").write_text("UNRELATED=1\n", encoding="utf-8")
+    code = _cb_run_code(_minimal_cb_corpus(tmp_path)).replace(
+        "sys.exit(", """import os
+        real_store = core.QdrantStore
+        def store():
+            os.environ.setdefault("QDRANT_PORT", "6433")  # eigenmind's loader
+            return real_store()
+        core.QdrantStore = store
+        sys.exit(""", 1)
+    out = _run(tmp_path, code,
+               extra_env={"DATA_ORCHESTRATOR_STATE_DIR": str(tmp_path / "state")})
+    assert out.returncode == 0, out.stderr
+    assert _qdrant_lines(out) == ["Qdrant: localhost:6433"]
+    assert "warning:" not in out.stderr
+
+
+def test_a_count_only_run_prints_no_qdrant_line(tmp_path):
+    (tmp_path / ".env").write_text("QDRANT_PORT=6433\n", encoding="utf-8")
+    out = _run(tmp_path, _cb_count_code(_minimal_cb_corpus(tmp_path)))
+    assert out.returncode == 0, out.stderr
+    assert _qdrant_lines(out) == []
 
 
 def test_ours_wins_over_eigenmind_s_loader(tmp_path):
@@ -117,16 +176,28 @@ def test_ours_wins_over_eigenmind_s_loader(tmp_path):
 
 
 def test_an_explicit_dotenv_wins_over_the_cwd_one(tmp_path):
+    pytest.importorskip("eigenmind.vectordb.store")
     (tmp_path / ".env").write_text("QDRANT_PORT=6433\n", encoding="utf-8")
     explicit = tmp_path / "conf" / "prod.env"
     explicit.parent.mkdir()
     explicit.write_text("QDRANT_HOST=qdrant.lan\nQDRANT_PORT=7000\n", encoding="utf-8")
-    out = _run(tmp_path, _cb_count_code(_minimal_cb_corpus(tmp_path)),
-               extra_env={"DATA_ORCHESTRATOR_DOTENV": str(explicit)})
+    out = _run(tmp_path, _cb_run_code(_minimal_cb_corpus(tmp_path)),
+               extra_env={"DATA_ORCHESTRATOR_DOTENV": str(explicit),
+                          "DATA_ORCHESTRATOR_STATE_DIR": str(tmp_path / "state")})
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
     assert lines[1] == f"Config: .env = {explicit}"
-    assert lines[2] == "Qdrant: qdrant.lan:7000"
+    assert _qdrant_lines(out) == ["Qdrant: qdrant.lan:7000"]
+
+
+def test_a_relative_explicit_dotenv_is_printed_absolute(tmp_path):
+    explicit = tmp_path / "conf" / "prod.env"
+    explicit.parent.mkdir()
+    explicit.write_text("QDRANT_PORT=7000\n", encoding="utf-8")
+    out = _run(tmp_path, _cb_count_code(_minimal_cb_corpus(tmp_path)),
+               extra_env={"DATA_ORCHESTRATOR_DOTENV": "conf/prod.env"})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines()[1] == f"Config: .env = {explicit.resolve()}"
 
 
 def test_an_explicit_dotenv_that_does_not_exist_exits_2_before_any_work(tmp_path):

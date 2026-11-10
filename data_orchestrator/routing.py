@@ -160,7 +160,13 @@ ROUTING: dict[str, CorpusRoute] = {
 
 
 def corpus_root(corpus: str) -> Path:
-    """Local data root for a corpus (joined with the vault's local_path)."""
+    """Local data root for a corpus (joined with the vault's local_path).
+
+    Reads the root through ``config.get_path``, which runs
+    ``config.load_dotenv()`` first: a library caller whose
+    ``DATA_ORCHESTRATOR_DOTENV`` names a missing file gets
+    ``FileNotFoundError`` here.
+    """
     route = ROUTING[corpus]  # KeyError on unknown corpus is the right signal
     root = get_path(route.root_env_key)
     if root is None:

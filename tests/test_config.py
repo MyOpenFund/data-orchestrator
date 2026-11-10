@@ -114,3 +114,24 @@ def test_explicit_dotenv_env_naming_a_missing_file_raises(tmp_path, monkeypatch)
     import pytest
     with pytest.raises(FileNotFoundError, match="DATA_ORCHESTRATOR_DOTENV"):
         config.load_dotenv()
+
+
+def test_a_relative_explicit_dotenv_is_loaded_and_reported_absolute(tmp_path, monkeypatch):
+    (tmp_path / "conf").mkdir()
+    (tmp_path / "conf" / "x.env").write_text("DATA_ORCHESTRATOR_TEST_KEY=rel\n",
+                                              encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(config.DOTENV_ENV, "conf/x.env")
+    monkeypatch.delenv("DATA_ORCHESTRATOR_TEST_KEY", raising=False)
+    assert config.load_dotenv() is True
+    assert config.loaded_dotenv() == tmp_path.resolve() / "conf" / "x.env"
+    assert config.loaded_dotenv().is_absolute()
+    assert os.environ["DATA_ORCHESTRATOR_TEST_KEY"] == "rel"
+
+
+def test_a_missing_relative_explicit_dotenv_names_the_resolved_path(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(config.DOTENV_ENV, "nope.env")
+    with pytest.raises(FileNotFoundError, match=str(tmp_path.resolve() / "nope.env")):
+        config.load_dotenv()

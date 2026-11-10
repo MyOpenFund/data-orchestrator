@@ -10,7 +10,11 @@ that are *not already present* in the real environment, so an explicit
 
 ``DATA_ORCHESTRATOR_DOTENV`` (read from the real environment only, never from
 a ``.env``) names the file explicitly and disables the search; a missing file
-is an error. :func:`loaded_dotenv` tells which file the search-based load read.
+is an error — ``FileNotFoundError``, raised by the first :func:`load_dotenv`
+without a ``path``, which library callers reach lazily through
+``vault.connect`` / ``routing.corpus_root`` / :func:`get_path` (the CLI turns
+it into exit 2). A relative value is resolved against the current directory.
+:func:`loaded_dotenv` tells which file the search-based load read.
 """
 from __future__ import annotations
 
@@ -50,15 +54,18 @@ def find_dotenv() -> Optional[Path]:
 def dotenv_path() -> Optional[Path]:
     """The ``.env`` the search-based load reads.
 
-    ``DATA_ORCHESTRATOR_DOTENV`` when set (raises ``FileNotFoundError`` if that
-    file does not exist: an explicit path never falls back to the search),
-    else :func:`find_dotenv`.
+    ``DATA_ORCHESTRATOR_DOTENV`` when set, resolved to an absolute path (a
+    relative one against the current directory); raises ``FileNotFoundError``
+    if that file does not exist: an explicit path never falls back to the
+    search. Else :func:`find_dotenv`.
     """
     explicit = os.environ.get(DOTENV_ENV)
     if explicit:
-        path = Path(explicit).expanduser()
+        # Resolved against the cwd now, so what is read, printed and reported
+        # is one absolute path.
+        path = Path(explicit).expanduser().resolve()
         if not path.is_file():
-            raise FileNotFoundError(f"{DOTENV_ENV}={explicit}: no such file")
+            raise FileNotFoundError(f"{DOTENV_ENV}={explicit}: no such file ({path})")
         return path
     return find_dotenv()
 

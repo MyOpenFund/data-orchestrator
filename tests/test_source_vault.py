@@ -215,8 +215,9 @@ def test_count_unsupported_validates_explicit_mimes_before_querying():
     assert conn.executed == []
 
 
-def test_count_unsupported_folds_null_source_code_into_unknown():
-    conn = DescribedFakeConn(rows=[("ecb", 3), (None, 2), ("us", 1)])
+def test_count_unsupported_folds_null_source_code_into_the_corpus():
+    """Same label core._bump gives a NULL-source vault item (core.source_label)."""
+    conn = DescribedFakeConn(rows=[("ecb", 3), (None, 2), ("us", 1), ("", 1)])
     assert count_unsupported(conn, "central-bank", "c",
                              supported_mimes=("application/pdf",)) == {
-        "ecb": 3, "unknown": 2, "us": 1}
+        "ecb": 3, "central-bank": 3, "us": 1}

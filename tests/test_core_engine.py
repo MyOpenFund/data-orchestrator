@@ -582,3 +582,74 @@ def test_batch_size_none_uses_the_engine_default(tmp_path, monkeypatch):
     log = []
     n = ingest_item(_md_item(tmp_path), "coll", store=FakeStore(log), embedder=FakeEmbedder())
     assert [e[2] for e in log if e[0] == "qdrant"] == [1] * n
+
+
+# ---------------------------------------------------------------------------
+# on_target: the Qdrant the run writes to, read from the CONSTRUCTED store
+# (after eigenmind's own loader ran), reported once before any collection work.
+# ---------------------------------------------------------------------------
+def test_on_target_reports_the_constructed_store_once_before_collection_work(tmp_path):
+    log = []
+    store = FakeStore(log)
+    store.host, store.port = "qdrant.lan", 6433
+    calls = []
+
+    def on_target(host, port):
+        calls.append((host, port, list(store.ensured)))
+
+    run_ingest([_md_item(tmp_path)], collection="c", store=store,
+               embedder=FakeEmbedder(), on_target=on_target)
+    assert calls == [("qdrant.lan", 6433, [])]
+
+
+def test_on_target_reads_the_default_store_after_construction(tmp_path, monkeypatch):
+    import data_orchestrator.core as core
+
+    built = []
+
+    def fake_store():
+        store = FakeStore([])
+        store.host, store.port = "built", 7000
+        built.append(store)
+        return store
+
+    monkeypatch.setattr(core, "QdrantStore", fake_store)
+    calls = []
+    run_ingest([], collection="c", embedder=FakeEmbedder(),
+               on_target=lambda h, p: calls.append((h, p)))
+    assert len(built) == 1 and calls == [("built", 7000)]
+
+
+def test_on_target_survives_a_store_without_host_or_port(tmp_path):
+    calls = []
+    run_ingest([], collection="c", store=FakeStore([]), embedder=FakeEmbedder(),
+               on_target=lambda h, p: calls.append((h, p)))
+    assert calls == [(None, None)]
+
+
+# ---------------------------------------------------------------------------
+# source_label: ONE rule for sources[] keys, the unsupported count and the
+# count-only breakdown (source_code, then bank_code, then corpus, then unknown).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("payload, corpus, expected", [
+    ({"source_code": "ecb", "bank_code": "fr", "corpus": "central-bank"}, None, "ecb"),
+    ({"bank_code": "fr", "corpus": "central-bank"}, None, "fr"),
+    ({"source_code": None, "corpus": "central-bank"}, None, "central-bank"),
+    ({"source_code": None}, "central-bank", "central-bank"),
+    ({"corpus": "company"}, "central-bank", "company"),
+    ({}, None, "unknown"),
+    ("ecb", "central-bank", "ecb"),
+    (None, "central-bank", "central-bank"),
+    ("", "central-bank", "central-bank"),
+    (None, None, "unknown"),
+])
+def test_source_label(payload, corpus, expected):
+    from data_orchestrator.core import source_label
+    assert source_label(payload, corpus) == expected
+
+
+def test_bump_files_a_null_source_vault_item_under_its_corpus():
+    from data_orchestrator.core import IngestStats, _bump
+    stats = IngestStats()
+    _bump(stats, SourceItem("d", Path("x.pdf"), {"corpus": "central-bank"}), new=1)
+    assert list(stats.by_source) == ["central-bank"]

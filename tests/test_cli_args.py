@@ -1,4 +1,6 @@
 """CLI argument-plumbing tests (no engine, no DB — parser-level behavior)."""
+from types import SimpleNamespace
+
 import pytest
 
 from data_orchestrator import cli
@@ -450,9 +452,10 @@ def test_vault_count_only_prints_the_unsupported_split(monkeypatch, tmp_path, ca
     assert conn.selection_params["supported_mimes"]
 
 
-def test_vault_count_only_labels_null_source_codes_unknown(monkeypatch, tmp_path, capsys):
-    """A NULL source_code reads ``unknown`` in BOTH breakdowns — the same label
-    count_unsupported (and core._bump's last fallback) uses."""
+def test_vault_count_only_labels_null_source_codes_by_corpus(monkeypatch, tmp_path, capsys):
+    """A NULL source_code reads as the corpus in BOTH source breakdowns — the
+    label core.source_label gives (and _bump files sources[] under); a NULL
+    doc_type reads ``unknown``."""
     rows = [("d1", None, "C1", "a.pdf"), ("d2", "ecb", None, "b.pdf")]
     conn, _reports = _fake_vault(
         monkeypatch, tmp_path, [(None, 3)], selection_rows=rows,
@@ -462,10 +465,38 @@ def test_vault_count_only_labels_null_source_codes_unknown(monkeypatch, tmp_path
     lines = capsys.readouterr().out.splitlines()
     assert "Matching documents: 2" in lines
     by_source = [line for line in lines if line.startswith("  by source_code:")]
-    assert by_source == ["  by source_code: {'unknown': 1, 'ecb': 1}",
-                         "  by source_code: {'unknown': 3}"]
+    assert by_source == ["  by source_code: {'central-bank': 1, 'ecb': 1}",
+                         "  by source_code: {'central-bank': 3}"]
     assert "  by doc_type: {'C1': 1, 'unknown': 1}" in lines
-    assert not any("<unknown>" in line for line in lines)
+
+
+def test_a_null_source_doc_lands_under_one_label_for_new_and_unsupported(
+        monkeypatch, tmp_path):
+    """A selected NULL-source row (payload carries corpus, as the real
+    selection does) and a NULL-source unsupported count share ONE sources[]
+    entry."""
+    from data_orchestrator.core import IngestStats, _bump
+
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4 stub")
+    _conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [(None, 2)],
+        selection_rows=[("d1", None, "central-bank", "a.pdf")],
+        selection_columns=("doc_id", "source_code", "corpus", "local_path"),
+    )
+
+    def fake_run_ingest(items, **kwargs):
+        stats = IngestStats()
+        for item in items:
+            stats.docs_seen += 1
+            stats.docs_ingested += 1
+            _bump(stats, item, new=1)
+        return stats
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    assert cli.main(["vault"]) == 0
+    (rep,) = reports
+    assert rep["sources"] == [{"source_code": "central-bank", "docs_seen": 1,
+                               "docs_new": 1, "docs_failed": 0, "docs_unsupported": 2}]
 
 
 def test_vault_run_mixes_new_and_unsupported_on_one_source(monkeypatch, tmp_path):
@@ -656,7 +687,6 @@ def test_main_prints_the_dotenv_it_read_first(tmp_path, monkeypatch, capsys):
     assert _cb_count(tmp_path) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0] == f"Config: .env = {env}"
-    assert out[1] == "Qdrant: localhost:6433"
 
 
 def test_main_says_when_no_dotenv_was_found(tmp_path, capsys):
@@ -669,40 +699,86 @@ def test_the_config_line_is_printed_for_every_source(capsys):
     assert capsys.readouterr().out.splitlines()[0] == "Config: no .env file found"
 
 
-def test_the_legacy_qdrant_port_draws_a_warning(tmp_path, capsys):
-    """eigenmind's defaults (localhost:6333) are the LEGACY store."""
+# The Qdrant line comes from the CONSTRUCTED store (core.run_ingest's
+# on_target), i.e. after eigenmind's own python-dotenv ran: a count-only run
+# never touches Qdrant and prints no Qdrant line, for every source.
+def _fake_engine(monkeypatch, *, host="localhost", port=6333):
+    import data_orchestrator.core as core
+    from tests.test_core_engine import FakeEmbedder, FakeStore
+
+    def store():
+        s = FakeStore([])
+        s.host, s.port = host, port
+        return s
+
+    monkeypatch.setattr(core, "QdrantStore", store)
+    monkeypatch.setattr(core, "EmbeddingModel", lambda **kw: SimpleNamespace(
+        dim=FakeEmbedder.dim, encode_passage=FakeEmbedder().encode_passage,
+        release=lambda: None))
+    monkeypatch.setattr(core, "detect_device", lambda: "cpu")
+
+
+def _cb_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    return cli.main(["cb_corpus", "--no-vault",
+                     "--root", str(_minimal_cb_corpus(tmp_path))])
+
+
+def test_cb_count_only_prints_no_qdrant_line(tmp_path, capsys):
     assert _cb_count(tmp_path) == 0
     cap = capsys.readouterr()
-    assert "Qdrant: localhost:6333" in cap.out.splitlines()
-    assert "warning:" in cap.err and "6333" in cap.err and "legacy" in cap.err.lower()
+    assert not any(line.startswith("Qdrant:") for line in cap.out.splitlines())
+    assert "warning:" not in cap.err
 
 
-def test_an_explicit_qdrant_target_draws_no_warning(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("QDRANT_HOST", "qdrant.lan")
-    monkeypatch.setenv("QDRANT_PORT", "6433")
-    assert _cb_count(tmp_path) == 0
+def test_company_count_only_prints_no_qdrant_line(fake_company_corpus, capsys):
+    assert cli.main(["company", "--count-only"]) == 0
+    assert "Qdrant:" not in capsys.readouterr().out
+
+
+def test_vault_count_only_prints_no_qdrant_line(monkeypatch, tmp_path, capsys):
+    _fake_vault(monkeypatch, tmp_path, [])
+    assert cli.main(["vault", "--count-only"]) == 0
+    assert "Qdrant:" not in capsys.readouterr().out
+
+
+def test_a_run_prints_the_target_of_the_constructed_store(tmp_path, monkeypatch, capsys):
+    """The env says one thing, the store another (eigenmind's loader may have
+    set keys ours did not): the line follows the store."""
+    monkeypatch.setenv("QDRANT_PORT", "1111")
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
     cap = capsys.readouterr()
     assert "Qdrant: qdrant.lan:6433" in cap.out.splitlines()
     assert "warning:" not in cap.err
 
 
-def test_company_prints_the_qdrant_target(fake_company_corpus, capsys):
-    assert cli.main(["company", "--count-only"]) == 0
-    assert "Qdrant: localhost:6333" in capsys.readouterr().out.splitlines()
+@pytest.mark.parametrize("port", [6333, "6333", "06333", " 6333 ", "", None])
+def test_the_legacy_qdrant_port_draws_a_warning(tmp_path, monkeypatch, capsys, port):
+    """eigenmind's default (6333, the LEGACY store) is compared numerically;
+    an empty/absent port reads as the default."""
+    _fake_engine(monkeypatch, port=port)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    cap = capsys.readouterr()
+    assert "Qdrant: localhost:6333" in cap.out.splitlines()
+    assert "warning:" in cap.err and "6333" in cap.err and "legacy" in cap.err.lower()
 
 
-def test_vault_run_prints_the_qdrant_target_before_engine_work(monkeypatch, capsys):
-    seen = {}
+def test_an_absent_host_reads_as_the_default(tmp_path, monkeypatch, capsys):
+    _fake_engine(monkeypatch, host="", port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert "Qdrant: localhost:6433" in capsys.readouterr().out.splitlines()
 
-    def fake_run(args, collection):
-        seen["out"] = capsys.readouterr().out
-        return 0
 
-    monkeypatch.setenv("QDRANT_PORT", "6433")
-    monkeypatch.setattr(cli, "_run_vault_source", fake_run)
-    monkeypatch.setattr(cli, "_validate_corpus_root", lambda corpus: None)
+def test_vault_run_prints_the_qdrant_target_before_ingesting(monkeypatch, tmp_path, capsys):
+    import data_orchestrator.core as core
+    _fake_vault(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cli, "run_ingest", core.run_ingest)  # the real loop
+    _fake_engine(monkeypatch, port=6433)
     assert cli.main(["vault"]) == 0
-    assert "Qdrant: localhost:6433" in seen["out"].splitlines()
+    out = capsys.readouterr().out.splitlines()
+    assert "Qdrant: localhost:6433" in out
+    assert out.index("Qdrant: localhost:6433") < out.index("Done.")
 
 
 def test_a_missing_explicit_dotenv_is_an_operator_error(tmp_path, monkeypatch, capsys):

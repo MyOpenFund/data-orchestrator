@@ -175,9 +175,28 @@ class Ledger:
 # ---------------------------------------------------------------------------
 # Per-source_code stats — feeds the run-report's "sources" breakdown
 # ---------------------------------------------------------------------------
+def source_label(payload_or_code, corpus: str | None = None) -> str:
+    """The ``sources[]`` key a document is counted under — the ONE rule shared
+    by :func:`_bump`, ``sources.vault.count_unsupported`` and the vault
+    ``--count-only`` breakdown, so they cannot drift apart.
+
+    ``payload_or_code`` is a payload dict (its ``source_code``, else its
+    ``bank_code``, else its ``corpus``) or a bare source code (a SQL
+    ``GROUP BY d.source_code`` value). An empty/NULL code falls back to the
+    payload's ``corpus``, then to ``corpus``, then to ``"unknown"`` — so a
+    vault document with a NULL source_code is filed under its corpus name
+    whichever way it was counted.
+    """
+    if isinstance(payload_or_code, dict):
+        code = payload_or_code.get("source_code") or payload_or_code.get("bank_code")
+        corpus = payload_or_code.get("corpus") or corpus
+    else:
+        code = payload_or_code
+    return code or corpus or "unknown"
+
+
 def _bump(stats: IngestStats, item: SourceItem, *, new: int = 0, failed: int = 0) -> None:
-    code = (item.payload.get("source_code") or item.payload.get("bank_code")
-            or item.payload.get("corpus", "unknown"))
+    code = source_label(item.payload)
     entry = stats.by_source.setdefault(code, {"docs_seen": 0, "docs_new": 0, "docs_failed": 0})
     entry["docs_seen"] += 1
     entry["docs_new"] += new
@@ -333,6 +352,7 @@ def run_ingest(
     on_progress: Optional[Callable[[IngestStats, SourceItem, str], None]] = None,
     store: object | None = None,
     embedder: object | None = None,
+    on_target: Optional[Callable[[object, object], None]] = None,
 ) -> IngestStats:
     """Ingest a stream of items into ``collection``.
 
@@ -342,11 +362,19 @@ def run_ingest(
     and ``embedder`` are injectable for tests; by default a QdrantStore and
     an EmbeddingModel (loaded once, on the best available device) are created
     and the embedder is released at the end.
+
+    ``on_target(host, port)`` is called once, right after the store is
+    constructed and before any collection work, with the store's ``host`` and
+    ``port`` attributes (``None`` when it has none): the Qdrant the run really
+    writes to, as eigenmind resolved it AFTER its own python-dotenv ran at
+    first import — which can set keys this repo's loader did not.
     """
     stats = IngestStats()
     batch_size = _resolve_batch_size(batch_size)
     owns_embedder = embedder is None
     store = store or QdrantStore()
+    if on_target is not None:
+        on_target(getattr(store, "host", None), getattr(store, "port", None))
     embedder = embedder or EmbeddingModel(
         device=detect_device(), model_name=embedding_model_name()
     )

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Iterator, Sequence
 
-from ..core import SourceItem
+from ..core import SourceItem, source_label
 from ..routing import (
     resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
 )
@@ -128,15 +128,17 @@ def build_unsupported_sql(corpus, collection, *, supported_mimes=None, **filters
 def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
     """{source_code: n} of not-yet-ingested candidates the engine cannot read.
 
-    A NULL source_code is reported as ``"unknown"`` (same fallback as
-    ``core._bump``).
+    A NULL source_code is reported under ``corpus`` — ``core.source_label``,
+    the label ``core._bump`` files a NULL-source vault item under (its
+    payload carries ``corpus``), so the run report's ``sources[]`` merges both
+    counts into one entry.
     """
     sql, params = build_unsupported_sql(corpus, collection, **kwargs)
     out: dict[str, int] = {}
     with conn.cursor() as cur:
         cur.execute(sql, params)
         for code, n in cur.fetchall():
-            key = code or "unknown"
+            key = source_label(code, corpus)
             out[key] = out.get(key, 0) + int(n)
     return out
 

@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, policy
-from .core import Ledger, SourceItem, run_ingest, IngestStats
+from .core import Ledger, SourceItem, run_ingest, IngestStats, source_label
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
@@ -249,20 +249,26 @@ def _append_report_jsonl(report: dict) -> None:
 
 
 # eigenmind's own defaults (eigenmind/config.py qdrant_host/qdrant_port),
-# restated here so the target can be printed without importing eigenmind
-# (whose import runs its python-dotenv). 6333 is the LEGACY store.
+# used only to display a store that reports no host/port. 6333 is the LEGACY
+# store.
 QDRANT_DEFAULT_HOST = "localhost"
-QDRANT_DEFAULT_PORT = "6333"
+QDRANT_DEFAULT_PORT = 6333
 
 
-def _print_qdrant_target() -> None:
-    """Print the Qdrant the engine will write to, as eigenmind will resolve it
-    from ``QDRANT_HOST``/``QDRANT_PORT``; warn on the legacy port."""
-    # Same lookups as eigenmind (os.getenv with a default: a key set empty
-    # is used as is, not defaulted).
-    host = os.environ.get("QDRANT_HOST", QDRANT_DEFAULT_HOST)
-    port = os.environ.get("QDRANT_PORT", QDRANT_DEFAULT_PORT).strip()
-    print(f"Qdrant: {host}:{port}")
+def _print_qdrant_target(host, port) -> None:
+    """``run_ingest``'s ``on_target``: print the Qdrant the constructed store
+    writes to — resolved by eigenmind AFTER its own python-dotenv ran, so the
+    line is right even when that loader set QDRANT_HOST/QDRANT_PORT — and warn
+    on the legacy port. An empty/absent host or port reads as eigenmind's
+    default; the port is compared numerically (``06333`` is 6333)."""
+    host = str(host).strip() if host is not None else ""
+    host = host or QDRANT_DEFAULT_HOST
+    raw = str(port).strip() if port is not None else ""
+    try:
+        port = int(raw) if raw else QDRANT_DEFAULT_PORT
+    except ValueError:
+        port = raw  # displayed as is; cannot be the legacy port
+    print(f"Qdrant: {host}:{port}", flush=True)
     if port == QDRANT_DEFAULT_PORT:
         print(f"warning: Qdrant port {port} is the legacy store (eigenmind's default); "
               "set QDRANT_PORT to the dedicated one unless this is intended",
@@ -431,7 +437,6 @@ def main(argv: list[str] | None = None) -> int:
         collection = args.collection or collection_name(args.corpus)
         if args.count_only:
             return _count_vault_source(args, collection)
-        _print_qdrant_target()
         return _run_vault_source(args, collection)
 
     if args.source == "probe":
@@ -451,7 +456,6 @@ def main(argv: list[str] | None = None) -> int:
     # "cb_corpus" collection name, which a 768-d upsert would be rejected
     # from on any machine that still has it.
     collection = args.collection or collection_name(args.corpus)
-    _print_qdrant_target()
 
     if args.count_only:
         key1, key2 = COUNT_KEYS[args.source]
@@ -501,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
             ocr=args.ocr,
             limit=args.limit,
             on_progress=_make_progress(args.progress_every),
+            on_target=_print_qdrant_target,
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
@@ -611,6 +616,7 @@ def _run_vault_source(args, collection: str) -> int:
         stats = run_ingest(
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
+            on_target=_print_qdrant_target,
         )
         _print_summary(stats)
 
@@ -638,9 +644,10 @@ def _count_vault_source(args, collection: str) -> int:
 
     Mirrors the cb_corpus ``--count-only`` output format (total + breakdowns),
     using ``source_code``/``doc_type`` — the vault source's payload columns —
-    in place of cb_corpus's ``bank_code``/``doc_type``. A NULL value is
-    labelled ``unknown`` in every breakdown, the label ``count_unsupported``
-    (and ``core._bump``) use.
+    in place of cb_corpus's ``bank_code``/``doc_type``. Both source breakdowns
+    use ``core.source_label`` (a NULL source_code reads as the corpus), the
+    label the run report's ``sources[]`` uses; a NULL doc_type reads
+    ``unknown``. No Qdrant line: a count never touches Qdrant.
     """
     from . import vault as vault_mod
     from .sources import vault as vault_source
@@ -655,7 +662,7 @@ def _count_vault_source(args, collection: str) -> int:
         total = 0
         for it in items:
             total += 1
-            source_code = it.payload.get("source_code") or "unknown"
+            source_code = source_label(it.payload, args.corpus)
             doc_type = it.payload.get("doc_type") or "unknown"
             by_source[source_code] = by_source.get(source_code, 0) + 1
             by_type[doc_type] = by_type.get(doc_type, 0) + 1
