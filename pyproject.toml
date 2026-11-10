@@ -15,8 +15,9 @@ keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 # NOTE on the eigenmind dependency
 # --------------------------------
 # The ingestion engine is our eigenmind fork (github.com/MyOpenFund/eigenmind),
-# installed separately as an editable checkout because it is consumed at
-# fork-HEAD, not from PyPI:
+# installed separately as an editable checkout (not from PyPI), consumed at a
+# pinned fork commit (see CI: .github/workflows/tests.yml, `ref:`):
+#     git -C $EIGENMIND_PATH checkout 84d2ac4
 #     pip install -e $EIGENMIND_PATH
 # (EIGENMIND_PATH lives in .env; see .env.example.) It provides chunknorris,
 # sentence-transformers, torch and qdrant-client transitively.

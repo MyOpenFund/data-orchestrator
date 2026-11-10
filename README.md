@@ -13,7 +13,7 @@ layer** that sits between three systems, each owning one thing:
 
 The orchestrator carries **no RAG logic of its own** — chunking, embedding and
 the Qdrant client all live in [eigenmind](https://github.com/MyOpenFund/eigenmind),
-consumed as a normal (editable) dependency. What this repo owns is orchestration
+consumed as an editable dependency at a pinned fork commit (see [Testing](#testing)). What this repo owns is orchestration
 policy: which documents to pick up next, per-corpus path routing, resumability,
 and the write protocol that keeps Qdrant and the vault consistent.
 
@@ -29,8 +29,10 @@ data-orchestrator/
   pyproject.toml          # packaging — installs the `data-orchestrator` CLI
   data_orchestrator/
     __init__.py            # public API: SourceItem, run_ingest, Ledger, …
+    config.py              # the one .env loader (see "Configuration loading")
     core.py                # engine: chunk -> embed -> upsert + resume ledger
-    routing.py              # per-corpus root/local_path routing + collection naming
+    policy.py              # run outcome rule (ok / degraded) + failure-ratio env
+    routing.py              # per-corpus routing, collection naming, supported types
     vault.py                 # Postgres connection + the rag_ingestions-backed ledger
     probe.py                 # facts probe (has_text_layer / page_count) for OCR policy
     cli.py                    # console entrypoint (`data-orchestrator`)
@@ -51,9 +53,12 @@ via their own connector (`--no-vault`) in the meantime:
 ## Setup
 
 1. **The eigenmind engine.** Clone [MyOpenFund/eigenmind](https://github.com/MyOpenFund/eigenmind)
-   locally and install it editable — it is consumed at fork-HEAD, not from PyPI:
+   locally, check out the commit CI pins, and install both editable (not from
+   PyPI). This repo must itself be an **editable** install (`pip install -e .`)
+   for the repo-root `.env` fallback below to find its `.env`:
 
    ```bash
+   git -C $EIGENMIND_PATH checkout 84d2ac4   # the CI pin, see Testing
    pip install -e $EIGENMIND_PATH
    pip install -e .
    ```
@@ -66,12 +71,36 @@ via their own connector (`--no-vault`) in the meantime:
    | `DATABASE_URL` | vault Postgres, e.g. `postgresql://user:pass@host:5432/documents` |
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `COMPANY_CORPUS_ROOT` | local root of the company_corpus (SEC EDGAR) data dir — optional, only needed for the `company` disk fallback; unset falls back to company_corpus's own default data dir |
-   | `QDRANT_HOST` / `QDRANT_PORT` | optional, default to `localhost` / `6333` (read by eigenmind) |
+   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port>` and warns on stderr when the port is 6333 |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
    | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching; a missing file is an error (exit 2) |
-   | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` |
+   | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
+   | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
+   | `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO` | optional plain decimal in `[0, 1]`, default `0.10` (see [Run reports](#run-reports-and-exit-codes)); anything else is an error (exit 2) |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
+
+### Configuration loading
+
+- **One loader, first.** `data-orchestrator` (`cli.main`) loads the `.env`
+  right after parsing its arguments, before anything imports eigenmind.
+  eigenmind's own python-dotenv (`override=False`) runs at its first import and
+  can then only *add* keys this file did not set: ours wins.
+- **Which file.** `DATA_ORCHESTRATOR_DOTENV` if set — read from the real
+  environment only, never from a `.env`; a missing file is an `error:` and
+  exit 2 before any work — else the nearest `.env` in the current directory or
+  its parents, else the `.env` at this repo's root (found next to the
+  installed package, hence the editable install).
+- **Traceability.** Every run prints `Config: .env = <path>` (or
+  `Config: no .env file found`) first, and the ingest paths (`vault` run,
+  `cb_corpus`, `company`) print `Qdrant: <host>:<port>` as eigenmind will
+  resolve it, with a stderr `warning:` on port 6333 (the legacy store).
+- **Literal values.** No `$VAR` expansion, surrounding quotes stripped, and
+  **no inline comments**: a `#` after a value is part of the value. A key
+  already set in the real environment always wins over the file.
+- **Library callers** (`run_ingest` & co. without the CLI) get no loader: load
+  the `.env` yourself (`data_orchestrator.config.load_dotenv()`) before
+  importing anything that reaches eigenmind.
 
 ## Disk sources
 
@@ -215,13 +244,48 @@ data-orchestrator vault --corpus central-bank --ocr always
 | `--year-min` / `--year-max` | inclusive year bounds |
 | `--banks a,b` | (cb_corpus source) only these bank codes |
 | `--groups a,b` | (cb_corpus source) comma list of doc groups, e.g. A,C |
-| `--include-html` | (cb_corpus source) also ingest .html with no .pdf sibling |
 | `--ciks 320193,789019` | (company source) only these SEC CIK numbers |
 | `--prefer pdf\|text` | (company source) rendered PDF (default) or cleaned text |
 | `--root PATH` | (cb_corpus/company sources) corpus root override |
-| `--limit N` | stop after N newly ingested docs |
-| `--no-resume` | ignore the resume ledger, re-ingest everything; **rejected for the `vault` source** (its resume *is* the `documents`/`rag_ingestions` anti-join — use a fresh `--collection` to re-ingest instead) |
-| `--count-only` | just count matching documents, do not ingest (every source) |
+| `--limit N` | stop after N newly ingested docs (`N >= 1`; `0` or negative is an error, exit 2) |
+| `--progress-every N` | progress line every N documents (`N >= 1`, default 25) |
+| `--no-resume` | (disk sources) ignore the resume ledger, re-ingest everything. **Rejected for the `vault` source** (exit 2), by design: its resume *is* the `documents`/`rag_ingestions` anti-join, and a policy change means a fresh collection — re-ingest into a new `--collection` name. Re-ingesting into the same collection would leave stale chunks behind when the new chunking yields fewer chunks than the points already stored |
+| `--count-only` | just count matching documents, do not ingest (every source); for `vault`, also the unsupported documents and their per-source split |
+
+`--include-html` was removed (argparse rejects it, exit 2): eigenmind has no
+HTML reader, so every such file was a per-document error. HTML is converted to
+`.md` or PDF upstream before it reaches the engine.
+
+## Supported document types
+
+`routing.MIME_EXTENSIONS` is the one declaration of what the pinned eigenmind
+commit can chunk (it dispatches on the file extension):
+
+| mime type | extension |
+|---|---|
+| `application/pdf` | `.pdf` |
+| `text/markdown` | `.md` |
+| `text/plain` | `.txt` (read as markdown) |
+| `text/csv` | `.csv` |
+| DOCX (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`) | `.docx` |
+| XLSX (`…spreadsheetml.sheet`) | `.xlsx` |
+| PPTX (`…presentationml.presentation`, via markitdown) | `.pptx` |
+
+`text/html` is deliberately absent. The default list is the whole table;
+`DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` narrows it (entries trimmed,
+lower-cased, de-duplicated; an unknown type → exit 2). Bump the table together
+with the eigenmind pin.
+
+A vault row is selected iff its `local_path` ends (case-insensitive, trailing
+whitespace trimmed) with a supported extension **and** its `mime_type` is NULL
+or supported. Mime values are normalised first: lower-cased, parameters
+dropped (`text/plain; charset=utf-8` → `text/plain`), whitespace trimmed, blank
+= NULL. So a supported mime on another extension (`application/pdf` +
+`.html`) and a row with no `local_path` are unsupported. Unsupported rows are
+never offered to the engine; they are counted as `docs_unsupported` (run
+report totals and each `sources[]` entry, also for a source code that has only
+unsupported documents) and never degrade a run. Disk sources do not report the
+key (they cannot know).
 
 ## The write protocol
 
@@ -236,15 +300,34 @@ resume is a pure retry, not a special code path. A `reconcile` command
 (drift audit + soft-deleted cleanup) is a specified future addition, not
 built here.
 
+## Run reports and exit codes
+
 Every run writes a telemetry row to the vault's `runs` table (or appends
-`state/runs.jsonl` with `--no-vault`): run id, per-source counters and the
-outcome. Exit codes are honest: `0` clean, `1` fatal, `3` degraded (zero
-documents ingested while attempts errored — e.g. an embedding-dimension
-mismatch). A run that did no useful work never exits 0. Report fields that
-have no column of their own — notably the `error` text of a fatal run — are
-swept into `runs.extra` (JSONB, NULL when there are none), the same rule the
-vault's runs ingester applies to the `runs.jsonl` reports it ingests from
-central-bank-corpus.
+`state_dir()/runs.jsonl` with `--no-vault`): run id, `corpus`, per-source
+counters and the outcome. Exit codes are honest:
+
+- `0` **ok**;
+- `3` **degraded** when (a) nothing was ingested while attempts failed, or
+  (b) `docs_failed / docs_attempted` exceeds the ratio, where
+  `docs_attempted = ingested + empty + failed` (resume skips excluded). The
+  ratio is `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, default `0.10`; `0` =
+  any failure degrades, `1` = rule (b) off. `docs_unsupported` never degrades;
+- `1` **failed**: a fatal error (e.g. Qdrant unreachable, a collection stored
+  with another vector dimension).
+
+`runs.corpus` is now written on every report (success and fatal, all
+sources). **Caveat:** the vault health views `runs_sources`,
+`sources_without_cadence` and `source_health` group on `(corpus,
+source_code)` without filtering on `tool`; until the vault follow-up filters
+them on the crawler tools, orchestrator runs count there as crawler runs of
+that source.
+
+Report fields that have no column of their own are swept into `runs.extra`
+(JSONB, NULL when there are none), the same rule the vault's runs ingester
+applies to central-bank-corpus's `runs.jsonl`. A fatal run's reason is
+`extra->>'fatal'` (capped at 500 characters, the key central-bank-corpus
+writes); rows written before 2026-11 carry it as `extra->>'error'`, so a reader
+covering both uses `coalesce(extra->>'fatal', extra->>'error')`.
 
 ## Collections & embedding model
 
@@ -296,16 +379,20 @@ counted as an error, while every other document in the batch still commits.
 ## Testing
 
 ```bash
-./venv/bin/python -m pytest -q                    # 116 unit tests
-./venv/bin/python -m pytest -m integration -q      # 12 integration tests
+./venv/bin/python -m pytest -q                    # unit tests
+./venv/bin/python -m pytest -m integration -q      # integration tests (Docker)
 ```
 
 Integration tests spin up throwaway Postgres and Qdrant containers via
 `docker run` (skipped automatically if Docker is unavailable) and use a tiny
 embedding model (`DATA_ORCHESTRATOR_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`)
 to keep CI fast. CI (`.github/workflows/tests.yml`) runs both suites on every
-push/PR, checking out this repo and the public `MyOpenFund/eigenmind` fork
-side by side.
+push/PR, checking out this repo and the `MyOpenFund/eigenmind` fork side by
+side, the fork **pinned by commit** (`ref:
+84d2ac41fb06704bdbc012afd1a010e758bcb5a1`; upstream rewrote its history on
+2026-11-08). To match CI locally:
+`git -C $EIGENMIND_PATH checkout 84d2ac4 && pip install -e $EIGENMIND_PATH`.
+Bump the pin (both checkouts) together with `routing.MIME_EXTENSIONS`.
 
 ## Adding a new corpus
 
@@ -325,7 +412,8 @@ changes.
 
 Coverage, cadence and RAG-state views live in Metabase over the vault
 ([MyOpenFund/vault](https://github.com/MyOpenFund/vault)): `documents`,
-`rag_ingestions`, `cadence` and `runs` are the tables to chart. The former
+`rag_ingestions`, `cadence` and `runs` are the tables to chart (see the
+`runs.corpus` caveat under [Run reports](#run-reports-and-exit-codes)). The former
 Streamlit dashboard shipped with this repo was removed (it read the extinct
 single-file manifest and duplicated what the vault now records); its feature
 inventory is kept in the project notes.

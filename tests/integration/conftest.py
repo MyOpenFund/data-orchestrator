@@ -135,9 +135,8 @@ def qdrant_addr():
 
 
 @pytest.fixture()
-def clean_state(pg_url, qdrant_addr):
-    """Fresh vault tables and an empty Qdrant between tests."""
-    from qdrant_client import QdrantClient
+def clean_pg(pg_url):
+    """Fresh vault tables (Postgres only: for tests that never reach Qdrant)."""
     conn = psycopg2.connect(pg_url)
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -145,6 +144,14 @@ def clean_state(pg_url, qdrant_addr):
                     "DROP TABLE IF EXISTS runs;")
         cur.execute(SCHEMA_SQL)
     conn.close()
+    return pg_url
+
+
+@pytest.fixture()
+def clean_state(clean_pg, qdrant_addr):
+    """Fresh vault tables and an empty Qdrant between tests."""
+    from qdrant_client import QdrantClient
+    pg_url = clean_pg
     client = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1])
     for coll in client.get_collections().collections:
         client.delete_collection(coll.name)
