@@ -47,6 +47,62 @@ def collection_name(corpus: str, model_name: str | None = None, version: int = 1
     return f"{corpus}-{model_tag(model_name or embedding_model_name())}-v{version}"
 
 
+# What the pinned eigenmind engine can chunk: eigenmind 84d2ac4
+# (``eigenmind/core/chunking.py``, ``chunk_with_chunknorris``) dispatches on the
+# file extension: pdf/docx/xlsx/csv/md natively, txt read as markdown, pptx via
+# markitdown. Bump this table together with the eigenmind pin in CI.
+MIME_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "application/pdf": (".pdf",),
+    "text/markdown": (".md",),
+    "text/plain": (".txt",),
+    "text/csv": (".csv",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (".docx",),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (".xlsx",),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (".pptx",),
+}
+SUPPORTED_MIME_ENV = "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES"
+# Default = everything the engine reads (Marc, 2026-11-10). text/html is
+# deliberately absent: HTML is converted to .md or PDF before eigenmind.
+DEFAULT_SUPPORTED_MIME_TYPES: tuple[str, ...] = tuple(MIME_EXTENSIONS)
+
+
+def supported_mime_types() -> tuple[str, ...]:
+    """The mime types the vault selection offers to the engine.
+
+    ``DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES`` (comma list) narrows the
+    default; unset or blank -> default. Entries are trimmed, lower-cased and
+    de-duplicated (order kept). Raises ``ValueError`` (caller: exit 2) on a
+    list with no entry or with a type the engine cannot read.
+    """
+    raw = os.environ.get(SUPPORTED_MIME_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_SUPPORTED_MIME_TYPES
+    mimes: list[str] = []
+    for part in raw.split(","):
+        mime = part.strip().lower()
+        if mime and mime not in mimes:
+            mimes.append(mime)
+    if not mimes:
+        raise ValueError(f"{SUPPORTED_MIME_ENV}={raw!r} lists no mime type")
+    unknown = [m for m in mimes if m not in MIME_EXTENSIONS]
+    if unknown:
+        raise ValueError(
+            f"{SUPPORTED_MIME_ENV}: the engine cannot read {', '.join(unknown)} "
+            f"(known: {', '.join(MIME_EXTENSIONS)})"
+        )
+    return tuple(mimes)
+
+
+def supported_extensions(mimes) -> tuple[str, ...]:
+    """File extensions of ``mimes`` (for vault rows whose mime_type is NULL)."""
+    exts: list[str] = []
+    for mime in mimes:
+        for ext in MIME_EXTENSIONS[mime]:
+            if ext not in exts:
+                exts.append(ext)
+    return tuple(exts)
+
+
 @dataclass(frozen=True)
 class CorpusRoute:
     """Declarative routing for one corpus."""
