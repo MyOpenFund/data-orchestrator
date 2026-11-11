@@ -209,7 +209,7 @@ def test_a_fatal_vault_run_reports_fatal_not_error(clean_pg, corpus_dir, monkeyp
     collection fails before any document. Postgres only (no Qdrant needed),
     but the embedding model is still loaded first (its dimension is checked
     against the collection): it needs the tiny embedding model
-    (``tiny_model_env``, DATA_ORCHESTRATOR_EMBEDDING_MODEL) downloadable or
+    (``_no_repo_dotenv``, DATA_ORCHESTRATOR_EMBEDDING_MODEL) downloadable or
     cached."""
     _seed(clean_pg, corpus_dir)
     rc = _cli(monkeypatch, clean_pg, ("127.0.0.1", _closed_port()), corpus_dir)
