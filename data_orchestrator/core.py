@@ -287,6 +287,23 @@ def ingest_item(
     return len(points)
 
 
+AUTH_STATUSES = (401, 403)
+
+
+class QdrantAuthError(RuntimeError):
+    """Qdrant refused the request for lack of a valid API key (HTTP 401/403)."""
+
+
+def _auth_error(exc: Exception) -> QdrantAuthError | None:
+    """The clear fatal for an authentication refusal, else ``None``.
+    ``qdrant_client``'s ``UnexpectedResponse`` carries ``status_code``."""
+    status = getattr(exc, "status_code", None)
+    if status in AUTH_STATUSES:
+        return QdrantAuthError(
+            f"Qdrant refused the request (HTTP {status}): check QDRANT_API_KEY")
+    return None
+
+
 def _ensure_collection(store, name: str, dim: int) -> None:
     """Create ``name`` if missing, surviving a concurrent creator (issue #6),
     then verify the stored vector configuration against the model.
@@ -381,7 +398,13 @@ def run_ingest(
     try:
         # Inside the try/finally that releases an owned embedder: a raising
         # ensure_collection must not leak it.
-        _ensure_collection(store, collection, embedder.dim)
+        try:
+            _ensure_collection(store, collection, embedder.dim)
+        except Exception as exc:
+            auth = _auth_error(exc)
+            if auth is None:
+                raise
+            raise auth from exc
         for item in items:
             stats.docs_seen += 1
 

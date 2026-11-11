@@ -653,3 +653,63 @@ def test_bump_files_a_null_source_vault_item_under_its_corpus():
     stats = IngestStats()
     _bump(stats, SourceItem("d", Path("x.pdf"), {"corpus": "central-bank"}), new=1)
     assert list(stats.by_source) == ["central-bank"]
+
+
+# ---------------------------------------------------------------------------
+# A Qdrant that refuses the API key (401/403) at collection setup: one clear
+# fatal before any document; other HTTP errors are not rewritten.
+# ---------------------------------------------------------------------------
+from data_orchestrator.core import QdrantAuthError  # noqa: E402
+
+
+def _http_error(status):
+    import httpx
+    from qdrant_client.http.exceptions import UnexpectedResponse
+    return UnexpectedResponse(status, "x", b"{}", httpx.Headers())
+
+
+class _RefusingStore(FakeStore):
+    """eigenmind's get-then-create sees the refusal on create; the race check
+    (collection_exists) is refused too, as a real keyed server would."""
+
+    def __init__(self, log, status):
+        super().__init__(log)
+        self._status = status
+        self.client.collection_exists = self._refuse
+
+    def _refuse(self, *a, **k):
+        raise _http_error(self._status)
+
+    def ensure_collection(self, name, vector_size):
+        self.ensured.append((name, vector_size))
+        self._refuse()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_api_key_is_one_clear_fatal_before_any_document(tmp_path, status):
+    log = []
+    embedder = FakeEmbedder()
+    with pytest.raises(QdrantAuthError,
+                       match=rf"^Qdrant refused the request \(HTTP {status}\): check QDRANT_API_KEY$"):
+        run_ingest([_md_item(tmp_path)], collection="c", ledger=RecordingLedger(log),
+                   store=_RefusingStore(log, status), embedder=embedder)
+    assert log == [] and embedder.calls == []
+
+
+def test_another_http_error_at_setup_is_not_rewritten(tmp_path):
+    from qdrant_client.http.exceptions import UnexpectedResponse
+    log = []
+    with pytest.raises(UnexpectedResponse) as info:
+        run_ingest([_md_item(tmp_path)], collection="c", ledger=RecordingLedger(log),
+                   store=_RefusingStore(log, 500), embedder=FakeEmbedder())
+    assert not isinstance(info.value, QdrantAuthError)
+    assert log == []
+
+
+def test_an_error_without_a_status_is_not_rewritten(tmp_path):
+    class Boom(FakeStore):
+        def ensure_collection(self, name, vector_size):
+            raise ConnectionError("refused")
+    with pytest.raises(ConnectionError):
+        run_ingest([_md_item(tmp_path)], collection="c", store=Boom([]),
+                   embedder=FakeEmbedder())

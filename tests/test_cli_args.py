@@ -960,3 +960,15 @@ def test_qdrant_port_is_not_checked_when_qdrant_is_never_touched(monkeypatch, tm
     _fake_vault(monkeypatch, tmp_path, [])
     cli.main(argv)
     assert "QDRANT_PORT" not in capsys.readouterr().err
+
+
+def test_a_refused_api_key_exits_1_with_the_reason(tmp_path, monkeypatch, capsys):
+    import data_orchestrator.core as core
+    from tests.test_core_engine import _RefusingStore
+
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
+    monkeypatch.setattr(core, "QdrantStore", lambda: _RefusingStore([], 401))
+    assert _cb_run(tmp_path, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert ("error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): "
+            "check QDRANT_API_KEY") in err
