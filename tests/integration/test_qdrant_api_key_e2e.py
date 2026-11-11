@@ -4,7 +4,7 @@ import os
 import psycopg2
 import pytest
 
-from data_orchestrator import cli
+from data_orchestrator import cli, config
 from tests.integration.conftest import IT_QDRANT_KEY
 # corpus_dir: the vault-realistic fixture (files under <root>/raw/...), reused
 # from the wave-2 module, not conftest's flat disk-source one.
@@ -51,6 +51,9 @@ def test_a_missing_or_wrong_key_is_a_fatal_with_nothing_ingested(
     # Regression: the repo .env (which may hold a real key) was never loaded.
     if key is None:
         assert "QDRANT_API_KEY" not in os.environ
+    # Order-independent: whatever the loader read must be the fixture's empty file.
+    loaded = config.loaded_dotenv()
+    assert loaded is None or loaded.stat().st_size == 0, f"real .env loaded: {loaded}"
 
 
 def test_the_right_key_ingests(clean_pg, qdrant_keyed_addr, corpus_dir, monkeypatch, capsys):

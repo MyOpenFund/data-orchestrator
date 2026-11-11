@@ -82,13 +82,6 @@ def _wait_port(probe, tries=60):
     return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def tiny_model_env():
-    import os
-    os.environ.setdefault("DATA_ORCHESTRATOR_EMBEDDING_MODEL", TINY_MODEL)
-    yield
-
-
 @pytest.fixture(autouse=True)
 def _no_repo_dotenv(tmp_path, monkeypatch):
     """Integration tests never read the repo ``.env`` (it may hold a real key).
