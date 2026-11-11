@@ -134,6 +134,35 @@ def qdrant_addr():
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
+IT_QDRANT_KEY = "it-key-not-a-secret"
+
+
+@pytest.fixture(scope="module")
+def qdrant_keyed_addr():
+    """A Qdrant that requires ``IT_QDRANT_KEY`` (the NAS setup in miniature)."""
+    if not docker_available():
+        pytest.skip("docker unavailable")
+    from qdrant_client import QdrantClient
+    name = f"data-orchestrator-it-qdk-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        ["docker", "run", "-d", "--rm", "--name", name,
+         "-e", f"QDRANT__SERVICE__API_KEY={IT_QDRANT_KEY}",
+         "-p", "127.0.0.1:0:6333", "qdrant/qdrant"],
+        check=True, capture_output=True, timeout=300,
+    )
+    try:
+        out = subprocess.run(["docker", "port", name, "6333/tcp"],
+                             capture_output=True, text=True, check=True)
+        port = int(out.stdout.strip().splitlines()[0].rsplit(":", 1)[1])
+        assert _wait_port(
+            lambda: QdrantClient(host="127.0.0.1", port=port, timeout=5, https=False,
+                                 api_key=IT_QDRANT_KEY).get_collections()
+        ), "qdrant not ready"
+        yield ("127.0.0.1", port)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
 @pytest.fixture()
 def clean_pg(pg_url):
     """Fresh vault tables (Postgres only: for tests that never reach Qdrant)."""

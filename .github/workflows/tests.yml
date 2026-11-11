@@ -15,7 +15,7 @@ jobs:
           repository: MyOpenFund/eigenmind
           # Pinned by commit: upstream rewrote its history on 2026-11-08; bump
           # together with routing.MIME_EXTENSIONS (README "Testing").
-          ref: 84d2ac41fb06704bdbc012afd1a010e758bcb5a1
+          ref: 6e9093a777d059aefac5340de51c2c77fc93dec7
           path: eigenmind
       - uses: actions/setup-python@v5
         with:
@@ -39,7 +39,7 @@ jobs:
           repository: MyOpenFund/eigenmind
           # Pinned by commit: upstream rewrote its history on 2026-11-08; bump
           # together with routing.MIME_EXTENSIONS (README "Testing").
-          ref: 84d2ac41fb06704bdbc012afd1a010e758bcb5a1
+          ref: 6e9093a777d059aefac5340de51c2c77fc93dec7
           path: eigenmind
       - uses: actions/setup-python@v5
         with:
