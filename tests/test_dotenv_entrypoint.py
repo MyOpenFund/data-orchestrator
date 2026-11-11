@@ -118,7 +118,7 @@ def test_the_repo_root_fallback_is_used_from_an_unrelated_cwd(tmp_path):
     lines = out.stdout.splitlines()
     assert lines[0] == f"module: {repo / 'data_orchestrator' / 'cli.py'}"
     assert lines[1] == f"Config: .env = {repo / '.env'}"
-    assert _qdrant_lines(out) == ["Qdrant: localhost:6433"]
+    assert _qdrant_lines(out) == ["Qdrant: localhost:6433 (api key: unset)"]
     assert "warning:" not in out.stderr
 
 
@@ -140,7 +140,7 @@ def test_the_qdrant_line_follows_a_port_only_eigenmind_s_loader_set(tmp_path):
     out = _run(tmp_path, code,
                extra_env={"DATA_ORCHESTRATOR_STATE_DIR": str(tmp_path / "state")})
     assert out.returncode == 0, out.stderr
-    assert _qdrant_lines(out) == ["Qdrant: localhost:6433"]
+    assert _qdrant_lines(out) == ["Qdrant: localhost:6433 (api key: unset)"]
     assert "warning:" not in out.stderr
 
 
@@ -187,7 +187,7 @@ def test_an_explicit_dotenv_wins_over_the_cwd_one(tmp_path):
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
     assert lines[1] == f"Config: .env = {explicit}"
-    assert _qdrant_lines(out) == ["Qdrant: qdrant.lan:7000"]
+    assert _qdrant_lines(out) == ["Qdrant: qdrant.lan:7000 (api key: unset)"]
 
 
 def test_a_relative_explicit_dotenv_is_printed_absolute(tmp_path):
