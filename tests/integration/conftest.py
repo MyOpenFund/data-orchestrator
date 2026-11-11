@@ -89,6 +89,29 @@ def tiny_model_env():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_repo_dotenv(tmp_path, monkeypatch):
+    """Integration tests never read the repo ``.env`` (it may hold a real key).
+
+    ``cli.main`` calls ``config.load_dotenv()`` once per process; pointing
+    ``DATA_ORCHESTRATOR_DOTENV`` at an empty file and re-arming the loader makes
+    that a no-op, and the dotenv-fed keys are cleared so nothing an earlier
+    ``main`` leaked survives. Tests set their own env after this.
+    """
+    from data_orchestrator import config
+    from tests.conftest import DOTENV_KEYS
+
+    empty = tmp_path / "empty.env"
+    empty.write_text("")
+    for key in DOTENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_DOTENV", str(empty))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", TINY_MODEL)
+    monkeypatch.setattr(config, "_LOADED", False)
+    monkeypatch.setattr(config, "_LOADED_PATH", None)
+    yield
+
+
 @pytest.fixture(scope="module")
 def pg_url():
     if not docker_available():

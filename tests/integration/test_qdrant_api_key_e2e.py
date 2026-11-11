@@ -1,4 +1,6 @@
 """The orchestrator against a Qdrant that requires an API key."""
+import os
+
 import psycopg2
 import pytest
 
@@ -42,7 +44,13 @@ def test_a_missing_or_wrong_key_is_a_fatal_with_nothing_ingested(
     n, fatal = _done(clean_pg)
     assert n == 0
     assert fatal is not None and "check QDRANT_API_KEY" in fatal
-    assert "check QDRANT_API_KEY" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "check QDRANT_API_KEY" in captured.err
+    if key:
+        assert key not in captured.out and key not in captured.err
+    # Regression: the repo .env (which may hold a real key) was never loaded.
+    if key is None:
+        assert "QDRANT_API_KEY" not in os.environ
 
 
 def test_the_right_key_ingests(clean_pg, qdrant_keyed_addr, corpus_dir, monkeypatch, capsys):
@@ -52,7 +60,9 @@ def test_the_right_key_ingests(clean_pg, qdrant_keyed_addr, corpus_dir, monkeypa
     assert _run(monkeypatch, clean_pg, qdrant_keyed_addr, corpus_dir, IT_QDRANT_KEY) == 3
     n, fatal = _done(clean_pg)
     assert n == 2 and fatal is None
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
+    assert IT_QDRANT_KEY not in captured.err
     assert f"Qdrant: 127.0.0.1:{qdrant_keyed_addr[1]} (api key: set)" in out.splitlines()
     assert IT_QDRANT_KEY not in out
 
