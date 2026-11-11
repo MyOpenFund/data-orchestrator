@@ -82,10 +82,26 @@ def _wait_port(probe, tries=60):
     return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def tiny_model_env():
-    import os
-    os.environ.setdefault("DATA_ORCHESTRATOR_EMBEDDING_MODEL", TINY_MODEL)
+@pytest.fixture(autouse=True)
+def _no_repo_dotenv(tmp_path, monkeypatch):
+    """Integration tests never read the repo ``.env`` (it may hold a real key).
+
+    ``cli.main`` calls ``config.load_dotenv()`` once per process; pointing
+    ``DATA_ORCHESTRATOR_DOTENV`` at an empty file and re-arming the loader makes
+    that a no-op, and the dotenv-fed keys are cleared so nothing an earlier
+    ``main`` leaked survives. Tests set their own env after this.
+    """
+    from data_orchestrator import config
+    from tests.conftest import DOTENV_KEYS
+
+    empty = tmp_path / "empty.env"
+    empty.write_text("")
+    for key in DOTENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_DOTENV", str(empty))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", TINY_MODEL)
+    monkeypatch.setattr(config, "_LOADED", False)
+    monkeypatch.setattr(config, "_LOADED_PATH", None)
     yield
 
 
@@ -128,6 +144,35 @@ def qdrant_addr():
         port = int(out.stdout.strip().splitlines()[0].rsplit(":", 1)[1])
         assert _wait_port(
             lambda: QdrantClient(host="127.0.0.1", port=port, timeout=5).get_collections()
+        ), "qdrant not ready"
+        yield ("127.0.0.1", port)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+IT_QDRANT_KEY = "it-key-not-a-secret"
+
+
+@pytest.fixture(scope="module")
+def qdrant_keyed_addr():
+    """A Qdrant that requires ``IT_QDRANT_KEY`` (the NAS setup in miniature)."""
+    if not docker_available():
+        pytest.skip("docker unavailable")
+    from qdrant_client import QdrantClient
+    name = f"data-orchestrator-it-qdk-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        ["docker", "run", "-d", "--rm", "--name", name,
+         "-e", f"QDRANT__SERVICE__API_KEY={IT_QDRANT_KEY}",
+         "-p", "127.0.0.1:0:6333", "qdrant/qdrant"],
+        check=True, capture_output=True, timeout=300,
+    )
+    try:
+        out = subprocess.run(["docker", "port", name, "6333/tcp"],
+                             capture_output=True, text=True, check=True)
+        port = int(out.stdout.strip().splitlines()[0].rsplit(":", 1)[1])
+        assert _wait_port(
+            lambda: QdrantClient(host="127.0.0.1", port=port, timeout=5, https=False,
+                                 api_key=IT_QDRANT_KEY).get_collections()
         ), "qdrant not ready"
         yield ("127.0.0.1", port)
     finally:

@@ -793,7 +793,7 @@ def test_a_run_prints_the_target_of_the_constructed_store(tmp_path, monkeypatch,
     _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
     assert _cb_run(tmp_path, monkeypatch) == 0
     cap = capsys.readouterr()
-    assert "Qdrant: qdrant.lan:6433" in cap.out.splitlines()
+    assert "Qdrant: qdrant.lan:6433 (api key: unset)" in cap.out.splitlines()
     assert "warning:" not in cap.err
 
 
@@ -804,14 +804,14 @@ def test_the_legacy_qdrant_port_draws_a_warning(tmp_path, monkeypatch, capsys, p
     _fake_engine(monkeypatch, port=port)
     assert _cb_run(tmp_path, monkeypatch) == 0
     cap = capsys.readouterr()
-    assert "Qdrant: localhost:6333" in cap.out.splitlines()
+    assert "Qdrant: localhost:6333 (api key: unset)" in cap.out.splitlines()
     assert "warning:" in cap.err and "6333" in cap.err and "legacy" in cap.err.lower()
 
 
 def test_an_absent_host_reads_as_the_default(tmp_path, monkeypatch, capsys):
     _fake_engine(monkeypatch, host="", port=6433)
     assert _cb_run(tmp_path, monkeypatch) == 0
-    assert "Qdrant: localhost:6433" in capsys.readouterr().out.splitlines()
+    assert "Qdrant: localhost:6433 (api key: unset)" in capsys.readouterr().out.splitlines()
 
 
 def test_vault_run_prints_the_qdrant_target_before_ingesting(monkeypatch, tmp_path, capsys):
@@ -821,8 +821,32 @@ def test_vault_run_prints_the_qdrant_target_before_ingesting(monkeypatch, tmp_pa
     _fake_engine(monkeypatch, port=6433)
     assert cli.main(["vault"]) == 0
     out = capsys.readouterr().out.splitlines()
-    assert "Qdrant: localhost:6433" in out
-    assert out.index("Qdrant: localhost:6433") < out.index("Done.")
+    assert "Qdrant: localhost:6433 (api key: unset)" in out
+    assert out.index("Qdrant: localhost:6433 (api key: unset)") < out.index("Done.")
+
+
+def test_the_qdrant_line_says_when_no_api_key_is_set(tmp_path, monkeypatch, capsys):
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert "Qdrant: qdrant.lan:6433 (api key: unset)" in capsys.readouterr().out.splitlines()
+
+
+def test_the_qdrant_line_says_when_an_api_key_is_set_and_never_prints_it(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("QDRANT_API_KEY", "s3cr3t-value")
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    cap = capsys.readouterr()
+    assert "Qdrant: qdrant.lan:6433 (api key: set)" in cap.out.splitlines()
+    assert "s3cr3t-value" not in cap.out and "s3cr3t-value" not in cap.err
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_a_blank_api_key_reads_as_unset(tmp_path, monkeypatch, capsys, raw):
+    monkeypatch.setenv("QDRANT_API_KEY", raw)
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert "Qdrant: qdrant.lan:6433 (api key: unset)" in capsys.readouterr().out.splitlines()
 
 
 def test_a_missing_explicit_dotenv_is_an_operator_error(tmp_path, monkeypatch, capsys):
@@ -936,3 +960,15 @@ def test_qdrant_port_is_not_checked_when_qdrant_is_never_touched(monkeypatch, tm
     _fake_vault(monkeypatch, tmp_path, [])
     cli.main(argv)
     assert "QDRANT_PORT" not in capsys.readouterr().err
+
+
+def test_a_refused_api_key_exits_1_with_the_reason(tmp_path, monkeypatch, capsys):
+    import data_orchestrator.core as core
+    from tests.test_core_engine import _RefusingStore
+
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
+    monkeypatch.setattr(core, "QdrantStore", lambda: _RefusingStore([], 401))
+    assert _cb_run(tmp_path, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert ("error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): "
+            "check QDRANT_API_KEY") in err

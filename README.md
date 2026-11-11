@@ -73,7 +73,9 @@ via their own connector (`--no-vault`) in the meantime:
    | `DATABASE_URL` | vault Postgres, e.g. `postgresql://user:pass@host:5432/documents` |
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `COMPANY_CORPUS_ROOT` | local root of the company_corpus (SEC EDGAR) data dir — optional, only needed for the `company` disk fallback; unset falls back to company_corpus's own default data dir |
-   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port>` (the engine's store, as constructed) and warns on stderr when the port is 6333. A set `QDRANT_PORT` must be a plain integer in `1..65535` (surrounding whitespace ignored): empty, signed, decimal or followed by an inline `# comment` is an error on every ingest run (exit 2, before any work) |
+   | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by eigenmind). **Always set both**: unset, eigenmind falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port> (api key: set|unset)` (the engine's store, as constructed) and warns on stderr when the port is 6333. A set `QDRANT_PORT` must be a plain integer in `1..65535` (surrounding whitespace ignored): empty, signed, decimal or followed by an inline `# comment` is an error on every ingest run (exit 2, before any work) |
+   | `QDRANT_API_KEY` | API key of that Qdrant (read by eigenmind, sent as the `api-key` header; blank or unset = none). The start line says whether one is set, never its value. A 401/403 from Qdrant at collection setup ends the run before any document: `error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): check QDRANT_API_KEY`, exit 1, same text in `runs.extra->>'fatal'`. See `QDRANT_HTTPS` for the plain-HTTP warning |
+   | `QDRANT_HTTPS` | `true` only if that Qdrant is served over TLS (read by eigenmind; default `false`, plain HTTP). With a key over plain HTTP `qdrant-client` warns `Api key is used with an insecure connection`: expected inside the tailnet |
    | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)) |
    | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching (a relative path is resolved against the current directory; the absolute path is what is read and printed); a missing file is an error (exit 2 from the CLI, `FileNotFoundError` for a library caller) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
@@ -96,7 +98,7 @@ via their own connector (`--no-vault`) in the meantime:
   installed package, hence the editable install).
 - **Traceability.** Every run prints `Config: .env = <absolute path>` (or
   `Config: no .env file found`) first. Every ingest run (`vault`, `cb_corpus`,
-  `company`, not `--count-only`) then prints `Qdrant: <host>:<port>` once the
+  `company`, not `--count-only`) then prints `Qdrant: <host>:<port> (api key: set|unset)` once the
   engine's store is constructed — read from that store, i.e. after
   eigenmind's own python-dotenv ran at its first import (which can still set
   a `QDRANT_*` key our `.env` left unset) — with a stderr `warning:` on port

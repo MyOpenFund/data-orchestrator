@@ -262,15 +262,28 @@ def _append_report_jsonl(report: dict) -> None:
 QDRANT_DEFAULT_HOST = "localhost"
 QDRANT_DEFAULT_PORT = 6333
 
+QDRANT_API_KEY_ENV = "QDRANT_API_KEY"
+
+
+def _api_key_state(environ=None) -> str:
+    """``"set"`` when ``QDRANT_API_KEY`` is non-blank, else ``"unset"``; the
+    value itself is never returned. Read at ``on_target`` time, i.e. after the
+    store was constructed: eigenmind resolved its key from this same variable
+    (its own python-dotenv ran at first import), and this repo never passes an
+    explicit key, so the state matches the store's."""
+    environ = os.environ if environ is None else environ
+    return "set" if (environ.get(QDRANT_API_KEY_ENV) or "").strip() else "unset"
+
 
 def _print_qdrant_target(host, port) -> None:
     """``run_ingest``'s ``on_target``: print the Qdrant the constructed store
     writes to — resolved by eigenmind AFTER its own python-dotenv ran, so the
-    line is right even when that loader set QDRANT_HOST/QDRANT_PORT — and warn
-    on the legacy port. A store that reports no host or port is displayed
-    with eigenmind's default (an invalid or empty ``QDRANT_PORT`` in the
-    environment never gets here: ``_qdrant_port_error`` refuses it before
-    any work); the port is compared numerically (``06333`` is 6333)."""
+    line is right even when that loader set QDRANT_HOST/QDRANT_PORT — and
+    whether an API key is set (never its value), and warn on the legacy port.
+    A store that reports no host or port is displayed with eigenmind's default
+    (an invalid or empty ``QDRANT_PORT`` in the environment never gets here:
+    ``_qdrant_port_error`` refuses it before any work); the port is compared
+    numerically (``06333`` is 6333)."""
     host = str(host).strip() if host is not None else ""
     host = host or QDRANT_DEFAULT_HOST
     raw = str(port).strip() if port is not None else ""
@@ -278,7 +291,7 @@ def _print_qdrant_target(host, port) -> None:
         port = int(raw) if raw else QDRANT_DEFAULT_PORT
     except ValueError:
         port = raw  # displayed as is; cannot be the legacy port
-    print(f"Qdrant: {host}:{port}", flush=True)
+    print(f"Qdrant: {host}:{port} (api key: {_api_key_state()})", flush=True)
     if port == QDRANT_DEFAULT_PORT:
         print(f"warning: Qdrant port {port} is the legacy store (eigenmind's default); "
               "set QDRANT_PORT to the dedicated one unless this is intended",
