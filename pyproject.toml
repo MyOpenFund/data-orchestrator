@@ -18,8 +18,9 @@ keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 # and tests/test_routing.py (supported extensions) as the guards. Its `ingest`
 # extra brings the parsers (chunknorris, markitdown), its `torch` extra the
 # embedding backend (sentence-transformers, torch); qdrant-client comes with
-# the base package. On a machine without a GPU, install the CPU build of
-# PyTorch first (README, "Installation"): the default wheel carries CUDA.
+# the base package. On a Linux machine without an NVIDIA GPU, and in CI,
+# install the CPU build of PyTorch first (README, "Setup"): the default Linux
+# wheel carries CUDA. On Apple Silicon install normally (Metal backend, mps).
 dependencies = [
     "psycopg2-binary>=2.9",
     "rag-engine[ingest,torch] @ git+https://github.com/MyOpenFund/rag-engine@fbbe09b789828a67c28beadca1f2a95d611158a8",

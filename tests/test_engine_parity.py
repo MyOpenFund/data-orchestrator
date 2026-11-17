@@ -3,8 +3,8 @@
 ``tests/fixtures/engine_parity/expected.json`` holds the points the previous
 ``ingest_item`` (own point ids and payloads, the engine fork's chunker) wrote
 for six documents; its README says how it was captured. Today's ``ingest_item``
-must write the same points for the same vault rows: this is what keeps the
-points already stored valid, and why nothing has to be ingested again.
+must write the same points for the same vault rows, with the same test
+embedder and OCR off (MIGRATION.md, "What was checked", says what that covers).
 
 Never adapt the fixture to make this pass.
 """

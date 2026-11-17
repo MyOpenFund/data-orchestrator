@@ -7,8 +7,10 @@ before `ingest_item` became a call to `rag_engine.ingest.ingest_document`.
 
 `tests/test_engine_parity.py` ingests the same documents with today's `ingest_item` and
 asserts that the points are the same: same number, same order, same ids, same payloads (keys
-and values, `ingestion_date` aside, which is the time of the run), same vectors. This is the
-evidence that nothing has to be ingested again after the switch.
+and values, `ingestion_date` aside, which is the time of the run), same vectors. It shows
+that, for these documents, with a deterministic test embedder and OCR off, the switch changed
+nothing in what is written; `MIGRATION.md` ("What was checked") says what that does and does
+not cover.
 
 **Do not regenerate `expected.json` to make a failing test pass.** A difference means the
 orchestrator no longer writes what is stored.

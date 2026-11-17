@@ -63,11 +63,28 @@ via their own connector (`--no-vault`) in the meantime:
    install for the repo-root `.env` fallback below to find its `.env`:
 
    ```bash
-   # On a machine without an NVIDIA GPU (a Mac, a NAS, CI), the CPU build of
-   # PyTorch first: the default Linux wheel carries the CUDA libraries.
-   pip install torch --index-url https://download.pytorch.org/whl/cpu   # optional
    pip install -e .
    ```
+
+   - **Apple Silicon: install normally**, as above. The default PyTorch wheel
+     uses the Metal backend (`mps`); check the log line of the first run,
+     `Loading embedding model intfloat/multilingual-e5-base on mps`.
+   - **Linux without an NVIDIA GPU (a NAS, a server), and CI**: install the
+     CPU build of PyTorch first,
+
+     ```bash
+     pip install torch --index-url https://download.pytorch.org/whl/cpu
+     pip install -e .
+     ```
+
+     Skipping that step on Linux pulls the CUDA packages with the default
+     wheel (several gigabytes) for nothing.
+   - **An installation that already holds ingested collections**: the
+     versions of chunknorris, PyMuPDF, sentence-transformers, torch and
+     transformers decide the text and the vectors of every point. Save
+     `pip freeze` before changing the environment and see
+     [MIGRATION.md](MIGRATION.md) ("Validating on real data after the
+     switch") before relying on a re-run overwriting points in place.
 
    OCR of scanned pages needs Tesseract's language data on the host
    (`apt-get install tesseract-ocr`, `brew install tesseract`) and the two
@@ -81,19 +98,20 @@ via their own connector (`--no-vault`) in the meantime:
    | `CB_CORPUS_ROOT` | local root of the central-bank corpus (folder containing `raw/`) — required whenever the central-bank corpus is used (vault source, probe, or cb_corpus fallback) |
    | `COMPANY_CORPUS_ROOT` | local root of the company_corpus (SEC EDGAR) data dir — optional, only needed for the `company` disk fallback; unset falls back to company_corpus's own default data dir |
    | `QDRANT_HOST` / `QDRANT_PORT` | the Qdrant the engine writes to (read by rag-engine). **Always set both**: unset, the engine falls back to `localhost:6333`, the **legacy** store; every ingest run prints `Qdrant: <host>:<port> (api key: set|unset)` (the engine's store, as constructed) and warns on stderr when the port is 6333. A set `QDRANT_PORT` must be a plain integer in `1..65535` (surrounding whitespace ignored): empty, signed, decimal or followed by an inline `# comment` is an error on every ingest run (exit 2, before any work) |
-   | `QDRANT_API_KEY` | API key of that Qdrant (read by rag-engine, sent as the `api-key` header; blank or unset = none). The start line says whether one is set, never its value. A 401/403 from Qdrant ends the run with **one** fatal error, at collection setup (before any document) or on a write in the middle of a run (the documents already recorded stay recorded, the one being written is not): `error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): check QDRANT_API_KEY`, exit 1, same text in `runs.extra->>'fatal'`. See `QDRANT_HTTPS` for the plain-HTTP warning |
+   | `QDRANT_API_KEY` | API key of that Qdrant (read by rag-engine, sent as the `api-key` header; blank or unset = none). The start line says whether one is set, never its value. A 401/403 from Qdrant ends the run with **one** fatal error, at collection setup (before any document) or on a write in the middle of a run (the documents already recorded stay recorded, the one being written is not): `error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): check QDRANT_API_KEY`, exit 1, same text in `runs.extra->>'fatal'`; the run report still counts the documents ingested before the refusal (see [Run reports](#run-reports-and-exit-codes)). See `QDRANT_HTTPS` for the plain-HTTP warning |
    | `QDRANT_HTTPS` | `true` only if that Qdrant is served over TLS (read by rag-engine; default `false`, plain HTTP). With a key over plain HTTP `qdrant-client` warns `Api key is used with an insecure connection`: expected inside the tailnet |
    | `RAG_ENGINE_QDRANT_TIMEOUT` | optional, seconds a request to Qdrant may take (default `60`) |
-   | `ENABLE_OCR` / `TESSDATA_PREFIX` | the host's OCR switches, read by the engine **from the process environment each time a file is chunked**: with `--ocr auto` (the default) scanned pages are read by OCR only when `ENABLE_OCR=true` **and** `TESSDATA_PREFIX` is set (the folder of Tesseract's `*.traineddata` files, or its parent). Put both in this `.env` (or the real environment): left out, `auto` silently means `never`. Every ingest run says which it is: `OCR: available (languages: eng)` or `OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)` |
+   | `ENABLE_OCR` / `TESSDATA_PREFIX` | the host's OCR switches, read by the engine **from the process environment each time a file is chunked**: with `--ocr auto` (the default) scanned pages are read by OCR only when `ENABLE_OCR=true` **and** `TESSDATA_PREFIX` is set (the folder of Tesseract's `*.traineddata` files, or its parent). Put both in this `.env` (or the real environment): left out, `auto` silently means `never`. Every ingest run says which it is: `OCR: available (languages: eng)` or `OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)`. Neither has a default (unset = off). `--ocr always` does not look at `ENABLE_OCR` but still needs `TESSDATA_PREFIX`: without it the run is refused (exit 2, before any work), since OCR would fail on every PDF |
    | `RAG_ENGINE_OCR_LANGUAGES` | optional, Tesseract languages used by OCR, codes joined by `+` (default `eng`; e.g. `eng+fra`). The engine uses exactly this list; it does not look at which language files are installed |
-   | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (see [Collections](#collections--embedding-model)); `RAG_ENGINE_MODEL`, the engine's own name for it, is read when this one is unset |
+   | `DATA_ORCHESTRATOR_EMBEDDING_MODEL` | optional, overrides the embedding model (default `intfloat/multilingual-e5-base`; see [Collections](#collections--embedding-model)); `RAG_ENGINE_MODEL`, the engine's own name for it, is read when this one is unset |
    | `DATA_ORCHESTRATOR_EMBEDDING_DIM` | vector dimension of that model. Not needed for the default model (768); **required for any other model** (`RAG_ENGINE_DIM` is read when this one is unset), else exit 2. A dimension that is not the loaded model's is a fatal error before any document |
    | `RAG_ENGINE_BATCH_SIZE` | optional, points per write to Qdrant (default `100`) |
-   | `RAG_ENGINE_BACKEND` | leave unset: ingestion runs on `torch`, the backend this package installs (`onnx` exists for search services and is not installed here) |
-   | `DATA_ORCHESTRATOR_DOTENV` | optional, **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching (a relative path is resolved against the current directory; the absolute path is what is read and printed); a missing file is an error (exit 2 from the CLI, `FileNotFoundError` for a library caller) |
+   | `RAG_ENGINE_BACKEND` | leave unset (default `torch`): ingestion uses the torch backend, the one this package installs. `onnx`, the engine's backend for search services, is not installed here and is refused on an ingest run (`error: RAG_ENGINE_BACKEND='onnx': ingestion uses the torch backend, …`, exit 2, before any work), like any other value |
+| `RAG_ENGINE_SEARCH_LIMIT` / `RAG_ENGINE_SEARCH_MAX_LIMIT` / `RAG_ENGINE_PARITY_MIN` / `RAG_ENGINE_ONNX_THREADS` | leave unset (defaults `10`, `50`, `0.999`, none). Settings of the engine's search side: ingestion does not use them, but the engine reads all of its settings at once, so an invalid value (not a number, a limit below 1, a parity outside `(0, 1]`) stops an ingest run with exit 2 |
+   | `DATA_ORCHESTRATOR_DOTENV` | optional (default: unset, the `.env` is searched as described below), **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching (a relative path is resolved against the current directory; the absolute path is what is read and printed); a missing file is an error (exit 2 from the CLI, `FileNotFoundError` for a library caller) |
    | `DATA_ORCHESTRATOR_LOG_LEVEL` | optional, level of the log lines the CLI sends to stderr (this package's and the engine's: model loaded, collection created, a text file with invalid bytes, …): `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`; anything else is an error (exit 2) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
-   | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
+   | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (default: every type the pinned engine reads; see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
    | `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO` | optional plain decimal in `[0, 1]`, default `0.10` (see [Run reports](#run-reports-and-exit-codes)); anything else is an error (exit 2) |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
@@ -118,7 +136,8 @@ via their own connector (`--no-vault`) in the meantime:
   `company`, not `--count-only`) then prints the OCR line (`OCR: available
   (languages: eng)`, `OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX
   unset)`, or `OCR: off (--ocr never)` / `OCR: forced (--ocr always,
-  languages: eng)` for an explicit mode) and `Qdrant: <host>:<port> (api key:
+  languages: eng)` for an explicit mode; `--ocr always` without
+  `TESSDATA_PREFIX` is refused before this line, exit 2) and `Qdrant: <host>:<port> (api key:
   set|unset)` once the engine's store is constructed — read from that store —
   with a stderr `warning:` on port 6333 (the legacy store; compared
   numerically, `06333` is 6333). A `QDRANT_PORT` that is set but is not a
@@ -276,7 +295,7 @@ data-orchestrator vault --corpus central-bank --ocr always
 | `--corpus NAME` | vault corpus to operate on (default: per-source — `central-bank` for `vault`/`cb_corpus`/`probe`, `company` for `company`) |
 | `--no-vault` | (cb_corpus/company) use the local JSON-lines file ledger instead of the vault's `rag_ingestions`, and append the run report to `state_dir()/runs.jsonl` (no vault state is read or written). Rejected for the `vault` source and for `probe` (exit 2): both always read and write the vault |
 | `--ledger PATH` | (cb_corpus/company with `--no-vault`) path of the file ledger (default `state_dir()/<collection>.jsonl`); ignored by the other ingest runs, rejected for `probe` (exit 2) |
-| `--ocr auto\|always\|never` | OCR for scanned pages, passed to the engine as is. `auto` (default): OCR runs page by page where needed, **only if the host switches are on** (`ENABLE_OCR=true` and `TESSDATA_PREFIX` set), else no OCR; `always`: every page, whatever `ENABLE_OCR` says; `never`. The run's `OCR:` line says which applies |
+| `--ocr auto\|always\|never` | OCR for scanned pages, passed to the engine as is. `auto` (default): OCR runs page by page where needed, **only if the host switches are on** (`ENABLE_OCR=true` and `TESSDATA_PREFIX` set), else no OCR; `always`: every page, whatever `ENABLE_OCR` says — `TESSDATA_PREFIX` must be set, else the run is refused (exit 2); `never`. The run's `OCR:` line says which applies |
 | `--collection NAME` | target Qdrant collection (default: `{corpus}-{model_tag}-v1` via `routing.collection_name` — the same resolution for every source, using `--corpus` or the source's implied corpus) |
 | `--source-codes a,b` | (vault source) only these `source_code` values, e.g. `ecb,fr` |
 | `--doctypes C1,A3` | only these doc-type codes (cb_corpus, vault); `A1` etc. for company |
@@ -358,7 +377,15 @@ the vault's `runs` table (or appends `state_dir()/runs.jsonl` with
 `--no-vault`): run id, `corpus`, per-source counters and the outcome — on a
 fatal error too, best effort (a vault that cannot be reached cannot record it;
 the failure is said on stderr, `warning: failed to write run report to vault:`
-or, with `--no-vault`, `warning: failed to append run report:`). **No report**
+or, with `--no-vault`, `warning: failed to append run report:`). A fatal
+error in the middle of a run (a refused API key on a write, a source that
+stops answering) reports what was done before it: `totals` and `sources[]`
+count the documents seen, ingested and failed up to the failure, as
+`rag_ingestions` records them (the document being written when a key is
+refused is counted as seen, neither new nor failed), with `outcome` `failed`,
+`exit_code` 1 and the reason under `fatal`; the usual summary (`Done.` and its
+counts) is printed, then the `error: fatal:` line. A fatal error before the
+first document reports zeros and prints no summary. **No report**
 is written by `--count-only`, by `probe`, or by a run stopped by a pre-flight
 error (exit 1 or 2, before any work). Exit codes are honest:
 
@@ -388,9 +415,11 @@ error (exit 1 or 2, before any work). Exit codes are honest:
   `--no-resume` or `--ledger` on `probe`, a missing `DATA_ORCHESTRATOR_DOTENV`
   file, an invalid `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` or
   `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, and, on an ingest run, a set
-  `QDRANT_PORT` that is not a plain integer in `1..65535` or an invalid engine
+  `QDRANT_PORT` that is not a plain integer in `1..65535`, an invalid engine
   setting (`RAG_ENGINE_*`, `QDRANT_HTTPS`, `DATA_ORCHESTRATOR_EMBEDDING_DIM`,
-  a model other than the default without its dimension).
+  a model other than the default without its dimension), a
+  `RAG_ENGINE_BACKEND` other than `torch`, or `--ocr always` without
+  `TESSDATA_PREFIX`.
 
 A per-document failure is listed in the run summary as `<Type>: <message>`
 with the engine's error types (`UnsupportedFormatError`, `ValueError` for a
@@ -464,11 +493,22 @@ Every chunk's Qdrant point carries:
 | `filename`, `page`, `chunk_number`, `text` | engine (chunking output; `page` only for formats with pages) |
 | `ingestion_date` | engine — one ISO timestamp per document, shared by all of its points |
 
-This is rag-engine's payload schema v1 (`rag_engine.schema`): the payload this
-repo assembled itself before 2026-11, unchanged — same keys, same values, same
-point ids (`tests/test_engine_parity.py` compares today's points with the ones
-captured from the previous code). The key is `chunk_number`, not
-`chunk_index`.
+This is rag-engine's payload schema v1 (`rag_engine.schema`), the payload this
+repo assembled itself before 2026-11. What was shown about the switch: with
+the same versions of the libraries that decide text and vectors (chunknorris
+and its PDF library PyMuPDF, sentence-transformers, torch, transformers, the
+revision of the embedding model) and the same device, the same documents give
+the same point ids, the same payloads and the same vectors. It was checked (i)
+on a committed fixture with a deterministic test embedder and OCR off
+(`tests/test_engine_parity.py`), (ii) end to end, old code against new code,
+on PostgreSQL and Qdrant with a real small model, and (iii) with OCR on, in
+English, on generated documents. Two payload differences are declared: invalid
+UTF-8 in a text file is replaced by U+FFFD (it was dropped), and a reserved
+key found in a document's free metadata is dropped (a stray `page` on a
+document without pages used to be kept; see below). Another version of one of
+those libraries, or another device, is outside what was checked:
+[MIGRATION.md](MIGRATION.md) says how to keep the versions and how to validate
+on real data. The key is `chunk_number`, not `chunk_index`.
 
 ### Reserved payload keys
 
@@ -516,26 +556,39 @@ counted as an error, while every other document in the batch still commits.
 
 ## Testing
 
+In the virtual environment of the installation, with the test tools
+(`pip install -e ".[dev]"`):
+
 ```bash
-./venv/bin/python -m pytest -q                    # unit tests
-./venv/bin/python -m pytest -m integration -q      # integration tests (Docker)
+python -m pytest -q                    # unit tests (no network, no service)
+python -m pytest -m integration -q     # integration tests (need Docker)
+python tools/check_engine_pin.py       # the rag-engine installed is the pinned commit
 ```
 
-Integration tests spin up throwaway Postgres and Qdrant containers via
-`docker run` (skipped automatically if Docker is unavailable) and use a tiny
-embedding model (`DATA_ORCHESTRATOR_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`,
-`DATA_ORCHESTRATOR_EMBEDDING_DIM=768`)
-to keep CI fast. CI (`.github/workflows/tests.yml`) runs both suites on pushes
-to `main` and on pull requests: the CPU build of PyTorch, then
-`pip install -e ".[dev]"`, which brings rag-engine at the commit pinned in
-`pyproject.toml`.
+Integration tests spin up throwaway containers via `docker run` (skipped
+automatically if Docker is unavailable): `postgres:16` and
+`qdrant/qdrant:v1.20.0`, the Qdrant version production runs, pinned by the
+`QDRANT_IMAGE` constant of `tests/integration/conftest.py` (change it when
+production is upgraded). They use a tiny embedding model
+(`DATA_ORCHESTRATOR_EMBEDDING_MODEL=sentence-transformers/paraphrase-albert-small-v2`,
+`DATA_ORCHESTRATOR_EMBEDDING_DIM=768`, downloaded on first use) to keep CI
+fast. CI (`.github/workflows/tests.yml`) runs both suites on pushes to `main`
+and on pull requests — the unit suite on Python 3.12 and 3.13 (production
+runs 3.13): the CPU build of PyTorch, then `pip install -e ".[dev]"`, which
+brings rag-engine at the commit pinned in `pyproject.toml`. A step then
+checks it: `tools/check_engine_pin.py` compares the commit pip recorded for
+the installed rag-engine (`direct_url.json`, `vcs_info.commit_id`) with the
+sha in `pyproject.toml` and fails on a difference (it also fails on an engine
+installed from a local checkout, which records no commit).
 
 **Bumping the rag-engine pin** changes what is written to Qdrant only if the
 guards say so: `tests/test_engine_parity.py` (the points written for six
 fixture documents must stay the ones captured from the code this repo ran
 before it used rag-engine: ids, payloads, vectors) and `tests/test_routing.py`
-(the supported extensions). Never regenerate the parity fixture to make a
-failing test pass.
+(the supported extensions). The parity test runs with a deterministic test
+embedder and OCR off: it does not see a change of sentence-transformers,
+torch, transformers or the model. Never regenerate the parity fixture to make
+a failing test pass.
 
 ## Adding a new corpus
 
