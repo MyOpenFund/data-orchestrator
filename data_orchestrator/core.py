@@ -46,6 +46,13 @@ from .routing import (
 # ---------------------------------------------------------------------------
 # Engine settings and the defaults of a run
 # ---------------------------------------------------------------------------
+# The embedding backend of an ingestion run: the one pyproject.toml installs
+# (rag-engine's ``torch`` extra). The engine also knows ``onnx``, for search
+# services; its runtime is not a dependency of this package.
+ENGINE_BACKEND_ENV = "RAG_ENGINE_BACKEND"
+INGEST_BACKEND = "torch"
+
+
 def engine_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """The engine's settings for a run, read from ``environ`` (default: the
     process environment, at call time).
@@ -61,12 +68,21 @@ def engine_settings(environ: Mapping[str, str] | None = None) -> Settings:
       else the default model's own (768). Another model has no known
       dimension: one of the two variables is then required.
 
+    The backend must be ``torch`` (``RAG_ENGINE_BACKEND`` unset, or ``torch``):
+    it is the one this package installs. ``onnx``, the engine's other backend,
+    is refused here rather than by an ``ImportError`` once a run has started.
+
     Raises ``rag_engine.config.ConfigError`` (a ``ValueError``) naming the
     variable on an invalid value. A dimension that is not the loaded model's
     is refused later, by the engine, when the model is loaded.
     """
     env = os.environ if environ is None else environ
     settings = Settings.from_env(env)
+    if settings.backend != INGEST_BACKEND:
+        raise ConfigError(
+            f"{ENGINE_BACKEND_ENV}={env.get(ENGINE_BACKEND_ENV)!r}: ingestion uses the "
+            f"{INGEST_BACKEND} backend, the one installed with this package; unset "
+            f"{ENGINE_BACKEND_ENV}")
     model = embedding_model_name(env)
     raw_dim = (env.get(EMBEDDING_DIM_ENV) or "").strip()
     if raw_dim:
@@ -94,8 +110,7 @@ def build_store(settings: Settings) -> QdrantStore:
 def build_embedder(settings: Settings):
     """The embedder of a run, loaded once on the best available device.
 
-    Imports the backend (PyTorch for ``RAG_ENGINE_BACKEND=torch``, the default)
-    on first use. The engine refuses a model whose dimension is not
+    Imports the backend (PyTorch) on first use. The engine refuses a model whose dimension is not
     ``settings.model_dim`` (``ValueError``).
     """
     from rag_engine.embedding import make_embedder

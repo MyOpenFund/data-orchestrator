@@ -362,7 +362,15 @@ def _setup_logging(environ=None) -> None:
     INFO lines (model loaded, collection created) would be lost and its
     warnings printed bare. Level: ``DATA_ORCHESTRATOR_LOG_LEVEL`` (default
     ``INFO``); raises ``ValueError`` on a name that is not a logging level.
-    Does nothing to handlers a host process already installed.
+
+    Two things are done:
+
+    - the root logger gets a stderr handler at that level, unless it already
+      has handlers (a host process configured logging): they are then left as
+      they are, the root level too: the level variable does not reach them;
+    - in every case, the libraries that log each HTTP request or file lock at
+      INFO (``_NOISY_LOGGERS``) are set to that level or WARNING, whichever is
+      higher.
     """
     environ = os.environ if environ is None else environ
     raw = (environ.get(LOG_LEVEL_ENV) or "").strip()
@@ -379,6 +387,23 @@ def _setup_logging(environ=None) -> None:
         logging.getLogger(noisy).setLevel(max(logging.WARNING, getattr(logging, level)))
 
 
+TESSDATA_PREFIX_ENV = "TESSDATA_PREFIX"
+
+
+def _forced_ocr_error(ocr: str, environ=None) -> str | None:
+    """Pre-flight for an ingest run: the error message when ``--ocr always``
+    is asked on a host without ``TESSDATA_PREFIX`` (unset or blank), else
+    ``None``. Forced OCR does not look at ``ENABLE_OCR`` but still needs the
+    language data: without the variable the parser refuses every PDF, so the
+    run would end with one error per PDF."""
+    environ = os.environ if environ is None else environ
+    if ocr != "always" or (environ.get(TESSDATA_PREFIX_ENV) or "").strip():
+        return None
+    return (f"--ocr always needs {TESSDATA_PREFIX_ENV} (the folder of Tesseract's "
+            "*.traineddata files, or its parent): it is not set, so OCR would fail on "
+            "every PDF. Set it in the .env, or use --ocr auto or --ocr never")
+
+
 def _print_ocr_state(settings, ocr: str) -> None:
     """Say, before a run, whether scanned pages will be read by OCR.
 
@@ -387,6 +412,8 @@ def _print_ocr_state(settings, ocr: str) -> None:
     the process environment each time a file is chunked — so they must be in
     this repo's ``.env`` (or the real environment). A silent "auto -> never"
     is what this line is for. The languages are ``RAG_ENGINE_OCR_LANGUAGES``.
+    ``--ocr always`` gets here only with ``TESSDATA_PREFIX`` set
+    (``_forced_ocr_error`` refuses the run otherwise).
     """
     from rag_engine.chunking import ocr_available
 
@@ -525,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
             args.engine_settings = engine_settings()
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
+            return 2
+        ocr_error = _forced_ocr_error(args.ocr)
+        if ocr_error is not None:
+            print(f"error: {ocr_error}", file=sys.stderr)
             return 2
 
     # Each disk source implies its own vault corpus; an explicit --corpus

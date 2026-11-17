@@ -887,6 +887,17 @@ def test_an_invalid_dimension_is_refused(bad):
         engine_settings({"DATA_ORCHESTRATOR_EMBEDDING_DIM": bad})
 
 
+@pytest.mark.parametrize("value", ["onnx", "ONNX", " onnx "])
+def test_a_backend_other_than_torch_is_refused(value):
+    with pytest.raises(ConfigError, match="RAG_ENGINE_BACKEND=.*ingestion uses the torch backend"):
+        engine_settings({"RAG_ENGINE_BACKEND": value})
+
+
+@pytest.mark.parametrize("value", ["torch", " TORCH ", ""])
+def test_the_torch_backend_is_accepted(value):
+    assert engine_settings({"RAG_ENGINE_BACKEND": value}).backend == "torch"
+
+
 def test_engine_settings_reads_the_process_environment_at_call_time(monkeypatch):
     monkeypatch.setenv("RAG_ENGINE_OCR_LANGUAGES", "eng+fra")
     monkeypatch.setenv("RAG_ENGINE_QDRANT_TIMEOUT", "5")

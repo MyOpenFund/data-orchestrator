@@ -1148,6 +1148,27 @@ def test_an_invalid_engine_setting_fails_an_ingest_run_before_any_work(
 
 
 @pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
+@pytest.mark.parametrize("value", ["onnx", " ONNX "])
+def test_a_backend_other_than_torch_fails_an_ingest_run_before_any_work(
+        monkeypatch, capsys, argv, value):
+    """onnx is a valid engine backend (search services), but it is not
+    installed here: refused up front, not an ImportError once the run started."""
+    monkeypatch.setenv("RAG_ENGINE_BACKEND", value)
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: RAG_ENGINE_BACKEND=")
+    assert "ingestion uses the torch backend" in err
+
+
+@pytest.mark.parametrize("value", ["torch", " Torch ", ""])
+def test_the_torch_backend_named_explicitly_passes_the_preflight(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("RAG_ENGINE_BACKEND", value)
+    _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+
+
+@pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
 def test_another_model_without_its_dimension_fails_before_any_work(monkeypatch, capsys, argv):
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "org/another-model")
     _forbid_any_work(monkeypatch)
@@ -1238,6 +1259,39 @@ def test_the_ocr_line_follows_an_explicit_mode(tmp_path, monkeypatch, capsys, mo
     assert _ocr_lines(capsys) == [line]
 
 
+@pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
+@pytest.mark.parametrize("env", [{}, {"TESSDATA_PREFIX": "  "}, {"ENABLE_OCR": "true"}],
+                         ids=["unset", "blank", "only-the-switch"])
+def test_forced_ocr_without_the_language_data_fails_before_any_work(
+        monkeypatch, capsys, argv, env):
+    """--ocr always needs TESSDATA_PREFIX whatever ENABLE_OCR says: without it
+    the parser fails on every PDF, so the run cannot succeed."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv + ["--ocr", "always"]) == 2
+    cap = capsys.readouterr()
+    assert cap.err.startswith("error: --ocr always needs TESSDATA_PREFIX")
+    assert "OCR would fail on every PDF" in cap.err
+    assert "OCR:" not in cap.out
+
+
+@pytest.mark.parametrize("mode", ["auto", "never"])
+def test_the_other_ocr_modes_do_not_need_the_language_data(tmp_path, monkeypatch, mode):
+    _fake_engine(monkeypatch, port=6433)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    assert cli.main(["cb_corpus", "--no-vault", "--ocr", mode,
+                     "--root", str(_minimal_cb_corpus(tmp_path))]) == 0
+
+
+@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["company", "--count-only"]],
+                         ids=" ".join)
+def test_a_count_only_run_does_not_check_the_language_data(monkeypatch, tmp_path, argv,
+                                                           fake_company_corpus):
+    _fake_vault(monkeypatch, tmp_path, [])
+    assert cli.main(argv + ["--ocr", "always"]) == 0
+
+
 def test_vault_run_prints_the_ocr_line_before_ingesting(monkeypatch, tmp_path, capsys):
     import data_orchestrator.core as core
     _fake_vault(monkeypatch, tmp_path, [])
@@ -1304,6 +1358,22 @@ def test_the_log_level_comes_from_the_environment(bare_root_logger, capsys, raw,
     cli._setup_logging({"DATA_ORCHESTRATOR_LOG_LEVEL": raw})
     logging.getLogger("rag_engine.embedding").info("Loading embedding model")
     assert ("Loading embedding model" in capsys.readouterr().err) is shown
+
+
+def test_logging_already_configured_by_a_host_is_left_alone_but_for_the_noisy_loggers(
+        bare_root_logger):
+    """What the docstring says: with handlers already on the root logger the
+    level variable does not reach it; the third-party loggers are still
+    raised to WARNING at least."""
+    import logging
+    bare_root_logger.handlers.clear()
+    host = logging.NullHandler()
+    bare_root_logger.addHandler(host)
+    bare_root_logger.setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
+    cli._setup_logging({"DATA_ORCHESTRATOR_LOG_LEVEL": "DEBUG"})
+    assert bare_root_logger.handlers == [host] and bare_root_logger.level == logging.ERROR
+    assert logging.getLogger("httpx").level == logging.WARNING
 
 
 @pytest.mark.parametrize("argv", _ALL_SOURCE_ARGVS, ids=" ".join)
