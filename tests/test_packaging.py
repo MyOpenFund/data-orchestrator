@@ -12,8 +12,12 @@ even though neither is exercised by the rest of the suite.
 from __future__ import annotations
 
 import subprocess
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: tomli is the same parser, installed with pytest there
+    import tomli as tomllib
 
 import pytest
 

@@ -599,6 +599,21 @@ def test_the_default_store_gets_the_batch_size_of_the_environment(tmp_path, monk
     assert [e[2] for e in log if e[0] == "qdrant"] == [1] * stats.chunks_written
 
 
+def test_run_ingest_forwards_its_batch_size_to_every_document(tmp_path, monkeypatch):
+    import rag_engine.ingest as engine_ingest
+
+    monkeypatch.setattr(
+        engine_ingest, "chunk_file",
+        lambda path, **kwargs: [Chunk(text=f"chunk {i} " * 10, page=None) for i in range(3)])
+    log = []
+    stats = run_ingest([_md_item(tmp_path, doc_id="a"), _md_item(tmp_path, doc_id="b")],
+                       collection="coll", store=FakeStore(log), embedder=FakeEmbedder(),
+                       batch_size=2)
+    assert stats.chunks_written == 6
+    # Three points per document, two per write: the store's own size (100) would send 3.
+    assert [e[2] for e in log if e[0] == "qdrant"] == [2, 1, 2, 1]
+
+
 # ---------------------------------------------------------------------------
 # on_target: the Qdrant the run writes to, read from the CONSTRUCTED store,
 # reported once before any collection work.
@@ -658,6 +673,27 @@ def test_the_default_store_is_the_engine_s_built_from_the_environment(monkeypatc
     # https is always explicit: left undecided, the client turns TLS on with a key.
     assert built == [{"host": "qdrant.lan", "port": 6433, "api_key": "k3y", "https": False,
                       "timeout": 5.0}]
+
+
+def test_the_default_store_is_built_from_the_settings_it_is_given_not_the_environment(monkeypatch):
+    """The run's settings, whatever the process environment says by then."""
+    import rag_engine.store as engine_store
+
+    import data_orchestrator.core as core
+
+    built = []
+    monkeypatch.setattr(engine_store, "QdrantClient",
+                        lambda **kwargs: built.append(kwargs) or object())
+    for key, value in (("QDRANT_HOST", "env.lan"), ("QDRANT_PORT", "1111"),
+                       ("QDRANT_API_KEY", "env-key"), ("QDRANT_HTTPS", "false"),
+                       ("RAG_ENGINE_QDRANT_TIMEOUT", "5")):
+        monkeypatch.setenv(key, value)
+    store = core.build_store(Settings(qdrant_host="run.lan", qdrant_port=6433,
+                                      qdrant_api_key="run-key", qdrant_https=True,
+                                      qdrant_timeout=7.0))
+    assert (store.host, store.port) == ("run.lan", 6433)
+    assert built == [{"host": "run.lan", "port": 6433, "api_key": "run-key", "https": True,
+                      "timeout": 7.0}]
 
 
 # ---------------------------------------------------------------------------
@@ -943,6 +979,29 @@ def test_the_default_embedder_is_built_by_the_engine_from_the_settings(monkeypat
     settings = engine_settings({})
     assert core.build_embedder(settings) == "embedder"
     assert seen == [(settings, {})]  # device left to the engine: the best available
+
+
+def test_the_default_embedder_gets_the_model_and_cache_of_the_run_s_settings(monkeypatch):
+    """Settings that differ from the defaults and from the environment: the
+    model that is loaded is the run's, from the run's cache directory, on the
+    device the engine picks (none is forced here)."""
+    import rag_engine.embedding as engine_embedding
+
+    import data_orchestrator.core as core
+
+    built = []
+
+    class Recorder:
+        def __init__(self, spec, **kwargs):
+            built.append((spec.name, spec.dim, spec.passage_prefix, kwargs))
+
+    monkeypatch.setattr(engine_embedding, "TorchEmbedder", Recorder)
+    monkeypatch.setenv("RAG_ENGINE_MODEL", "env/model")
+    monkeypatch.setenv("RAG_ENGINE_MODEL_CACHE", "/env/cache")
+    settings = Settings(model_name="org/run-model", model_dim=8, model_cache="/run/cache",
+                        passage_prefix="p: ")
+    assert isinstance(core.build_embedder(settings), Recorder)
+    assert built == [("org/run-model", 8, "p: ", {"cache_dir": "/run/cache"})]
 
 
 # ---------------------------------------------------------------------------
