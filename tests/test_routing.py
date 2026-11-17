@@ -80,3 +80,50 @@ def test_resolve_local_path_strip_only_matches_leading_prefix(monkeypatch, tmp_p
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     result = routing.resolve_local_path("central-bank", "raw/us/data/2010/doc.pdf")
     assert result == tmp_path / "raw" / "us" / "data" / "2010" / "doc.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Supported types: the extensions are the engine's, the mime mapping is ours.
+# ---------------------------------------------------------------------------
+def test_mime_extensions_cover_exactly_what_the_engine_reads():
+    """Bumping the rag-engine pin to a release that reads a new format (or
+    drops one) must fail here until ``routing._EXTENSION_MIME`` follows: an
+    extension without a mime type is never offered to the engine."""
+    from rag_engine.chunking import SUPPORTED_EXTENSIONS
+
+    offered = [ext for exts in routing.MIME_EXTENSIONS.values() for ext in exts]
+    assert sorted(offered) == sorted(SUPPORTED_EXTENSIONS)
+    assert len(offered) == len(set(offered))
+    assert set(routing._EXTENSION_MIME) == set(SUPPORTED_EXTENSIONS)
+
+
+def test_mime_extensions_keep_their_documented_mapping():
+    assert routing.MIME_EXTENSIONS == {
+        "application/pdf": (".pdf",),
+        "text/markdown": (".md",),
+        "text/plain": (".txt",),
+        "text/csv": (".csv",),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (".docx",),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (".xlsx",),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": (".pptx",),
+    }
+    assert routing.DEFAULT_SUPPORTED_MIME_TYPES == tuple(routing.MIME_EXTENSIONS)
+
+
+def test_an_extension_the_engine_stops_reading_is_no_longer_offered(monkeypatch):
+    monkeypatch.setattr(routing, "SUPPORTED_EXTENSIONS", (".pdf", ".md"))
+    assert routing._mime_extensions() == {"application/pdf": (".pdf",),
+                                          "text/markdown": (".md",)}
+
+
+def test_the_engine_model_variable_is_the_fallback_of_ours(monkeypatch):
+    monkeypatch.setenv("RAG_ENGINE_MODEL", "org/engine-model")
+    assert routing.embedding_model_name() == "org/engine-model"
+    assert routing.collection_name("central-bank") == "central-bank-engine-model-v1"
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "org/ours")
+    assert routing.embedding_model_name() == "org/ours"
+
+
+def test_a_blank_model_variable_reads_as_unset(monkeypatch):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "  ")
+    assert routing.embedding_model_name() == routing.DEFAULT_EMBEDDING_MODEL

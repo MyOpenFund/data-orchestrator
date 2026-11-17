@@ -15,21 +15,12 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-# eigenmind runs python-dotenv at ``import eigenmind.config`` time, with its own
-# CWD/frame-based search rule. Importing it HERE, at collection, pins that
-# injection to a single deterministic moment before any fixture or test runs —
-# otherwise it happens at whatever point the first test happens to import the
-# engine, and what a test sees depends on collection order.
-try:
-    import eigenmind.config  # noqa: F401
-except ImportError:  # eigenmind is an optional editable checkout
-    pass
-
-# Keys a ``.env`` (this repo's, or the eigenmind fork's, which python-dotenv
-# loads at ``import eigenmind.config`` time) can inject into the process before
-# any test runs. Unit tests must see none of them: each either points code at a
-# live service (DATABASE_URL, QDRANT_*) or at a machine-specific corpus/state
-# folder that would make assertions machine-dependent.
+# Keys a ``.env`` can inject into the process before any test runs, and keys
+# the engine reads from the process environment (its settings; ENABLE_OCR /
+# TESSDATA_PREFIX at each chunked file). Unit tests must see none of them: each
+# either points code at a live service (DATABASE_URL, QDRANT_*), at a
+# machine-specific corpus/state folder, or changes what the engine does
+# (model, batch size, OCR), which would make assertions machine-dependent.
 DOTENV_KEYS = (
     "DATABASE_URL",
     "CB_CORPUS_ROOT",
@@ -40,9 +31,26 @@ DOTENV_KEYS = (
     "QDRANT_HTTPS",
     "DATA_ORCHESTRATOR_STATE_DIR",
     "DATA_ORCHESTRATOR_EMBEDDING_MODEL",
+    "DATA_ORCHESTRATOR_EMBEDDING_DIM",
     "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES",
     "DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO",
     "DATA_ORCHESTRATOR_DOTENV",
+    "DATA_ORCHESTRATOR_LOG_LEVEL",
+    "RAG_ENGINE_MODEL",
+    "RAG_ENGINE_DIM",
+    "RAG_ENGINE_PASSAGE_PREFIX",
+    "RAG_ENGINE_QUERY_PREFIX",
+    "RAG_ENGINE_BACKEND",
+    "RAG_ENGINE_BATCH_SIZE",
+    "RAG_ENGINE_OCR_LANGUAGES",
+    "RAG_ENGINE_SEARCH_LIMIT",
+    "RAG_ENGINE_SEARCH_MAX_LIMIT",
+    "RAG_ENGINE_MODEL_CACHE",
+    "RAG_ENGINE_PARITY_MIN",
+    "RAG_ENGINE_ONNX_THREADS",
+    "RAG_ENGINE_QDRANT_TIMEOUT",
+    "ENABLE_OCR",
+    "TESSDATA_PREFIX",
 )
 
 
@@ -51,7 +59,7 @@ def isolated_env(request):
     """Guarantee, for every unit test:
 
     1. none of ``DOTENV_KEYS`` is set when the test body starts, whatever a
-       ``.env`` on disk or eigenmind's python-dotenv put in the environment;
+       ``.env`` on disk or the developer's shell put in the environment;
     2. ``config.load_dotenv()`` called from inside production code
        (``vault.connect``, ``get_path``) finds no file and reads none —
        ``find_dotenv`` and the process-wide ``_LOADED`` flag are both pinned, so

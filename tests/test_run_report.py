@@ -32,6 +32,36 @@ def test_report_shape_and_ok_outcome():
     assert set(rep) >= {"run_id", "started_at", "finished_at"}
 
 
+def test_dropped_payload_keys_are_reported_only_when_there_are_some():
+    """totals.payload_keys_dropped: the number of reserved keys the sources
+    left out of free-form metadata. Absent on a clean run, so its report
+    keeps the shape it had before the key existed."""
+    s = _stats(docs_seen=3, docs_ingested=3,
+               payload_keys_dropped={"filename": 2, "text": 1},
+               by_source={"us": {"docs_seen": 3, "docs_new": 3, "docs_failed": 0}})
+    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00", corpus="central-bank",
+                        ratio=R)
+    assert rep["totals"] == {"docs_seen": 3, "docs_new": 3, "docs_failed": 0,
+                             "docs_path_metadata": 0, "payload_keys_dropped": 3}
+    assert rep["outcome"] == "ok" and rep["exit_code"] == 0  # never drives the outcome
+
+    clean = _build_report("vault", _stats(docs_seen=1, docs_ingested=1), "t",
+                          corpus="central-bank", ratio=R)
+    assert "payload_keys_dropped" not in clean["totals"]
+
+
+def test_the_summary_warns_about_dropped_payload_keys(capsys):
+    from data_orchestrator import cli
+
+    cli._print_summary(_stats(docs_seen=2, docs_ingested=2,
+                              payload_keys_dropped={"text": 1, "filename": 2}))
+    err = capsys.readouterr().err
+    assert "warning: 3 metadata key(s) reserved for the engine" in err
+    assert "(filename x2, text x1)" in err
+    cli._print_summary(_stats(docs_seen=2, docs_ingested=2))
+    assert capsys.readouterr().err == ""
+
+
 def test_all_failed_is_degraded_exit_three():
     s = _stats(docs_seen=3, docs_ingested=0, docs_error=3,
                by_source={"us": {"docs_seen": 3, "docs_new": 0, "docs_failed": 3}})

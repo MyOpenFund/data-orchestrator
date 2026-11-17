@@ -5,24 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "data-orchestrator"
 version = "0.1.0"
-description = "Ingestion orchestrator: vault-selected documents through the eigenmind engine into Qdrant."
+description = "Ingestion orchestrator: vault-selected documents through the rag-engine library into Qdrant."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "jeulinmarc", email = "jeulinmarc@gmail.com" }]
 keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 
-# NOTE on the eigenmind dependency
-# --------------------------------
-# The ingestion engine is our eigenmind fork (github.com/MyOpenFund/eigenmind),
-# installed separately as an editable checkout (not from PyPI), consumed at a
-# pinned fork commit (see CI: .github/workflows/tests.yml, `ref:`):
-#     git -C $EIGENMIND_PATH checkout 84d2ac4
-#     pip install -e $EIGENMIND_PATH
-# (EIGENMIND_PATH lives in .env; see .env.example.) It provides chunknorris,
-# sentence-transformers, torch and qdrant-client transitively.
+# The ingestion engine is rag-engine (github.com/MyOpenFund/rag-engine), pinned
+# by commit: the engine decides point ids, payloads and where documents are
+# cut, so a new commit is taken on purpose, with tests/test_engine_parity.py
+# and tests/test_routing.py (supported extensions) as the guards. Its `ingest`
+# extra brings the parsers (chunknorris, markitdown), its `torch` extra the
+# embedding backend (sentence-transformers, torch); qdrant-client comes with
+# the base package. On a machine without a GPU, install the CPU build of
+# PyTorch first (README, "Installation"): the default wheel carries CUDA.
 dependencies = [
     "psycopg2-binary>=2.9",
+    "rag-engine[ingest,torch] @ git+https://github.com/MyOpenFund/rag-engine@fbbe09b789828a67c28beadca1f2a95d611158a8",
 ]
 
 [project.optional-dependencies]

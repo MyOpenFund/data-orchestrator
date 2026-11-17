@@ -10,21 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: MyOpenFund/eigenmind
-          # Pinned by commit: upstream rewrote its history on 2026-11-08; bump
-          # together with routing.MIME_EXTENSIONS (README "Testing").
-          ref: 6e9093a777d059aefac5340de51c2c77fc93dec7
-          path: eigenmind
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: pyproject.toml
+      # The CPU build of PyTorch first: the default wheel carries the CUDA libraries.
+      # The engine (rag-engine, pinned by commit in pyproject.toml) then comes
+      # with the package itself.
       - name: Install
         run: |
-          pip install -e ./eigenmind
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
+      - name: The engine installed is the pinned one
+        run: python -c "import rag_engine, chunknorris, sentence_transformers, torch; print(rag_engine.__version__, torch.__version__)"
       - name: Unit tests
         run: pytest -q
 
@@ -32,19 +31,15 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATA_ORCHESTRATOR_EMBEDDING_MODEL: sentence-transformers/paraphrase-albert-small-v2
+      # Any model but the default must declare its dimension (README, "Configuration").
+      DATA_ORCHESTRATOR_EMBEDDING_DIM: "768"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: MyOpenFund/eigenmind
-          # Pinned by commit: upstream rewrote its history on 2026-11-08; bump
-          # together with routing.MIME_EXTENSIONS (README "Testing").
-          ref: 6e9093a777d059aefac5340de51c2c77fc93dec7
-          path: eigenmind
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Cache the tiny embedding model
         uses: actions/cache@v4
         with:
@@ -52,7 +47,7 @@ jobs:
           key: hf-${{ env.DATA_ORCHESTRATOR_EMBEDDING_MODEL }}
       - name: Install
         run: |
-          pip install -e ./eigenmind
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
       - name: Integration tests (throwaway postgres + qdrant)
         run: pytest -m integration -q

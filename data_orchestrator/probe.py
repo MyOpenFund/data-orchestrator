@@ -43,7 +43,7 @@ def probe_file(path: Path) -> tuple[bool | None, int | None]:
         # Non-PDF RAG-ready artifacts (.md, .txt) are text by definition.
         return True, None
     try:
-        import fitz  # pymupdf, via the eigenmind dependency tree
+        import fitz  # pymupdf, a dependency of chunknorris (rag-engine[ingest])
 
         with fitz.open(path) as doc:
             page_count = doc.page_count

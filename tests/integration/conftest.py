@@ -14,6 +14,7 @@ import psycopg2
 import pytest
 
 TINY_MODEL = "sentence-transformers/paraphrase-albert-small-v2"  # 768-d, small
+TINY_MODEL_DIM = "768"  # any model but the default must declare its dimension
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -100,6 +101,7 @@ def _no_repo_dotenv(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATA_ORCHESTRATOR_DOTENV", str(empty))
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", TINY_MODEL)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_DIM", TINY_MODEL_DIM)
     monkeypatch.setattr(config, "_LOADED", False)
     monkeypatch.setattr(config, "_LOADED_PATH", None)
     yield
@@ -220,7 +222,7 @@ def insert_documents(pg_url, rows):
 
 def write_text_pdf(path):
     """A 2-page PDF with a real text layer (has_text_layer=True, page_count=2)."""
-    import fitz  # pymupdf, via the eigenmind dependency tree
+    import fitz  # pymupdf, a dependency of chunknorris (rag-engine[ingest])
 
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = fitz.open()

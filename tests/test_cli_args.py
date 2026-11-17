@@ -1,5 +1,4 @@
 """CLI argument-plumbing tests (no engine, no DB — parser-level behavior)."""
-from types import SimpleNamespace
 
 import pytest
 
@@ -744,22 +743,26 @@ def test_the_config_line_is_printed_for_every_source(capsys):
 
 
 # The Qdrant line comes from the CONSTRUCTED store (core.run_ingest's
-# on_target), i.e. after eigenmind's own python-dotenv ran: a count-only run
-# never touches Qdrant and prints no Qdrant line, for every source.
-def _fake_engine(monkeypatch, *, host="localhost", port=6333):
+# on_target): a count-only run never touches Qdrant and prints no Qdrant
+# line, for every source.
+def _fake_engine(monkeypatch, *, host="localhost", port=6333, store=None):
+    """Replace the two defaults of a run (core.build_store / build_embedder):
+    the engine's real store over a recording client, the engine's fake embedder.
+    Returns the list of settings the factories were called with."""
     import data_orchestrator.core as core
     from tests.test_core_engine import FakeEmbedder, FakeStore
 
-    def store():
-        s = FakeStore([])
-        s.host, s.port = host, port
+    built = []
+
+    def build_store(settings):
+        built.append(settings)
+        s = store if store is not None else FakeStore([])
+        s._host, s._port = host, port
         return s
 
-    monkeypatch.setattr(core, "QdrantStore", store)
-    monkeypatch.setattr(core, "EmbeddingModel", lambda **kw: SimpleNamespace(
-        dim=FakeEmbedder.dim, encode_passage=FakeEmbedder().encode_passage,
-        release=lambda: None))
-    monkeypatch.setattr(core, "detect_device", lambda: "cpu")
+    monkeypatch.setattr(core, "build_store", build_store)
+    monkeypatch.setattr(core, "build_embedder", lambda settings: FakeEmbedder())
+    return built
 
 
 def _cb_run(tmp_path, monkeypatch):
@@ -787,8 +790,8 @@ def test_vault_count_only_prints_no_qdrant_line(monkeypatch, tmp_path, capsys):
 
 
 def test_a_run_prints_the_target_of_the_constructed_store(tmp_path, monkeypatch, capsys):
-    """The env says one thing, the store another (eigenmind's loader may have
-    set keys ours did not): the line follows the store."""
+    """The env says one thing, the store another: the line follows the store
+    (what the run writes to), not a second reading of the environment."""
     monkeypatch.setenv("QDRANT_PORT", "1111")
     _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
     assert _cb_run(tmp_path, monkeypatch) == 0
@@ -799,7 +802,7 @@ def test_a_run_prints_the_target_of_the_constructed_store(tmp_path, monkeypatch,
 
 @pytest.mark.parametrize("port", [6333, "6333", "06333", " 6333 ", "", None])
 def test_the_legacy_qdrant_port_draws_a_warning(tmp_path, monkeypatch, capsys, port):
-    """eigenmind's default (6333, the LEGACY store) is compared numerically;
+    """The engine's default (6333, the LEGACY store) is compared numerically;
     an empty/absent port reads as the default."""
     _fake_engine(monkeypatch, port=port)
     assert _cb_run(tmp_path, monkeypatch) == 0
@@ -962,13 +965,268 @@ def test_qdrant_port_is_not_checked_when_qdrant_is_never_touched(monkeypatch, tm
     assert "QDRANT_PORT" not in capsys.readouterr().err
 
 
+def _last_report(tmp_path):
+    import json
+    lines = (tmp_path / "state" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    return json.loads(lines[-1])
+
+
 def test_a_refused_api_key_exits_1_with_the_reason(tmp_path, monkeypatch, capsys):
-    import data_orchestrator.core as core
     from tests.test_core_engine import _RefusingStore
 
-    _fake_engine(monkeypatch, host="qdrant.lan", port=6433)
-    monkeypatch.setattr(core, "QdrantStore", lambda: _RefusingStore([], 401))
+    _fake_engine(monkeypatch, host="qdrant.lan", port=6433, store=_RefusingStore([], 401))
     assert _cb_run(tmp_path, monkeypatch) == 1
     err = capsys.readouterr().err
     assert ("error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): "
             "check QDRANT_API_KEY") in err
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["exit_code"]) == ("failed", 1)
+    assert rep["fatal"] == ("QdrantAuthError: Qdrant refused the request (HTTP 401): "
+                            "check QDRANT_API_KEY")
+
+
+def _cb_corpus_with_documents(tmp_path, n):
+    """A cb_corpus root with ``n`` indexed one-page PDFs of bank ``us``."""
+    import json
+
+    import fitz
+    root = tmp_path / "cbc"
+    folder = root / "raw" / "us" / "C1" / "2015"
+    folder.mkdir(parents=True)
+    (root / "manifest").mkdir()
+    lines = []
+    for i in range(n):
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), f"Monetary policy note {i}. " * 30)
+        doc.save(folder / f"doc{i}.pdf")
+        doc.close()
+        lines.append(json.dumps({"doc_id": f"doc{i}", "date": "2015-01-01", "title": "t"}))
+    (root / "manifest" / "us.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return root
+
+
+def test_a_key_refused_in_the_middle_of_a_run_is_one_fatal_exit_1(tmp_path, monkeypatch, capsys):
+    """Backlog: a 401/403 on a write must not show as one failure per
+    remaining document (a "degraded" run): it is the run's one fatal."""
+    from tests.test_core_engine import _KeyRevokedStore
+
+    _fake_engine(monkeypatch, port=6433, store=_KeyRevokedStore([], good=1, status=401))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 4)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 1
+    err = capsys.readouterr().err
+    assert err.count("Qdrant refused the request (HTTP 401)") == 1
+    assert "error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401): " \
+           "check QDRANT_API_KEY (while writing document 'doc1'" in err
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["exit_code"]) == ("failed", 1)
+    assert rep["fatal"].startswith("QdrantAuthError: Qdrant refused the request (HTTP 401)")
+    # The file ledger holds the one document written before the refusal.
+    ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
+    assert ledger.count('"doc_id"') == 1 and '"doc_id": "doc0"' in ledger
+
+
+def test_a_collection_of_another_dimension_exits_1_and_says_what_to_do(
+        tmp_path, monkeypatch, capsys):
+    from tests.test_core_engine import FakeStore
+
+    store = FakeStore([])
+    store.client.sizes["central-bank-e5b-v1"] = 384
+    _fake_engine(monkeypatch, port=6433, store=store)
+    assert _cb_run(tmp_path, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert ("error: fatal: CollectionMismatchError: collection 'central-bank-e5b-v1': expected "
+            "a single unnamed 8-d vector with Cosine distance, found 384-d vectors: "
+            "use another --collection") in err
+    assert _last_report(tmp_path)["fatal"].endswith("use another --collection")
+
+
+# ---------------------------------------------------------------------------
+# Engine settings: read once, after the .env, before any work; an invalid one
+# is ONE operator error (exit 2), never a failure per document.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
+@pytest.mark.parametrize("key,value", [
+    ("RAG_ENGINE_BATCH_SIZE", "0"),
+    ("RAG_ENGINE_BATCH_SIZE", "many"),
+    ("RAG_ENGINE_OCR_LANGUAGES", "eng fra"),
+    ("RAG_ENGINE_QDRANT_TIMEOUT", "-1"),
+    ("RAG_ENGINE_BACKEND", "tensorflow"),
+    ("QDRANT_HTTPS", "maybe"),
+    ("DATA_ORCHESTRATOR_EMBEDDING_DIM", "big"),
+])
+def test_an_invalid_engine_setting_fails_an_ingest_run_before_any_work(
+        monkeypatch, capsys, argv, key, value):
+    monkeypatch.setenv(key, value)
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and key in err
+
+
+@pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
+def test_another_model_without_its_dimension_fails_before_any_work(monkeypatch, capsys, argv):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "org/another-model")
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "org/another-model" in err and "DATA_ORCHESTRATOR_EMBEDDING_DIM" in err
+
+
+@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["probe"],
+                                  ["company", "--count-only"]], ids=" ".join)
+def test_engine_settings_are_not_read_when_the_engine_is_never_used(
+        monkeypatch, tmp_path, capsys, argv, fake_company_corpus):
+    monkeypatch.setenv("RAG_ENGINE_BATCH_SIZE", "many")
+    _fake_vault(monkeypatch, tmp_path, [])
+    cli.main(argv)
+    assert "RAG_ENGINE_BATCH_SIZE" not in capsys.readouterr().err
+
+
+def test_a_run_hands_the_settings_it_validated_to_the_engine(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "org/another-model")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_DIM", "8")
+    monkeypatch.setenv("RAG_ENGINE_OCR_LANGUAGES", "eng+fra")
+    built = _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    (settings,) = built
+    assert (settings.model_name, settings.model_dim, settings.ocr_languages) == (
+        "org/another-model", 8, "eng+fra")
+    assert "'central-bank-another-model-v1'" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The OCR line: whether scanned pages will be read, said before the run. The
+# engine reads ENABLE_OCR / TESSDATA_PREFIX from the process environment at
+# each file; a silent "auto -> never" must be visible.
+# ---------------------------------------------------------------------------
+def _ocr_lines(capsys):
+    return [line for line in capsys.readouterr().out.splitlines() if line.startswith("OCR:")]
+
+
+def test_the_ocr_line_says_off_when_the_host_switches_are_not_set(tmp_path, monkeypatch, capsys):
+    _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert _ocr_lines(capsys) == ["OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)"]
+
+
+@pytest.mark.parametrize("env", [
+    {"ENABLE_OCR": "true"},                                # no language data
+    {"TESSDATA_PREFIX": "/usr/share/tessdata"},            # switch off
+    {"ENABLE_OCR": "false", "TESSDATA_PREFIX": "/usr/share/tessdata"},
+    {"ENABLE_OCR": "1", "TESSDATA_PREFIX": "/usr/share/tessdata"},  # only "true" turns it on
+])
+def test_the_ocr_line_says_off_when_one_switch_is_missing(tmp_path, monkeypatch, capsys, env):
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert _ocr_lines(capsys) == ["OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)"]
+
+
+def test_the_ocr_line_says_available_with_the_languages(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ENABLE_OCR", "True")
+    monkeypatch.setenv("TESSDATA_PREFIX", "/usr/share/tessdata")
+    _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert _ocr_lines(capsys) == ["OCR: available (languages: eng)"]
+
+
+def test_the_ocr_line_names_the_configured_languages(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ENABLE_OCR", "true")
+    monkeypatch.setenv("TESSDATA_PREFIX", "/usr/share/tessdata")
+    monkeypatch.setenv("RAG_ENGINE_OCR_LANGUAGES", "eng+fra")
+    _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    assert _ocr_lines(capsys) == ["OCR: available (languages: eng+fra)"]
+
+
+@pytest.mark.parametrize("mode, line", [
+    ("never", "OCR: off (--ocr never)"),
+    ("always", "OCR: forced (--ocr always, languages: eng)"),
+])
+def test_the_ocr_line_follows_an_explicit_mode(tmp_path, monkeypatch, capsys, mode, line):
+    monkeypatch.setenv("ENABLE_OCR", "true")
+    monkeypatch.setenv("TESSDATA_PREFIX", "/usr/share/tessdata")
+    _fake_engine(monkeypatch, port=6433)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    assert cli.main(["cb_corpus", "--no-vault", "--ocr", mode,
+                     "--root", str(_minimal_cb_corpus(tmp_path))]) == 0
+    assert _ocr_lines(capsys) == [line]
+
+
+def test_vault_run_prints_the_ocr_line_before_ingesting(monkeypatch, tmp_path, capsys):
+    import data_orchestrator.core as core
+    _fake_vault(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cli, "run_ingest", core.run_ingest)  # the real loop
+    _fake_engine(monkeypatch, port=6433)
+    assert cli.main(["vault"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    line = "OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)"
+    assert out.index(line) < out.index("Done.")
+
+
+@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["company", "--count-only"]],
+                         ids=" ".join)
+def test_a_count_only_run_prints_no_ocr_line(monkeypatch, tmp_path, capsys, argv,
+                                             fake_company_corpus):
+    _fake_vault(monkeypatch, tmp_path, [])
+    assert cli.main(argv) == 0
+    assert "OCR:" not in capsys.readouterr().out
+
+
+
+# ---------------------------------------------------------------------------
+# Logging: the engine is a library and configures none. The CLI sends its
+# records (and this package's) to stderr, as the engine fork used to do as a
+# side effect of being imported.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def bare_root_logger():
+    """The root logger, restored afterwards. pytest installs its own handlers
+    on it for the duration of the test call, so the test body empties
+    ``handlers`` itself before configuring (basicConfig keeps existing ones)."""
+    import logging
+    root = logging.getLogger()
+    saved = (root.handlers[:], root.level,
+             {name: logging.getLogger(name).level for name in cli._NOISY_LOGGERS})
+    root.handlers[:] = []
+    try:
+        yield root
+    finally:
+        for handler in root.handlers:
+            handler.close()
+        root.handlers[:] = saved[0]
+        root.setLevel(saved[1])
+        for name, level in saved[2].items():
+            logging.getLogger(name).setLevel(level)
+
+
+def test_logging_goes_to_stderr_at_info_by_default(bare_root_logger, capsys):
+    import logging
+    bare_root_logger.handlers.clear()
+    cli._setup_logging({})
+    logging.getLogger("rag_engine.store").info("Creating Qdrant collection %r", "c")
+    logging.getLogger("rag_engine.store").debug("not shown")
+    logging.getLogger("httpx").info("HTTP Request: not shown")
+    err = capsys.readouterr().err
+    assert "INFO      rag_engine.store  Creating Qdrant collection 'c'" in err
+    assert "not shown" not in err
+
+
+@pytest.mark.parametrize("raw, shown", [("warning", False), (" DEBUG ", True), ("", True)])
+def test_the_log_level_comes_from_the_environment(bare_root_logger, capsys, raw, shown):
+    import logging
+    bare_root_logger.handlers.clear()
+    cli._setup_logging({"DATA_ORCHESTRATOR_LOG_LEVEL": raw})
+    logging.getLogger("rag_engine.embedding").info("Loading embedding model")
+    assert ("Loading embedding model" in capsys.readouterr().err) is shown
+
+
+@pytest.mark.parametrize("argv", _ALL_SOURCE_ARGVS, ids=" ".join)
+def test_an_unknown_log_level_fails_before_any_work(monkeypatch, capsys, argv):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_LOG_LEVEL", "verbose")
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "DATA_ORCHESTRATOR_LOG_LEVEL" in err

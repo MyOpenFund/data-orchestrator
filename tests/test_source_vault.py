@@ -221,3 +221,68 @@ def test_count_unsupported_folds_null_source_code_into_the_corpus():
     assert count_unsupported(conn, "central-bank", "c",
                              supported_mimes=("application/pdf",)) == {
         "ecb": 3, "central-bank": 3, "us": 1}
+
+
+# ---------------------------------------------------------------------------
+# Reserved payload keys: ``extra`` is free-form; a key the engine writes itself
+# is left out and reported on the item (the engine would refuse the document).
+# ---------------------------------------------------------------------------
+def test_row_to_item_drops_the_engine_s_keys_from_extra_and_reports_them(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    extra = {"filename": "old.pdf", "text": "stale", "page": 4, "chunk_number": 2,
+             "ingestion_date": "2020-01-01", "cik": "0001"}
+    item = row_to_item(_row(extra=extra), "central-bank")
+    assert sorted(item.dropped_keys) == ["chunk_number", "filename", "ingestion_date",
+                                         "page", "text"]
+    assert not set(item.dropped_keys) & set(item.payload)
+    assert item.payload["cik"] == "0001"  # the rest of the extra is kept
+    assert "filename" in extra            # the row is not changed
+
+
+def test_row_to_item_reports_nothing_for_a_clean_extra(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    assert row_to_item(_row(), "central-bank").dropped_keys == ()
+    assert row_to_item(_row(extra=None), "central-bank").dropped_keys == ()
+
+
+def test_row_to_item_never_drops_a_vault_column(monkeypatch, tmp_path):
+    """The columns are the vault's own: all of them reach the payload, and the
+    ``doc_id`` is always the row's (an ``extra`` that repeats a column loses,
+    as before — that is the column rule, not a dropped key)."""
+    from data_orchestrator.sources.vault import _PAYLOAD_COLUMNS
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(extra={"doc_id": "someone-else", "year": 1900, "text": "x"}),
+                       "central-bank")
+    assert set(_PAYLOAD_COLUMNS) <= set(item.payload)
+    assert item.payload["doc_id"] == item.doc_id == "d1" and item.payload["year"] == 2015
+    assert item.dropped_keys == ("text",)
+
+
+def test_no_vault_column_is_a_key_the_engine_refuses():
+    from rag_engine.schema import RESERVED_KEYS
+
+    from data_orchestrator.sources.vault import _PAYLOAD_COLUMNS
+
+    assert set(_PAYLOAD_COLUMNS) & set(RESERVED_KEYS) == {"doc_id"}
+
+
+def test_a_vault_item_with_a_dirty_extra_is_ingested_not_failed(monkeypatch, tmp_path):
+    """End to end through the engine: the stray keys cannot fail the document,
+    the engine's own values are written, and the run counts what was dropped."""
+    from data_orchestrator.core import run_ingest
+    from tests.test_core_engine import FakeEmbedder, FakeStore, _md_item
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    (tmp_path / "raw").mkdir()
+    path = _md_item(tmp_path / "raw", doc_id="d1").path
+    item = row_to_item(_row(local_path="data/raw/d1.md",
+                            extra={"filename": "old.pdf", "page": 4, "cik": "0001"}),
+                       "central-bank")
+    assert item.path == path
+    store = FakeStore([])
+    stats = run_ingest([item], collection="c", store=store, embedder=FakeEmbedder())
+    assert (stats.docs_ingested, stats.docs_error) == (1, 0)
+    assert stats.payload_keys_dropped == {"filename": 1, "page": 1}
+    payload = store.client.points[0].payload
+    assert payload["filename"] == "d1.md" and "page" not in payload and payload["cik"] == "0001"

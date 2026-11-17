@@ -1,4 +1,4 @@
-"""End-to-end, disk source: disk-provided items -> eigenmind engine -> Qdrant + vault."""
+"""End-to-end, disk source: disk-provided items -> rag-engine -> Qdrant + vault."""
 import psycopg2
 import pytest
 from qdrant_client import QdrantClient
@@ -22,7 +22,7 @@ def _items(corpus_dir):
 
 
 def _run(pg_url, qdrant_addr, corpus_dir, items=None):
-    from eigenmind.vectordb.store import QdrantStore
+    from rag_engine.store import QdrantStore
 
     conn = psycopg2.connect(pg_url)
     try:

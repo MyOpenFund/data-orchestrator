@@ -1,7 +1,7 @@
 """data_orchestrator CLI.
 
 Installed as the ``data-orchestrator`` console script. Standalone repo that
-drives the eigenmind engine (a separate editable install, see ``README.md``)::
+drives the rag-engine library (a dependency, see ``README.md``)::
 
     data-orchestrator vault --corpus central-bank
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -42,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, policy
-from .core import Ledger, SourceItem, run_ingest, IngestStats, source_label
+from .core import Ledger, SourceItem, run_ingest, IngestStats, engine_settings, source_label
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
@@ -145,6 +146,15 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
         print(f"  first errors   :")
         for path, msg in stats.errors[:10]:
             print(f"    - {path}: {msg}")
+    if stats.payload_keys_dropped:
+        dropped = ", ".join(f"{key} x{n}" for key, n in sorted(stats.payload_keys_dropped.items()))
+        print(
+            f"warning: {sum(stats.payload_keys_dropped.values())} metadata key(s) reserved "
+            f"for the engine were left out of the payloads ({dropped}): the engine "
+            "writes these keys itself. Remove them from the source metadata "
+            "(the vault's documents.extra).",
+            file=sys.stderr,
+        )
     if stats.docs_path_metadata:
         print(
             f"warning: {stats.docs_path_metadata} document(s) were not indexed in the "
@@ -177,6 +187,11 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
         "docs_failed": stats.docs_error,
         "docs_path_metadata": stats.docs_path_metadata,
     }
+    # Reserved payload keys the sources left out of free-form metadata
+    # (core.split_reserved_keys). Written only when there are some, so the
+    # report of a clean run keeps the shape it always had.
+    if stats.payload_keys_dropped:
+        totals["payload_keys_dropped"] = sum(stats.payload_keys_dropped.values())
     # sources[] lists only the source codes the run touched (stats.by_source):
     # a source with only unsupported documents is not a source the run
     # worked on, so it never appears there (it would read as a run of that
@@ -256,7 +271,7 @@ def _append_report_jsonl(report: dict) -> None:
         fh.write(json.dumps(report) + "\n")
 
 
-# eigenmind's own defaults (eigenmind/config.py qdrant_host/qdrant_port),
+# The engine's own defaults (rag_engine.config.Settings qdrant_host/qdrant_port),
 # used only to display a store that reports no host/port. 6333 is the LEGACY
 # store.
 QDRANT_DEFAULT_HOST = "localhost"
@@ -267,20 +282,19 @@ QDRANT_API_KEY_ENV = "QDRANT_API_KEY"
 
 def _api_key_state(environ=None) -> str:
     """``"set"`` when ``QDRANT_API_KEY`` is non-blank, else ``"unset"``; the
-    value itself is never returned. Read at ``on_target`` time, i.e. after the
-    store was constructed: eigenmind resolved its key from this same variable
-    (its own python-dotenv ran at first import), and this repo never passes an
-    explicit key, so the state matches the store's."""
+    value itself is never returned. The engine resolves its key from this same
+    variable (``Settings.from_env``, same blank-is-unset rule) and this repo
+    never passes an explicit key, so the state matches the store's."""
     environ = os.environ if environ is None else environ
     return "set" if (environ.get(QDRANT_API_KEY_ENV) or "").strip() else "unset"
 
 
 def _print_qdrant_target(host, port) -> None:
     """``run_ingest``'s ``on_target``: print the Qdrant the constructed store
-    writes to — resolved by eigenmind AFTER its own python-dotenv ran, so the
-    line is right even when that loader set QDRANT_HOST/QDRANT_PORT — and
+    writes to — what the store resolved, not a second reading of the
+    environment — and
     whether an API key is set (never its value), and warn on the legacy port.
-    A store that reports no host or port is displayed with eigenmind's default
+    A store that reports no host or port is displayed with the engine's default
     (an invalid or empty ``QDRANT_PORT`` in the environment never gets here:
     ``_qdrant_port_error`` refuses it before any work); the port is compared
     numerically (``06333`` is 6333)."""
@@ -293,7 +307,7 @@ def _print_qdrant_target(host, port) -> None:
         port = raw  # displayed as is; cannot be the legacy port
     print(f"Qdrant: {host}:{port} (api key: {_api_key_state()})", flush=True)
     if port == QDRANT_DEFAULT_PORT:
-        print(f"warning: Qdrant port {port} is the legacy store (eigenmind's default); "
+        print(f"warning: Qdrant port {port} is the legacy store (the engine's default); "
               "set QDRANT_PORT to the dedicated one unless this is intended",
               file=sys.stderr)
 
@@ -306,7 +320,7 @@ def _qdrant_port_error(environ=None) -> str | None:
     set but is not a plain integer in 1..65535 (surrounding whitespace
     ignored; empty is invalid, ``.env`` values are literal so an inline
     ``# comment`` is part of the value), else ``None``. Absent is fine
-    (eigenmind's default, warned about by ``_print_qdrant_target``)."""
+    (the engine's default, warned about by ``_print_qdrant_target``)."""
     environ = os.environ if environ is None else environ
     raw = environ.get(QDRANT_PORT_ENV)
     if raw is None:
@@ -315,7 +329,61 @@ def _qdrant_port_error(environ=None) -> str | None:
     if text.isascii() and text.isdigit() and 1 <= int(text) <= 65535:
         return None
     return (f"{QDRANT_PORT_ENV}={raw!r} is not a port number (expected a plain "
-            "integer 1..65535; unset it to use eigenmind's default)")
+            "integer 1..65535; unset it to use the engine's default)")
+
+
+LOG_LEVEL_ENV = "DATA_ORCHESTRATOR_LOG_LEVEL"
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+# Libraries that log every HTTP request or file lock at INFO.
+_NOISY_LOGGERS = ("transformers", "sentence_transformers", "huggingface_hub", "urllib3",
+                  "httpx", "httpcore", "filelock")
+
+
+def _setup_logging(environ=None) -> None:
+    """Send the log records of this package and of the engine to stderr.
+
+    The engine, like any library, configures no logging: without this its
+    INFO lines (model loaded, collection created) would be lost and its
+    warnings printed bare. Level: ``DATA_ORCHESTRATOR_LOG_LEVEL`` (default
+    ``INFO``); raises ``ValueError`` on a name that is not a logging level.
+    Does nothing to handlers a host process already installed.
+    """
+    environ = os.environ if environ is None else environ
+    raw = (environ.get(LOG_LEVEL_ENV) or "").strip()
+    level = raw.upper() or DEFAULT_LOG_LEVEL
+    if level not in LOG_LEVELS:
+        raise ValueError(f"{LOG_LEVEL_ENV}={raw!r} is not a log level "
+                         f"(one of {', '.join(LOG_LEVELS)})")
+    logging.basicConfig(
+        level=getattr(logging, level),
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    for noisy in _NOISY_LOGGERS:
+        logging.getLogger(noisy).setLevel(max(logging.WARNING, getattr(logging, level)))
+
+
+def _print_ocr_state(settings, ocr: str) -> None:
+    """Say, before a run, whether scanned pages will be read by OCR.
+
+    ``--ocr auto`` depends on the host: the engine runs OCR only when
+    ``ENABLE_OCR`` is ``true`` and ``TESSDATA_PREFIX`` is set, both read from
+    the process environment each time a file is chunked — so they must be in
+    this repo's ``.env`` (or the real environment). A silent "auto -> never"
+    is what this line is for. The languages are ``RAG_ENGINE_OCR_LANGUAGES``.
+    """
+    from rag_engine.chunking import ocr_available
+
+    languages = f"languages: {settings.ocr_languages}"
+    if ocr == "never":
+        print("OCR: off (--ocr never)", flush=True)
+    elif ocr == "always":
+        print(f"OCR: forced (--ocr always, {languages})", flush=True)
+    elif ocr_available():
+        print(f"OCR: available ({languages})", flush=True)
+    else:
+        print("OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)", flush=True)
 
 
 def _validate_corpus_root(corpus: str) -> int | None:
@@ -385,9 +453,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
-    # The one .env loader (issue #8), run before anything can import eigenmind:
-    # eigenmind's own python-dotenv (override=False) runs at its first import
-    # and can then only add keys this file did not set. No $VAR interpolation
+    # The one .env loader (issue #8), run before anything reads the
+    # environment: the engine loads no .env of its own, it reads the process
+    # environment when asked (its settings below; ENABLE_OCR / TESSDATA_PREFIX
+    # each time a file is chunked). No $VAR interpolation
     # here — values are taken literally, surrounding quotes stripped.
     # DATA_ORCHESTRATOR_DOTENV (real environment only) names the file
     # explicitly; a missing one is an operator error, before any work.
@@ -409,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     # Run policy, read once from the (now loaded) environment: an invalid
     # value is an operator error (exit 2), caught before any DB/engine work.
     try:
+        _setup_logging()
         args.degraded_ratio = policy.degraded_failure_ratio()
         args.supported_mimes = supported_mime_types()
     except ValueError as exc:
@@ -431,6 +501,15 @@ def main(argv: list[str] | None = None) -> int:
         port_error = _qdrant_port_error()
         if port_error is not None:
             print(f"error: {port_error}", file=sys.stderr)
+            return 2
+        # The engine's settings (model and dimension, batch size, OCR
+        # languages, Qdrant timeout, ...), read once from the loaded
+        # environment: an invalid value is one operator error here, not a
+        # failure per document later.
+        try:
+            args.engine_settings = engine_settings()
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
             return 2
 
     # Each disk source implies its own vault corpus; an explicit --corpus
@@ -563,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"→ Ingesting source '{args.source}' into collection '{collection}' "
               f"(ocr={args.ocr}, limit={args.limit})")
+        _print_ocr_state(args.engine_settings, args.ocr)
         t0 = time.time()
         stats = run_ingest(
             items,
@@ -572,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             on_progress=_make_progress(args.progress_every),
             on_target=_print_qdrant_target,
+            settings=args.engine_settings,
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
@@ -680,10 +761,11 @@ def _run_vault_source(args, collection: str) -> int:
         items = vault_source.iter_items(conn, args.corpus, collection, **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
               f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
+        _print_ocr_state(args.engine_settings, args.ocr)
         stats = run_ingest(
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
-            on_target=_print_qdrant_target,
+            on_target=_print_qdrant_target, settings=args.engine_settings,
         )
         _print_summary(stats)
 
