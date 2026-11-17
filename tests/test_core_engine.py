@@ -779,6 +779,46 @@ def test_a_key_refused_in_the_middle_of_a_run_is_one_fatal_not_one_error_per_doc
     assert [m[0] for m in ledger.marks] == ["doc0"]
 
 
+def test_a_fatal_in_the_middle_of_a_run_carries_the_statistics_so_far(tmp_path):
+    """The run report of a fatal run is built from these: what was really
+    done before the failure, not zeros."""
+    items = [_md_item(tmp_path, doc_id=f"doc{i}") for i in range(4)]
+    store = _KeyRevokedStore([], good=2, status=401)
+    with pytest.raises(QdrantAuthError) as info:
+        run_ingest(items, collection="c", ledger=RecordingLedger([]), store=store,
+                   embedder=FakeEmbedder())
+    stats = info.value.ingest_stats
+    # doc0, doc1 ingested; doc2 was being written (seen, neither new nor failed).
+    assert (stats.docs_seen, stats.docs_ingested, stats.docs_error, stats.docs_empty) == (3, 2, 0, 0)
+    assert stats.chunks_written == len(store.client.points) > 0
+    assert stats.by_source == {"us": {"docs_seen": 3, "docs_new": 2, "docs_failed": 0}}
+    assert stats.errors == []
+
+
+def test_a_source_that_fails_in_the_middle_of_a_run_carries_the_statistics_so_far(tmp_path):
+    """Any exception that ends the run, not only a refused key: here the
+    source itself (a failing selection query, an unreadable folder)."""
+    def items():
+        yield _md_item(tmp_path, doc_id="doc0")
+        yield SourceItem(doc_id="gone", path=tmp_path / "gone.md", payload={"bank_code": "fr"})
+        raise OSError("corpus folder went away")
+
+    with pytest.raises(OSError, match="corpus folder went away") as info:
+        run_ingest(items(), collection="c", store=FakeStore([]), embedder=FakeEmbedder())
+    stats = info.value.ingest_stats
+    assert (stats.docs_seen, stats.docs_ingested, stats.docs_error) == (2, 1, 1)
+    assert stats.by_source == {"us": {"docs_seen": 1, "docs_new": 1, "docs_failed": 0},
+                               "fr": {"docs_seen": 1, "docs_new": 0, "docs_failed": 1}}
+
+
+def test_a_fatal_before_any_document_carries_empty_statistics(tmp_path):
+    with pytest.raises(QdrantAuthError) as info:
+        run_ingest([_md_item(tmp_path)], collection="c", store=_RefusingStore([], 401),
+                   embedder=FakeEmbedder())
+    stats = info.value.ingest_stats
+    assert (stats.docs_seen, stats.by_source) == (0, {})
+
+
 def test_another_http_error_in_the_middle_of_a_run_stays_a_per_document_error(tmp_path):
     log = []
     ledger = RecordingLedger(log)

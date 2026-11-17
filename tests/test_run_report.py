@@ -427,6 +427,20 @@ def test_fatal_report_keeps_the_known_split_without_unsupported_only_sources():
     assert rep["unsupported_by_source"] == {"ecb": 4, "fr": 1}
 
 
+def test_fatal_report_is_built_from_the_statistics_of_the_interrupted_run():
+    from data_orchestrator.cli import _fatal_report
+    s = _stats(docs_seen=3, docs_ingested=2, docs_error=1,
+               by_source={"us": {"docs_seen": 3, "docs_new": 2, "docs_failed": 1}})
+    rep = _fatal_report("vault", "t", RuntimeError("x"), corpus="central-bank",
+                        unsupported={"us": 4}, stats=s)
+    assert rep["totals"] == {"docs_seen": 3, "docs_new": 2, "docs_failed": 1,
+                             "docs_path_metadata": 0, "docs_unsupported": 4}
+    assert rep["sources"] == [{"source_code": "us", "docs_seen": 3, "docs_new": 2,
+                               "docs_failed": 1, "docs_unsupported": 4}]
+    # Whatever the counts would have made of the run, a fatal is failed/1.
+    assert (rep["outcome"], rep["exit_code"], rep["fatal"]) == ("failed", 1, "RuntimeError: x")
+
+
 def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, capsys,
                                                       fake_company_corpus):
     """Same warning as the success path: a report that cannot be appended is

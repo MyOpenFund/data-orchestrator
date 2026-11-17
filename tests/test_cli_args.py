@@ -343,6 +343,8 @@ class _DispatchCursor:
             self._rows = []                       # resume ledger: nothing done yet
         elif "GROUP BY d.source_code" in sql:
             self._rows = list(self._conn.unsupported)
+        elif "INSERT INTO rag_ingestions" in sql:
+            self._conn.ingestions.append(params)   # VaultLedger.mark
         elif "INSERT INTO runs" in sql:
             if self._conn.insert_error is not None:
                 raise self._conn.insert_error
@@ -368,6 +370,7 @@ class _DispatchConn:
         self.executed: list = []
         self.selection_params = None
         self.inserted: list = []      # INSERT INTO runs params (real insert_run_report)
+        self.ingestions: list = []    # INSERT INTO rag_ingestions params (VaultLedger.mark)
         self.insert_error = None      # raised by every INSERT INTO runs when set
         self.aborted = False          # a failed statement poisons the transaction
         self.rollbacks = 0
@@ -1024,6 +1027,86 @@ def test_a_key_refused_in_the_middle_of_a_run_is_one_fatal_exit_1(tmp_path, monk
     # The file ledger holds the one document written before the refusal.
     ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
     assert ledger.count('"doc_id"') == 1 and '"doc_id": "doc0"' in ledger
+
+
+def test_a_fatal_in_the_middle_of_a_disk_run_reports_what_was_done_before_it(
+        tmp_path, monkeypatch, capsys):
+    """The report of a run stopped by a refused key says what the ledger
+    says: the documents ingested before the refusal, not zeros."""
+    from tests.test_core_engine import _KeyRevokedStore
+
+    _fake_engine(monkeypatch, port=6433, store=_KeyRevokedStore([], good=2, status=401))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 5)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 1
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["exit_code"]) == ("failed", 1)
+    assert rep["fatal"].startswith("QdrantAuthError: Qdrant refused the request (HTTP 401)")
+    # doc0, doc1 ingested; doc2 was being written; doc3, doc4 never reached.
+    assert rep["totals"] == {"docs_seen": 3, "docs_new": 2, "docs_failed": 0,
+                             "docs_path_metadata": 0}
+    assert rep["sources"] == [{"source_code": "us", "docs_seen": 3, "docs_new": 2,
+                               "docs_failed": 0}]
+    ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
+    assert ledger.count('"doc_id"') == rep["totals"]["docs_new"]
+    # The usual summary, then the fatal line.
+    cap = capsys.readouterr()
+    out = cap.out.splitlines()
+    assert "Done." in out
+    assert "  docs seen      : 3" in out and "  docs ingested  : 2" in out
+    assert any(line.startswith("  time           : ") for line in out)
+    assert cap.err.rstrip().splitlines()[-1].startswith(
+        "error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 401)")
+
+
+def test_a_fatal_in_the_middle_of_a_vault_run_reports_what_was_done_before_it(
+        monkeypatch, tmp_path, capsys):
+    import data_orchestrator.core as core
+    from tests.test_core_engine import _KeyRevokedStore, _md_item
+
+    for doc_id in ("d0", "d1", "d2", "d3"):
+        _md_item(tmp_path, doc_id=doc_id)  # writes <doc_id>.md
+    conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [("ecb", 2), ("boj", 1)],
+        selection_rows=[("d0", "ecb", "d0.md"), ("d1", "fr", "d1.md"),
+                        ("d2", "ecb", "d2.md"), ("d3", "fr", "d3.md")],
+        selection_columns=("doc_id", "source_code", "local_path"),
+    )
+    monkeypatch.setattr(cli, "run_ingest", core.run_ingest)  # the real loop
+    _fake_engine(monkeypatch, port=6433, store=_KeyRevokedStore([], good=2, status=403))
+    assert cli.main(["vault"]) == 1
+    (rep,) = reports
+    assert (rep["outcome"], rep["exit_code"]) == ("failed", 1)
+    assert rep["fatal"].startswith("QdrantAuthError: Qdrant refused the request (HTTP 403)")
+    assert "while writing document 'd2', after 2 document(s) ingested" in rep["fatal"]
+    assert rep["totals"] == {"docs_seen": 3, "docs_new": 2, "docs_failed": 0,
+                             "docs_path_metadata": 0, "docs_unsupported": 3}
+    assert rep["sources"] == [
+        {"source_code": "ecb", "docs_seen": 2, "docs_new": 1, "docs_failed": 0,
+         "docs_unsupported": 2},
+        {"source_code": "fr", "docs_seen": 1, "docs_new": 1, "docs_failed": 0,
+         "docs_unsupported": 0},
+    ]
+    assert rep["unsupported_by_source"] == {"boj": 1, "ecb": 2}
+    # rag_ingestions holds exactly the documents the report counts as new.
+    assert [params[0] for params in conn.ingestions] == ["d0", "d1"]
+    cap = capsys.readouterr()
+    out = cap.out.splitlines()
+    assert "Done." in out
+    assert "  docs seen      : 3" in out and "  docs ingested  : 2" in out
+    assert cap.err.rstrip().splitlines()[-1].startswith(
+        "error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 403)")
+    assert conn.closed
+
+
+def test_a_fatal_before_any_document_prints_no_summary(tmp_path, monkeypatch, capsys):
+    from tests.test_core_engine import _RefusingStore
+
+    _fake_engine(monkeypatch, port=6433, store=_RefusingStore([], 401))
+    assert _cb_run(tmp_path, monkeypatch) == 1
+    assert "Done." not in capsys.readouterr().out
+    rep = _last_report(tmp_path)
+    assert rep["totals"]["docs_seen"] == 0 and rep["sources"] == []
 
 
 def test_a_collection_of_another_dimension_exits_1_and_says_what_to_do(

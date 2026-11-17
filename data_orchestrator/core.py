@@ -269,6 +269,24 @@ def _bump(stats: IngestStats, item: SourceItem, *, new: int = 0, failed: int = 0
 # ---------------------------------------------------------------------------
 # Ingestion
 # ---------------------------------------------------------------------------
+def _attach_stats(exc: BaseException, stats: IngestStats) -> None:
+    """Hang the statistics of an interrupted run on the exception that ends it
+    (``exc.ingest_stats``), for the caller's report. An exception type that
+    takes no attribute is left as it is: never mask the failure itself."""
+    try:
+        exc.ingest_stats = stats
+    except Exception:  # noqa: BLE001 — e.g. a class with __slots__
+        pass
+
+
+def interrupted_stats(exc: BaseException) -> IngestStats | None:
+    """The statistics :func:`run_ingest` accumulated before ``exc`` ended it,
+    or ``None`` when ``exc`` did not come out of a run (a failure before it
+    started, e.g. a vault that cannot be reached)."""
+    stats = getattr(exc, "ingest_stats", None)
+    return stats if isinstance(stats, IngestStats) else None
+
+
 def ingest_item(
     item: SourceItem,
     collection: str,
@@ -333,6 +351,13 @@ def run_ingest(
     documents recorded so far stay recorded, the one being written is not
     (the next run writes it again, over the same point ids).
 
+    An exception raised from the collection check onwards carries the
+    statistics accumulated so far as ``exc.ingest_stats`` (an
+    :class:`IngestStats`; all zeros before the first document), so a caller
+    can report what was done before the failure (:func:`interrupted_stats`).
+    The document being written when a key is refused is counted as seen,
+    neither ingested nor failed.
+
     ``on_target(host, port)`` is called once, right after the store is
     constructed and before any collection work, with the store's ``host`` and
     ``port`` attributes (``None`` when it has none): the Qdrant the run really
@@ -393,6 +418,7 @@ def run_ingest(
                     f"{exc} (while writing document {item.doc_id!r}, after "
                     f"{stats.docs_ingested} document(s) ingested in this run)")
                 fatal.points_written = getattr(exc, "points_written", 0)
+                _bump(stats, item)  # seen; neither new nor failed
                 raise fatal from exc
             except Exception as exc:  # noqa: BLE001 — isolate one bad document
                 stats.docs_error += 1
@@ -417,6 +443,9 @@ def run_ingest(
 
             if limit is not None and stats.docs_ingested >= limit:
                 break
+    except Exception as exc:
+        _attach_stats(exc, stats)
+        raise
     finally:
         if owns_embedder:
             embedder.release()

@@ -43,7 +43,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, policy
-from .core import Ledger, SourceItem, run_ingest, IngestStats, engine_settings, source_label
+from .core import (
+    Ledger, SourceItem, run_ingest, IngestStats, engine_settings, interrupted_stats, source_label,
+)
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
@@ -171,7 +173,7 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
 #
 # The ok/degraded rule (incl. the failure-ratio threshold) lives in
 # ``policy.py``; a fatal exception is reported separately as failed/exit 1
-# (_fatal_report).
+# (_fatal_report), with the counts of what was done before it.
 # ---------------------------------------------------------------------------
 
 # Same cap as central-bank-corpus runreport.py (the other writer of runs.extra->>'fatal').
@@ -226,25 +228,38 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
 
 
 def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str,
-                  unsupported: dict[str, int] | None = None) -> dict:
+                  unsupported: dict[str, int] | None = None,
+                  stats: IngestStats | None = None) -> dict:
     """Best-effort report for a run that never reached a normal outcome.
 
     The reason goes under ``fatal`` (runs.extra->>'fatal'), the key
     central-bank-corpus already writes; it was ``error`` before 2026-11.
-    ``unsupported`` (the vault source's per-source count, when it was
-    computed before the failure) is passed through so a known
-    ``docs_unsupported`` and ``unsupported_by_source`` are not lost;
-    ``sources[]`` stays empty (the run touched no source).
+    ``stats`` are the statistics of a run interrupted in the middle
+    (``core.interrupted_stats``): the totals and ``sources[]`` then say what
+    was done before the failure, as ``rag_ingestions`` does. Without them
+    (a failure before the run started) the totals are zeros and ``sources[]``
+    is empty. ``unsupported`` (the vault source's per-source count, when it
+    was computed before the failure) is passed through so a known
+    ``docs_unsupported`` and ``unsupported_by_source`` are not lost.
     """
     # The ratio is irrelevant to a fatal outcome (overwritten below); the
     # default is stated explicitly since _build_report has no default.
-    rep = _build_report(command, IngestStats(), started_at, corpus=corpus,
+    rep = _build_report(command, stats if stats is not None else IngestStats(), started_at,
+                        corpus=corpus,
                         ratio=policy.DEFAULT_DEGRADED_FAILURE_RATIO,
                         unsupported=unsupported)
     rep["outcome"] = "failed"
     rep["exit_code"] = 1
     rep["fatal"] = f"{type(exc).__name__}: {exc}"[:FATAL_MAX_CHARS]
     return rep
+
+
+def _print_interrupted_summary(stats: IngestStats | None, elapsed: float | None = None) -> None:
+    """The usual summary for a run a fatal error stopped after its first
+    document (the fatal line follows, printed by the caller). Nothing for a
+    run that saw no document."""
+    if stats is not None and stats.docs_seen:
+        _print_summary(stats, elapsed)
 
 
 def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
@@ -620,6 +635,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ledger = None
     vault_conn = None
+    t0 = None  # set when the engine run starts
     started_at = datetime.now(timezone.utc).isoformat()
     try:
         if not args.no_resume:
@@ -688,7 +704,9 @@ def main(argv: list[str] | None = None) -> int:
                     report_conn.close()
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus)
+        stats = interrupted_stats(exc)
+        _print_interrupted_summary(stats, None if t0 is None else time.time() - t0)
+        rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus, stats=stats)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -777,8 +795,10 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
+        stats = interrupted_stats(exc)
+        _print_interrupted_summary(stats)
         rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
-                            unsupported=unsupported)
+                            unsupported=unsupported, stats=stats)
         if conn is not None:
             _insert_fatal_report(vault_mod, conn, rep)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
