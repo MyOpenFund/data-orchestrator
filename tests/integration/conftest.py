@@ -16,6 +16,10 @@ import pytest
 TINY_MODEL = "sentence-transformers/paraphrase-albert-small-v2"  # 768-d, small
 TINY_MODEL_DIM = "768"  # any model but the default must declare its dimension
 
+# The Qdrant the suite runs against: the version production runs, pinned so a
+# new server release cannot change what these tests say (README, "Testing").
+QDRANT_IMAGE = "qdrant/qdrant:v1.20.0"
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
     id SERIAL PRIMARY KEY,
@@ -137,7 +141,7 @@ def qdrant_addr():
     name = f"data-orchestrator-it-qd-{uuid.uuid4().hex[:8]}"
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name,
-         "-p", "127.0.0.1:0:6333", "qdrant/qdrant"],
+         "-p", "127.0.0.1:0:6333", QDRANT_IMAGE],
         check=True, capture_output=True, timeout=300,
     )
     try:
@@ -165,7 +169,7 @@ def qdrant_keyed_addr():
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name,
          "-e", f"QDRANT__SERVICE__API_KEY={IT_QDRANT_KEY}",
-         "-p", "127.0.0.1:0:6333", "qdrant/qdrant"],
+         "-p", "127.0.0.1:0:6333", QDRANT_IMAGE],
         check=True, capture_output=True, timeout=300,
     )
     try:
