@@ -132,9 +132,16 @@ def _make_progress(every: int):
     return on_progress
 
 
-def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
+# First line of the summary: a run that reached its end, and a run a fatal
+# error stopped (the counts that follow are then what was done before it).
+SUMMARY_DONE = "Done."
+SUMMARY_INTERRUPTED = "Interrupted by a fatal error. Before it:"
+
+
+def _print_summary(stats: IngestStats, elapsed: float | None = None, *,
+                   interrupted: bool = False) -> None:
     print("─" * 60)
-    print("Done.")
+    print(SUMMARY_INTERRUPTED if interrupted else SUMMARY_DONE)
     print(f"  docs seen      : {stats.docs_seen}")
     print(f"  docs ingested  : {stats.docs_ingested}")
     print(f"  skipped(resume): {stats.docs_skipped_resume}")
@@ -255,11 +262,20 @@ def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str,
 
 
 def _print_interrupted_summary(stats: IngestStats | None, elapsed: float | None = None) -> None:
-    """The usual summary for a run a fatal error stopped after its first
-    document (the fatal line follows, printed by the caller). Nothing for a
-    run that saw no document."""
-    if stats is not None and stats.docs_seen:
-        _print_summary(stats, elapsed)
+    """The counts of a run a fatal error stopped after its first document,
+    under ``Interrupted…`` instead of ``Done.`` (the fatal line follows,
+    printed by the caller). Nothing for a run that saw no document.
+
+    Called once the run report is written, and never raises: the fatal error
+    may be stdout itself (a pipe whose reader has gone), and failing to print
+    the summary must not replace the error that ended the run nor change the
+    exit code."""
+    if stats is None or not stats.docs_seen:
+        return
+    try:
+        _print_summary(stats, elapsed, interrupted=True)
+    except Exception:  # noqa: BLE001 — the caller's fatal line says why the run ended
+        pass
 
 
 def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
@@ -394,14 +410,15 @@ def _forced_ocr_error(ocr: str, environ=None) -> str | None:
     """Pre-flight for an ingest run: the error message when ``--ocr always``
     is asked on a host without ``TESSDATA_PREFIX`` (unset or blank), else
     ``None``. Forced OCR does not look at ``ENABLE_OCR`` but still needs the
-    language data: without the variable the parser refuses every PDF, so the
-    run would end with one error per PDF."""
+    language data: asking for it without the variable is a configuration
+    error, refused whatever the selection holds (the parser would refuse each
+    PDF of it; a selection without PDFs would not notice)."""
     environ = os.environ if environ is None else environ
     if ocr != "always" or (environ.get(TESSDATA_PREFIX_ENV) or "").strip():
         return None
-    return (f"--ocr always needs {TESSDATA_PREFIX_ENV} (the folder of Tesseract's "
-            "*.traineddata files, or its parent): it is not set, so OCR would fail on "
-            "every PDF. Set it in the .env, or use --ocr auto or --ocr never")
+    return (f"forced OCR needs {TESSDATA_PREFIX_ENV}; set it or use --ocr auto/never "
+            f"(--ocr always was asked and {TESSDATA_PREFIX_ENV}, the folder of "
+            "Tesseract's *.traineddata files or its parent, is not set)")
 
 
 def _print_ocr_state(settings, ocr: str) -> None:
@@ -735,8 +752,9 @@ def main(argv: list[str] | None = None) -> int:
                     report_conn.close()
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
+        # The report first, then the summary: printing can fail too.
         stats = interrupted_stats(exc)
-        _print_interrupted_summary(stats, None if t0 is None else time.time() - t0)
+        elapsed = None if t0 is None else time.time() - t0
         rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus, stats=stats)
         if args.no_vault:
             try:
@@ -762,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if report_conn is not None:
                     report_conn.close()
+        _print_interrupted_summary(stats, elapsed)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:
@@ -826,12 +845,13 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
+        # The report first, then the summary: printing can fail too.
         stats = interrupted_stats(exc)
-        _print_interrupted_summary(stats)
         rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
                             unsupported=unsupported, stats=stats)
         if conn is not None:
             _insert_fatal_report(vault_mod, conn, rep)
+        _print_interrupted_summary(stats)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:

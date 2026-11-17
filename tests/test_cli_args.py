@@ -1,5 +1,7 @@
 """CLI argument-plumbing tests (no engine, no DB — parser-level behavior)."""
 
+import sys
+
 import pytest
 
 from data_orchestrator import cli
@@ -1049,10 +1051,12 @@ def test_a_fatal_in_the_middle_of_a_disk_run_reports_what_was_done_before_it(
                                "docs_failed": 0}]
     ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
     assert ledger.count('"doc_id"') == rep["totals"]["docs_new"]
-    # The usual summary, then the fatal line.
+    # The counts of what was done, then the fatal line. A run that did not
+    # finish does not say "Done.".
     cap = capsys.readouterr()
     out = cap.out.splitlines()
-    assert "Done." in out
+    assert "Interrupted by a fatal error. Before it:" in out
+    assert "Done." not in out
     assert "  docs seen      : 3" in out and "  docs ingested  : 2" in out
     assert any(line.startswith("  time           : ") for line in out)
     assert cap.err.rstrip().splitlines()[-1].startswith(
@@ -1092,7 +1096,8 @@ def test_a_fatal_in_the_middle_of_a_vault_run_reports_what_was_done_before_it(
     assert [params[0] for params in conn.ingestions] == ["d0", "d1"]
     cap = capsys.readouterr()
     out = cap.out.splitlines()
-    assert "Done." in out
+    assert "Interrupted by a fatal error. Before it:" in out
+    assert "Done." not in out
     assert "  docs seen      : 3" in out and "  docs ingested  : 2" in out
     assert cap.err.rstrip().splitlines()[-1].startswith(
         "error: fatal: QdrantAuthError: Qdrant refused the request (HTTP 403)")
@@ -1104,9 +1109,117 @@ def test_a_fatal_before_any_document_prints_no_summary(tmp_path, monkeypatch, ca
 
     _fake_engine(monkeypatch, port=6433, store=_RefusingStore([], 401))
     assert _cb_run(tmp_path, monkeypatch) == 1
-    assert "Done." not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Done." not in out and "Interrupted" not in out
     rep = _last_report(tmp_path)
     assert rep["totals"]["docs_seen"] == 0 and rep["sources"] == []
+
+
+def test_a_completed_run_says_done_and_not_interrupted(tmp_path, monkeypatch, capsys):
+    _fake_engine(monkeypatch, port=6433)
+    assert _cb_run(tmp_path, monkeypatch) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "Done." in out
+    assert not any(line.startswith("Interrupted") for line in out)
+
+
+class _StdoutDeadFromTheFirstProgressLine:
+    """A stdout that works until the first progress line of a run, then fails
+    on every write and flush, like a pipe whose reader has gone
+    (``data-orchestrator … | head``)."""
+
+    def __init__(self, error):
+        self.error = error
+        self.dead = False
+        self.written = []
+
+    def write(self, text):
+        if self.dead or text.startswith("  seen="):
+            self.dead = True
+            raise self.error
+        self.written.append(text)
+        return len(text)
+
+    def flush(self):
+        if self.dead:
+            raise self.error
+
+
+_DEAD_STDOUT_ERRORS = [BrokenPipeError(32, "Broken pipe"), OSError(5, "Input/output error")]
+
+
+@pytest.mark.parametrize("error", _DEAD_STDOUT_ERRORS, ids=["BrokenPipeError", "OSError"])
+def test_a_dead_stdout_in_the_middle_of_a_disk_run_still_records_the_fatal_report(
+        tmp_path, monkeypatch, capsys, error):
+    """The fatal error is stdout itself: the summary cannot be printed
+    either, and that second failure must not cost the run its report nor
+    change its exit code."""
+    _fake_engine(monkeypatch, port=6433)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 3)
+    stdout = _StdoutDeadFromTheFirstProgressLine(error)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root),
+                     "--progress-every", "1"]) == 1
+    assert stdout.dead
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["exit_code"]) == ("failed", 1)
+    assert rep["fatal"].startswith(f"{type(error).__name__}: ")
+    # doc0 was ingested and recorded; its progress line is what failed.
+    assert rep["totals"]["docs_seen"] == 1 and rep["totals"]["docs_new"] == 1
+    err = capsys.readouterr().err
+    assert err.rstrip().splitlines()[-1].startswith(f"error: fatal: {type(error).__name__}: ")
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("error", _DEAD_STDOUT_ERRORS, ids=["BrokenPipeError", "OSError"])
+def test_a_dead_stdout_in_the_middle_of_a_vault_run_still_records_the_fatal_report(
+        monkeypatch, tmp_path, capsys, error):
+    import data_orchestrator.core as core
+    from tests.test_core_engine import _md_item
+
+    for doc_id in ("d0", "d1", "d2"):
+        _md_item(tmp_path, doc_id=doc_id)  # writes <doc_id>.md
+    conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [],
+        selection_rows=[("d0", "ecb", "d0.md"), ("d1", "ecb", "d1.md"), ("d2", "ecb", "d2.md")],
+        selection_columns=("doc_id", "source_code", "local_path"),
+    )
+    monkeypatch.setattr(cli, "run_ingest", core.run_ingest)  # the real loop
+    _fake_engine(monkeypatch, port=6433)
+    stdout = _StdoutDeadFromTheFirstProgressLine(error)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert cli.main(["vault", "--progress-every", "1"]) == 1
+    assert stdout.dead
+    (rep,) = reports
+    assert (rep["outcome"], rep["exit_code"]) == ("failed", 1)
+    assert rep["fatal"].startswith(f"{type(error).__name__}: ")
+    assert rep["totals"]["docs_seen"] == 1 and rep["totals"]["docs_new"] == 1
+    assert [params[0] for params in conn.ingestions] == ["d0"]
+    err = capsys.readouterr().err
+    assert err.rstrip().splitlines()[-1].startswith(f"error: fatal: {type(error).__name__}: ")
+    assert "Traceback" not in err
+    assert conn.closed
+
+
+def test_the_fatal_report_is_written_before_the_summary_is_printed(
+        tmp_path, monkeypatch, capsys):
+    """Order in the fatal path: the report first, then the human summary."""
+    from tests.test_core_engine import _KeyRevokedStore
+
+    _fake_engine(monkeypatch, port=6433, store=_KeyRevokedStore([], good=1, status=401))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 3)
+    seen = []
+    real = cli._print_summary
+
+    def summary(*args, **kwargs):
+        seen.append((tmp_path / "state" / "runs.jsonl").exists())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_print_summary", summary)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 1
+    assert seen == [True]
 
 
 def test_a_collection_of_another_dimension_exits_1_and_says_what_to_do(
@@ -1264,15 +1377,17 @@ def test_the_ocr_line_follows_an_explicit_mode(tmp_path, monkeypatch, capsys, mo
                          ids=["unset", "blank", "only-the-switch"])
 def test_forced_ocr_without_the_language_data_fails_before_any_work(
         monkeypatch, capsys, argv, env):
-    """--ocr always needs TESSDATA_PREFIX whatever ENABLE_OCR says: without it
-    the parser fails on every PDF, so the run cannot succeed."""
+    """Forcing OCR without the language data is a configuration error,
+    whatever ENABLE_OCR says and whatever the selection holds: refused before
+    any work, with a message that says what to set or which mode to use."""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     _forbid_any_work(monkeypatch)
     assert cli.main(argv + ["--ocr", "always"]) == 2
     cap = capsys.readouterr()
-    assert cap.err.startswith("error: --ocr always needs TESSDATA_PREFIX")
-    assert "OCR would fail on every PDF" in cap.err
+    assert cap.err.startswith(
+        "error: forced OCR needs TESSDATA_PREFIX; set it or use --ocr auto/never")
+    assert "every PDF" not in cap.err
     assert "OCR:" not in cap.out
 
 

@@ -127,7 +127,8 @@ def test_a_key_refused_in_the_middle_of_a_run_reports_what_was_done_before_it(
     assert sum(s["docs_seen"] for s in sources) == totals["docs_seen"]
     assert sum(s["docs_failed"] for s in sources) == totals["docs_failed"]
     captured = capsys.readouterr()
-    assert "Done." in captured.out.splitlines()
+    assert "Interrupted by a fatal error. Before it:" in captured.out.splitlines()
+    assert "Done." not in captured.out.splitlines()
     assert "  docs ingested  : 1" in captured.out.splitlines()
     assert captured.err.count("error: fatal: QdrantAuthError") == 1
     assert IT_QDRANT_KEY not in captured.out and IT_QDRANT_KEY not in captured.err
