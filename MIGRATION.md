@@ -30,14 +30,39 @@ installation
 
 1. **Save the installed versions, then install in place.** The engine is now
    a dependency. In the existing virtual environment, **before** anything is
-   installed:
+   installed, save the versions the stored points were made with (each
+   block below is one command, without comments: the default shell of macOS,
+   zsh, does not read a `#` typed at the prompt as a comment):
 
    ```bash
-   pip freeze > ~/data-orchestrator-freeze-before-switch.txt   # first: the versions the stored points were made with
-   git pull
-   pip install -e .
-   pip uninstall eigenmind        # the fork is no longer imported; its checkout can go
+   pip freeze > ~/data-orchestrator-freeze-before-switch.txt
    ```
+
+   Update the checkout:
+
+   ```bash
+   git pull
+   ```
+
+   Install; this brings rag-engine at the pinned commit:
+
+   ```bash
+   pip install -e .
+   ```
+
+   The fork is still installed in the environment after that: it was an
+   editable install, so its `.pth` entry (which points at its checkout) and
+   its console script `eigenmind-ingest` are still there. Nothing in this
+   repository imports it any more, so it changes nothing to a run; remove it
+   all the same, so that the environment holds one engine (`pip` asks for
+   confirmation):
+
+   ```bash
+   pip uninstall eigenmind
+   ```
+
+   This removes the installation only. The fork's checkout directory is left
+   alone; delete it by hand once it is no longer wanted.
 
    Prefer this in-place install to a fresh environment: `pip` leaves an
    installed library alone when its version satisfies the requirement, so
@@ -71,11 +96,16 @@ installation
 
      ```bash
      pip install torch --index-url https://download.pytorch.org/whl/cpu
+     ```
+
+     then the package:
+
+     ```bash
      pip install -e .
      ```
 
-     Without that step the default Linux wheel pulls the CUDA packages
-     (several gigabytes) for nothing.
+     Without the first command the default Linux wheel pulls the CUDA
+     packages (several gigabytes) for nothing.
 
 2. **`.env`: remove `EIGENMIND_PATH`.** It is no longer read by anything.
    Every other key keeps its name and meaning (`DATABASE_URL`, `*_ROOT`,
@@ -121,28 +151,65 @@ installation
    (see "Reserved payload keys" below), but a `page` there changes one payload
    value.
 
-7. **`--ocr always` needs `TESSDATA_PREFIX`.** Without it the run is refused
-   (exit 2) instead of failing on every PDF; set it in the `.env` (step 3).
+7. **`--ocr always` needs `TESSDATA_PREFIX`.** Forcing OCR without the
+   language data is a configuration error: the run is refused before any work
+   (`error: forced OCR needs TESSDATA_PREFIX; set it or use --ocr auto/never`,
+   exit 2), whatever the selection holds. Set it in the `.env` (step 3), or
+   use `--ocr auto` or `--ocr never`.
 
 Then validate on real data, as described next.
 
 ## Validating on real data after the switch
 
-The names below are examples: `central-bank-e5b-v1` is the production
-collection, `zz-switch-check` the scratch one.
+**No step of this section writes to the production collection: every command
+that ingests names the scratch collection explicitly (`--collection
+zz-switch-check`), and everything else only reads.**
 
-### 1. A small run and its first lines
+The names below are examples: `central-bank-e5b-v1` is the production
+collection, `zz-switch-check` the scratch one, `ecb` / `A1` a source and a
+document type production already holds. Replace them by yours, and keep
+`--collection zz-switch-check` in every `data-orchestrator` command of this
+section: without `--collection` a run writes to the routed collection, which
+is the production one.
+
+What the section does write: the scratch collection in Qdrant, the
+`rag_ingestions` rows of that collection name, and one `runs` row per run. The
+last step removes the first two. Every block is one command, without comments,
+to be pasted as it is; run them from the repository directory, in its virtual
+environment.
+
+The vault source selects the documents that have no `rag_ingestions` row
+**for the target collection**. A fresh collection name has its own ledger
+rows — none yet — so documents already ingested into production are selected
+again for it, and the production rows and points are not touched.
+
+### 1. A small run into the scratch collection, and its first lines
+
+Count first (this reads the vault only): the documents of a source and a type
+that production holds.
 
 ```bash
-data-orchestrator vault --corpus central-bank --source-codes ecb --limit 5
+data-orchestrator vault --corpus central-bank --collection zz-switch-check --source-codes ecb --doctypes A1 --count-only
 ```
 
-Check, in this order:
+Then ingest the first three of them, in `doc_id` order, into the scratch
+collection. Use the OCR mode of the documents' original run: the same `--ocr`
+value and, for `auto`, the same `ENABLE_OCR` / `TESSDATA_PREFIX`.
+
+```bash
+data-orchestrator vault --corpus central-bank --collection zz-switch-check --source-codes ecb --doctypes A1 --limit 3
+```
+
+Check its first lines, in this order:
 
 - `Config: .env = <the .env of this repository>` — not `no .env file found`;
+- `Resume ledger (vault): rag_ingestions/zz-switch-check (0 docs already
+  done)` (0 on the first run) and `→ Ingesting vault selection
+  (corpus=central-bank) into 'zz-switch-check'`: the scratch name, in both;
 - `OCR: available (languages: eng)` on a machine that runs OCR (if it says
-  `OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)`, see step 3
-  above);
+  `OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)`, see step 3 of
+  "What to do"): the line must read as it did when the documents were first
+  ingested;
 - `Qdrant: <host>:<port> (api key: set)` — the host and port of the production
   Qdrant, no warning about port 6333;
 - in the log lines (stderr), `Loading embedding model
@@ -150,43 +217,49 @@ Check, in this order:
   means PyTorch does not see the Metal backend: vectors may then differ from
   the stored ones in their last digits).
 
-### 2. Re-ingest a few already-ingested documents into a scratch collection
+The run must end with `docs ingested  : 3` and `errors         : 0`.
 
-The vault source selects the documents that have no `rag_ingestions` row
-**for the target collection**. A fresh collection name has its own ledger
-rows — none yet — so documents already ingested into production are selected
-again for it, and the production rows and points are not touched.
+### 2. Compare these documents with their production points
 
-Pick a selection that is already in production and narrow it until
-`--count-only` shows a handful of documents:
-
-```bash
-data-orchestrator vault --corpus central-bank --collection zz-switch-check \
-    --source-codes ecb --doctypes C1 --year-min 2019 --year-max 2019 --count-only
-
-data-orchestrator vault --corpus central-bank --collection zz-switch-check \
-    --source-codes ecb --doctypes C1 --year-min 2019 --year-max 2019 --limit 3
-```
-
-Use the OCR mode of the documents' original run: the same `--ocr` value and,
-for `auto`, the same `ENABLE_OCR` / `TESSDATA_PREFIX` (the `OCR:` line must
-read as it did then). `--limit 3` takes the first three of the selection, in
-`doc_id` order. Their ids, and whether production has them:
+Only a document whose production points were written **before the switch** is
+worth comparing: one that production never had has nothing to compare with,
+and one ingested after the switch was written by the new code on both sides.
+For the documents now in the scratch collection, their production row, its
+chunk count and the time it was written:
 
 ```sql
-SELECT s.doc_id, s.chunk_count AS scratch_chunks, p.chunk_count AS production_chunks
+SELECT s.doc_id,
+       s.chunk_count AS scratch_chunks,
+       p.chunk_count AS production_chunks,
+       p.ingested_at AS production_ingested_at
 FROM rag_ingestions s
-LEFT JOIN rag_ingestions p ON p.doc_id = s.doc_id AND p.collection = 'central-bank-e5b-v1'
-WHERE s.collection = 'zz-switch-check';
+LEFT JOIN rag_ingestions p
+       ON p.doc_id = s.doc_id AND p.collection = 'central-bank-e5b-v1'
+WHERE s.collection = 'zz-switch-check'
+ORDER BY s.doc_id;
 ```
 
-A NULL `production_chunks` is a document production never had: nothing to
-compare. For each of the others, compare the two collections (run from the
-repository, in its virtual environment; the Qdrant settings and the API key
-are read from the `.env`, the key is never printed):
+Read each row:
+
+- `production_chunks` is NULL: production has no row for this document. Skip
+  it.
+- `production_ingested_at` is later than the switch: skip it too. The time of
+  the switch is the time of the file saved in step 1 of "What to do"
+  (`ls -l ~/data-orchestrator-freeze-before-switch.txt`).
+- otherwise the document qualifies; `scratch_chunks` and `production_chunks`
+  should already be equal.
+
+If no document qualifies, run the second command of step 1 again (it takes
+the next three: the first three are now recorded for the scratch collection),
+or narrow it to years ingested long ago with `--year-min` / `--year-max`.
+
+Create the file `/tmp/compare_doc.py` — outside the repository, so that
+nothing is left in the checkout — with this content. It only reads, from both
+collections; the Qdrant settings and the API key come from the `.env`, and the
+key is never printed.
 
 ```python
-# compare_doc.py — usage: python compare_doc.py <production> <scratch> <doc_id>
+# compare_doc.py — usage: python /tmp/compare_doc.py <production> <scratch> <doc_id>
 import os
 import sys
 
@@ -231,8 +304,11 @@ print("payloads equal:", bool(common) and all(without_date(new[i].payload) == wi
 print("min cosine    :", min((cosine(new[i].vector, old[i].vector) for i in common), default=None))
 ```
 
+Then, for each document that qualifies, with its `doc_id` in place of
+`<doc_id>` (keep the single quotes):
+
 ```bash
-python compare_doc.py central-bank-e5b-v1 zz-switch-check '<doc_id>'
+python /tmp/compare_doc.py central-bank-e5b-v1 zz-switch-check '<doc_id>'
 ```
 
 Expected: `ids equal: True`, `texts equal: True`, `payloads equal: True`
@@ -244,36 +320,18 @@ not the one of the stored points (a library version, the OCR mode): stop and
 compare the versions with the saved freeze. If only the cosine is lower, the
 embedding differs (torch, transformers, the model revision, the device).
 
-Afterwards, remove what the check created:
-
-```bash
-python -c "
-import os
-from qdrant_client import QdrantClient
-from data_orchestrator import config
-config.load_dotenv()
-QdrantClient(host=os.environ['QDRANT_HOST'], port=int(os.environ['QDRANT_PORT']),
-             api_key=(os.environ.get('QDRANT_API_KEY') or '').strip() or None,
-             https=(os.environ.get('QDRANT_HTTPS') or '').strip().lower() in ('1', 'true', 'yes', 'on'),
-             timeout=120).delete_collection('zz-switch-check')"
-```
-
-```sql
--- with the vault's ADMIN role: the orchestrator's role may not delete from rag_ingestions
-DELETE FROM rag_ingestions WHERE collection = 'zz-switch-check';
-```
-
-Do both: ledger rows left behind for a collection that no longer exists would
-make a later run into that name skip those documents. The `runs` rows of the
-check stay (telemetry; nothing reads them for resume).
-
 ### 3. The production collection still matches its ledger
+
+Both statements only read. The documents and the points the ledger expects in
+production:
 
 ```sql
 SELECT count(*) AS documents, sum(chunk_count) AS points_expected
 FROM rag_ingestions
 WHERE collection = 'central-bank-e5b-v1';
 ```
+
+The points Qdrant holds for it:
 
 ```bash
 python -c "
@@ -287,11 +345,46 @@ print(QdrantClient(host=os.environ['QDRANT_HOST'], port=int(os.environ['QDRANT_P
                    timeout=120).count('central-bank-e5b-v1', exact=True).count)"
 ```
 
-The two numbers must be equal, before the first real run and after it. More
-points than expected means a document was written and not recorded (a run
-interrupted between the two writes; the next run writes it again over the
-same ids) or was re-ingested with fewer chunks than before; fewer points than
-expected means recorded documents are missing from Qdrant.
+The two numbers must be equal, and the same as before this section was run;
+check them again after the first real run. More points than expected means a
+document was written and not recorded (a run interrupted between the two
+writes; the next run writes it again over the same ids) or was re-ingested
+with fewer chunks than before; fewer points than expected means recorded
+documents are missing from Qdrant.
+
+### 4. Remove what the check created
+
+The scratch collection (the name is written in the command: it deletes that
+collection and no other):
+
+```bash
+python -c "
+import os
+from qdrant_client import QdrantClient
+from data_orchestrator import config
+config.load_dotenv()
+QdrantClient(host=os.environ['QDRANT_HOST'], port=int(os.environ['QDRANT_PORT']),
+             api_key=(os.environ.get('QDRANT_API_KEY') or '').strip() or None,
+             https=(os.environ.get('QDRANT_HTTPS') or '').strip().lower() in ('1', 'true', 'yes', 'on'),
+             timeout=120).delete_collection('zz-switch-check')"
+```
+
+Its ledger rows, with the vault's admin role (the orchestrator's role may not
+delete from `rag_ingestions`):
+
+```sql
+DELETE FROM rag_ingestions WHERE collection = 'zz-switch-check';
+```
+
+The helper script:
+
+```bash
+rm /tmp/compare_doc.py
+```
+
+Do the first two together: ledger rows left behind for a collection that no
+longer exists would make a later run into that name skip those documents. The
+`runs` rows of the check stay (telemetry; nothing reads them for resume).
 
 ## What changes
 
@@ -306,9 +399,9 @@ expected means recorded documents are missing from Qdrant.
 | An existing collection was checked for its dimension and for named vectors | Also for its distance: **a collection that is not cosine is refused** (`CollectionMismatchError`), before any document |
 | A wrong collection: `RuntimeError: collection 'x' stores 384-d vectors but the embedding model produces 768-d: use another --collection` | `CollectionMismatchError: collection 'x': expected a single unnamed 768-d vector with Cosine distance, found 384-d vectors: use another --collection` |
 | A refused API key: this repository's `QdrantAuthError` (a `RuntimeError`) | rag-engine's `QdrantAuthError` (not a `RuntimeError`); same name and same message in the logs and in `runs.extra->>'fatal'` |
-| HTTP 401/403 on a write in the middle of a run: one failure per remaining document (a "degraded" run, exit 3) | **One fatal error**, exit 1: `QdrantAuthError: Qdrant refused the request (HTTP 401): check QDRANT_API_KEY (while writing document '…', after N document(s) ingested in this run)`. Documents already recorded stay recorded; the next run resumes after them. The run report counts them (`totals`, `sources`), and the usual summary is printed before the fatal line |
+| HTTP 401/403 on a write in the middle of a run: one failure per remaining document (a "degraded" run, exit 3) | **One fatal error**, exit 1: `QdrantAuthError: Qdrant refused the request (HTTP 401): check QDRANT_API_KEY (while writing document '…', after N document(s) ingested in this run)`. Documents already recorded stay recorded; the next run resumes after them. The run report counts them (`totals`, `sources`); it is written first, then the counts are printed under `Interrupted by a fatal error. Before it:` (not `Done.`), then the fatal line |
 | `RAG_ENGINE_BACKEND` did not exist | Leave it unset. `onnx` (the engine's backend for search services, not installed here) is refused with exit 2 before any work: ingestion uses the torch backend |
-| `--ocr always` without `TESSDATA_PREFIX`: one error per PDF | Refused with exit 2 before any work |
+| `--ocr always` without `TESSDATA_PREFIX`: one error per PDF (a selection without PDFs went through) | A configuration error, refused with exit 2 before any work, whatever the selection holds: `error: forced OCR needs TESSDATA_PREFIX; set it or use --ocr auto/never` |
 | An unreadable extension: `ValueError: format '.html' is not supported by ChunkNorris` | `UnsupportedFormatError: format '.html' is not supported: '<path>' (supported: …)` (still one per-document error) |
 | An invalid `QDRANT_HTTPS`: fatal at store construction (exit 1, with a run report) | Exit 2 before any work, no report, like every invalid setting (`RAG_ENGINE_BATCH_SIZE`, `RAG_ENGINE_OCR_LANGUAGES`, `RAG_ENGINE_QDRANT_TIMEOUT`, …) |
 | The model's dimension was read from the loaded model | Declared: 768 for the default model, `DATA_ORCHESTRATOR_EMBEDDING_DIM` otherwise; a mismatch is fatal before any document |
