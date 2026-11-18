@@ -722,20 +722,19 @@ def main(argv: list[str] | None = None) -> int:
     t0 = None  # set when the engine run starts
     started_at = datetime.now(timezone.utc).isoformat()
     try:
-        if not args.no_resume:
-            if args.no_vault:
-                ledger_path = Path(args.ledger) if args.ledger else state_dir() / f"{collection}.jsonl"
-                ledger = Ledger(ledger_path)
-                print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
-            else:
-                from . import vault as vault_mod
-                from .routing import EMBEDDING_VERSION, embedding_model_name
+        if not args.no_vault:
+            from . import vault as vault_mod
+            from .routing import EMBEDDING_VERSION, embedding_model_name
 
-                vault_conn = vault_mod.connect()
-                # Never alongside a sync-metadata run of this collection
-                # (shared: ingestions do not exclude each other).
-                vault_mod.lock_collection(vault_conn, collection, exclusive=False,
-                                          holder=f"{args.source} ingestion")
+            # Vault mode, with or without the resume ledger: the run writes
+            # the points of documents a sync-metadata run may be correcting
+            # (--no-resume rewrites the payloads of ingested documents), so it
+            # never runs alongside one (shared: ingestions do not exclude
+            # each other). The connection is also the one of the run report.
+            vault_conn = vault_mod.connect()
+            vault_mod.lock_collection(vault_conn, collection, exclusive=False,
+                                      holder=f"{args.source} ingestion")
+            if not args.no_resume:
                 ledger = vault_mod.VaultLedger(
                     vault_conn, collection=collection, corpus=args.corpus,
                     embedding_model=embedding_model_name(),
@@ -743,6 +742,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"Resume ledger (vault): rag_ingestions/{collection} "
                       f"({len(ledger)} docs already done)")
+        elif not args.no_resume:
+            ledger_path = Path(args.ledger) if args.ledger else state_dir() / f"{collection}.jsonl"
+            ledger = Ledger(ledger_path)
+            print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
 
         print(f"→ Ingesting source '{args.source}' into collection '{collection}' "
               f"(ocr={args.ocr}, limit={args.limit})")
@@ -774,11 +777,12 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
                 print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         else:
-            # Vault mode (not --no-vault) but no ledger connection was ever
-            # opened (--no-resume skips the "if not args.no_resume" block
-            # above) — open a short-lived one just for the report insert so
-            # the run isn't silently unreported. Same warn-only contract: a
-            # report failure must never mask the run's own outcome.
+            # Defensive: vault mode always opens vault_conn (and takes the
+            # collection lock) before the run, with or without --no-resume.
+            # Should it be missing, open a short-lived one just for the
+            # report insert so the run isn't silently unreported. Same
+            # warn-only contract: a report failure must never mask the run's
+            # own outcome.
             from . import vault as vault_mod
 
             report_conn = None

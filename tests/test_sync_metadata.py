@@ -504,3 +504,24 @@ def test_cli_missing_index_gives_the_remedy(cli_env, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert "MissingIndexError" in err
     assert f"sync-metadata --create-indexes --collection {COLLECTION}" in err
+
+
+@pytest.mark.parametrize("extra", [[], ["--no-resume"]])
+def test_a_disk_source_ingestion_in_vault_mode_takes_the_lock(monkeypatch, tmp_path, capsys,
+                                                               extra):
+    """With or without its resume ledger, a disk-source run in vault mode
+    writes the points of documents sync-metadata may be correcting: it must
+    take the shared lock (``--no-resume`` rewrites the payloads of ingested
+    documents)."""
+    from tests.test_cli_args import _fake_vault
+
+    conn, _reports = _fake_vault(monkeypatch, tmp_path, [])
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
+    conn.lock_free = False
+    rc = cli.main(["cb_corpus", *extra])
+    assert rc == 1
+    assert "a sync-metadata run holds collection" in capsys.readouterr().err
+    locks = [p for sql, p in conn.executed if "pg_try_advisory_lock_shared" in sql]
+    assert locks and locks[0][1] == "central-bank-e5b-v1"

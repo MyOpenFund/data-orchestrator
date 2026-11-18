@@ -695,8 +695,9 @@ then writes, and a batch of an ingestion that started before the correction
 writes whole payloads with the old metadata. The two now exclude each other
 through a Postgres advisory lock on the collection, taken by the run's vault
 connection and released when it closes (or the process dies): an ingestion
-holds it shared (ingestions do not exclude each other), `sync-metadata` holds
-it exclusive. Whichever comes second stops with `error: fatal:
+holds it shared (ingestions do not exclude each other: the `vault` source,
+and `cb_corpus` / `company` in vault mode, with or without `--no-resume`),
+`sync-metadata` holds it exclusive. Whichever comes second stops with `error: fatal:
 CollectionBusyError: … holds collection '<name>' (vault advisory lock 7468);
 wait for it to end, then run again` and exit 1. **The lock only knows runs of
 this version**: an ingestion started by an older checkout (another machine),
