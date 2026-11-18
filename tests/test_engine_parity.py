@@ -14,7 +14,13 @@ of the engine (no row of the fixture states a precision: a day), and nothing
 else. Every other key, value, position, id and vector must still be the
 captured one.
 
-Never adapt the fixture to make this pass.
+Never adapt the fixture to make this pass. The one translation of the
+captured rows, :func:`_vault_row` (``pdf_url`` moved from ``extra`` to its
+column), is not an adaptation of the expected points: the captured row with
+``pdf_url`` in ``extra`` is synthetic, the vault cannot produce it
+(``pdf_url`` is one of its columns, ``ingestion/ingest.py`` ``KNOWN_FIELDS``),
+so today's selection of the same document carries the value in the column.
+The expected points stay the captured ones.
 """
 import datetime
 import hashlib

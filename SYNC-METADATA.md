@@ -479,7 +479,22 @@ changes (the vectors and every other key are untouched, as for the dates).
 Same procedure and same guarantees as above: dry run first, then `--write`,
 then a second `--write` that finds nothing. It can run on its own once the
 dates are aligned (the date keys then show no difference), on a machine that
-reaches the vault and the production Qdrant:
+reaches the vault and the production Qdrant.
+
+**Pre-flight, before the production write.** The vault keeps `pdf_url`,
+`source_url` and `mime_type` in their columns, never in `extra`; the write
+sets each of them from the column, so a value found only in `extra` would be
+**removed** from the points (a NULL column removes the key). Check that no
+row holds one, with `psql` on the vault (it reads only):
+
+```sql
+SELECT count(*) FROM documents WHERE extra ?| array['pdf_url','source_url','mime_type'];
+```
+
+Expected: `0`. If it is not 0, **stop**: those keys would be removed from the
+points; bring the rows back to the vault's split first.
+
+The dry run:
 
 ```bash
 data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --csv ~/sync-links-dry.csv
