@@ -21,14 +21,25 @@ thousands of PDFs before the manifest is regenerated).
 
 The **manifest** is the source of truth for *rich metadata*: when an on-disk
 file's ``doc_id`` (its filename stem, == cb_corpus's stable sha1 id) is found in
-the manifest we attach the real publication ``date``, ``title``, ``pdf_url`` and
-``sha256`` (``metadata_source="manifest"``). When it is not yet indexed we fall
-back to what the path encodes — ``bank``/``doctype``/``year`` — and date the doc
-to ``<year>-01-01`` (cb_corpus's own year→Jan-1 convention, so working papers,
-which are year-only at the source anyway, match exactly). Such rows are flagged
-``metadata_source="path"`` / ``date_granularity="year"`` so downstream (the
-quant point-in-time layer) can treat them conservatively and so a
-later ``cb_corpus reindex-from-disk`` transparently upgrades them to exact dates.
+the manifest, the payload is the one the vault source gives the same document
+(``payload.manifest_row_to_payload``): the manifest row split like the vault
+splits it (its known fields as columns, the rest as ``extra``), then the vault
+source's rules (columns win over ``extra``, absent/null fields left out, the
+keys of ``extra`` dropped by design left out silently, the keys the engine
+writes itself left out and counted). The keys are the vault's: ``corpus``,
+``source_code``, ``doc_type``, ``title``, ``date``, ``year``, ``language``,
+``sha256``, ``provenance``, ``pdf_url``, ``source_url``, ``mime_type`` and the
+other fields of the row (``date_precision``, ``date_kind``, ...), plus
+``metadata_source="manifest"``.
+
+When it is not yet indexed we fall back to what the path encodes:
+``corpus``, ``source_code`` (the bank folder), ``doc_type``, ``year``, and
+``date`` = ``<year>-01-01`` with ``date_precision="year"`` (the central-bank
+corpus convention: a coarse date is the first day of its period, and the
+precision says so); no title, no URL, no checksum (absent, never empty
+strings). Such rows are flagged ``metadata_source="path"`` so downstream (the
+quant point-in-time layer) can treat them conservatively and so a later
+``cb_corpus reindex-from-disk`` transparently upgrades them to exact dates.
 Such documents are counted (``IngestStats.docs_path_metadata``) and reported by
 the CLI, so the fallback is never silent.
 """
@@ -41,11 +52,21 @@ from typing import Iterator, Optional, Sequence
 
 from ..config import get_path
 from ..core import SourceItem
+from ..payload import dropped_extra_keys, manifest_row_to_payload, row_to_payload
 
 # Name of the ``.env`` key holding this machine's corpus root. The path itself
 # is never hard-coded here: it varies per machine and lives in ``.env`` (see
 # ``.env.example``), or can be passed explicitly via the CLI ``--root`` flag.
 ROOT_ENV_KEY = "CB_CORPUS_ROOT"
+
+#: The vault corpus of this source's documents (the vault's own default
+#: ``CORPUS``, ``central-bank``): the ``corpus`` of a payload whose manifest row
+#: names none, and of every path-derived payload. ``iter_items(corpus=...)``
+#: (the CLI's ``--corpus``) overrides it.
+DEFAULT_CORPUS = "central-bank"
+
+#: ``date_precision`` of a path-derived date (``<year>-01-01``).
+PATH_DATE_PRECISION = "year"
 
 
 def default_root() -> Optional[Path]:
@@ -55,31 +76,6 @@ def default_root() -> Optional[Path]:
     explicit ``--root``).
     """
     return get_path(ROOT_ENV_KEY)
-
-# cb_corpus taxonomy (code -> human label). Kept local so this connector has no
-# import dependency on the cb_corpus project. Group = first letter of the code.
-DOCTYPE_LABELS = {
-    "A1": "Rate-decision press release",
-    "A2": "Policy statement",
-    "A3": "Meeting minutes / accounts / summary of deliberations",
-    "A4": "Voting record",
-    "B1": "Press-conference transcript / Q&A",
-    "B2": "Opening remarks / webcast notes",
-    "C1": "Speech",
-    "C2": "Interview / op-ed / testimony",
-    "D1": "Working paper",
-    "D2": "Occasional / discussion paper / staff note",
-    "D3": "Economic letter / research blog",
-    "E1": "Monetary policy / inflation report",
-    "E2": "Financial stability report",
-    "E3": "Annual report",
-    "E4": "Economic / quarterly bulletin",
-    "F1": "Staff economic projections / forecasts",
-    "G1": "Regulatory notice / consultation",
-    "G2": "Statistical release",
-    "G3": "Supervisory report",
-}
-
 
 def _parse_year(value: str) -> Optional[int]:
     return int(value) if value.isdigit() else None
@@ -144,43 +140,23 @@ def _load_manifest_index(files: Sequence[Path]) -> dict[str, dict]:
 
 
 def _build_payload(
-    *, bank_code: str, doc_type: str, group: str, year: Optional[int],
-    ext: str, rel_path: str, rec: Optional[dict],
-) -> dict:
-    """Chunk payload for one document — rich from the manifest, else path-derived."""
-    payload = {
-        "source": "cb_corpus",
-        "bank_code": bank_code,
-        "doc_type": doc_type,
-        "doc_type_label": DOCTYPE_LABELS.get(doc_type, ""),
-        "doc_group": group,
-        "year": year,
-        "ext": ext.lstrip("."),
-        "rel_path": rel_path,
-    }
+    *, doc_id: str, bank_code: str, doc_type: str, year: Optional[int],
+    rec: Optional[dict], corpus: str, drop_keys: tuple[str, ...],
+) -> tuple[dict, tuple[str, ...]]:
+    """Payload of one document, and the reserved keys left out: the vault
+    source's payload of the manifest row, else path-derived."""
     if rec is not None:
-        payload.update({
-            "publication_date": rec.get("date"),       # as-of key (exact ISO)
-            "title": rec.get("title", ""),
-            "url": rec.get("pdf_url", ""),
-            "sha256": rec.get("sha256", ""),
-            "provenance": rec.get("provenance", ""),
-            "metadata_source": "manifest",
-            "date_granularity": "source",
-        })
-    else:
-        # Not indexed yet: derive from the path. Use cb_corpus's year->Jan-1
-        # convention so the date matches the manifest's granularity for papers.
-        payload.update({
-            "publication_date": f"{year:04d}-01-01" if year else None,
-            "title": "",
-            "url": "",
-            "sha256": "",
-            "provenance": "disk",
-            "metadata_source": "path",
-            "date_granularity": "year",
-        })
-    return payload
+        payload, dropped = manifest_row_to_payload(rec, corpus, drop_keys)
+        payload["metadata_source"] = "manifest"
+        return payload, dropped
+    row = {
+        "doc_id": doc_id, "corpus": corpus, "source_code": bank_code, "doc_type": doc_type,
+        "year": year, "date": f"{year:04d}-01-01" if year is not None else None,
+        "extra": {"date_precision": PATH_DATE_PRECISION} if year is not None else None,
+    }
+    payload, dropped = row_to_payload(row, drop_keys)
+    payload["metadata_source"] = "path"
+    return payload, dropped
 
 
 def iter_items(
@@ -192,6 +168,7 @@ def iter_items(
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
     prefer_manifest: bool = True,
+    corpus: str = DEFAULT_CORPUS,
 ) -> Iterator[SourceItem]:
     """Walk the corpus and yield one :class:`SourceItem` per document.
 
@@ -212,6 +189,10 @@ def iter_items(
         ignored entirely (pure path-derived metadata) and the manifest-required
         check is disabled — a disk-only walk, Python API only (there is no CLI
         flag for it); mostly useful for testing.
+    corpus:
+        The vault corpus of the documents (:data:`DEFAULT_CORPUS`; the CLI
+        passes ``--corpus``): ``corpus`` of a manifest row without one, and of
+        every path-derived payload.
 
     Raises
     ------
@@ -244,6 +225,7 @@ def iter_items(
         index = _load_manifest_index(require_manifest(Path(root)))
     else:
         index = {}
+    drop_keys = dropped_extra_keys()
 
     for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
         bank_code = bank_dir.name
@@ -252,7 +234,7 @@ def iter_items(
 
         for dt_dir in sorted(p for p in bank_dir.iterdir() if p.is_dir()):
             doc_type = dt_dir.name.upper()
-            group = doc_type[:1]
+            group = doc_type[:1]  # the --groups filter
             if doctype_set and doc_type not in doctype_set:
                 continue
             if group_set and group not in group_set:
@@ -279,9 +261,9 @@ def iter_items(
                         continue
 
                     doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
-                    rel = f"{bank_code}/{doc_type}/{year_dir.name}/{f.name}"
-                    payload = _build_payload(
-                        bank_code=bank_code, doc_type=doc_type, group=group,
-                        year=year, ext=ext, rel_path=rel, rec=index.get(doc_id),
+                    payload, dropped = _build_payload(
+                        doc_id=doc_id, bank_code=bank_code, doc_type=doc_type, year=year,
+                        rec=index.get(doc_id), corpus=corpus, drop_keys=drop_keys,
                     )
-                    yield SourceItem(doc_id=doc_id, path=f, payload=payload)
+                    yield SourceItem(doc_id=doc_id, path=f, payload=payload,
+                                     dropped_keys=dropped)

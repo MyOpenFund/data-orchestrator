@@ -1017,7 +1017,7 @@ def _cb_corpus_with_documents(tmp_path, n):
         doc.new_page().insert_text((72, 72), f"Monetary policy note {i}. " * 30)
         doc.save(folder / f"doc{i}.pdf")
         doc.close()
-        lines.append(json.dumps({"doc_id": f"doc{i}", "date": "2015-01-01", "title": "t"}))
+        lines.append(json.dumps({"doc_id": f"doc{i}", "source_code": "us", "date": "2015-01-01", "title": "t"}))
     (root / "manifest" / "us.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return root
 

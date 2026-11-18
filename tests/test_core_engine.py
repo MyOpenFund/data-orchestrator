@@ -99,7 +99,7 @@ This is a substantial paragraph with enough content to ensure the chunking algor
 
 And here's another paragraph with additional content. We want to ensure we have enough material to trigger the chunking process correctly. The algorithm likely has minimum thresholds that must be met for chunks to be produced from the input text.
 """)
-    return SourceItem(doc_id=doc_id, path=p, payload=payload or {"bank_code": "us"})
+    return SourceItem(doc_id=doc_id, path=p, payload=payload or {"source_code": "us"})
 
 
 def _write_blank_pdf(path):
@@ -160,7 +160,7 @@ def test_ingest_item_md_yields_points_with_deterministic_ids(tmp_path):
     assert ids[0] == point_id("doc1", 0, 0)
     payload = store.client.points[0].payload
     assert payload["doc_id"] == "doc1"
-    assert payload["bank_code"] == "us"
+    assert payload["source_code"] == "us"
     assert payload["chunk_number"] == 0
     assert "chunk_index" not in payload  # schema v1 says "chunk_number", not this
     assert "text" in payload and payload["filename"] == item.path.name
@@ -200,7 +200,7 @@ def test_run_ingest_marks_ledger_after_qdrant(tmp_path):
     kinds = [e[0] for e in log]
     assert kinds.index("qdrant") < kinds.index("ledger"), "write protocol: Qdrant first"
     assert store.ensured == [("coll", embedder.dim)]
-    assert ledger.marks[0][2] == {"bank_code": "us"}  # payload forwarded
+    assert ledger.marks[0][2] == {"source_code": "us"}  # payload forwarded
 
 
 def test_missing_file_is_isolated(tmp_path):
@@ -338,7 +338,7 @@ def test_a_real_pdf_gets_its_pages(tmp_path):
 
 def test_file_ledger_accepts_payload_kwarg(tmp_path):
     led = Ledger(tmp_path / "ledger.jsonl")
-    led.mark("d1", 3, payload={"bank_code": "us"})
+    led.mark("d1", 3, payload={"source_code": "us"})
     assert "d1" in led
 
 
@@ -433,10 +433,10 @@ def test_run_ingest_counts_path_derived_metadata_items(tmp_path):
             return doc_id == "d2"
 
     items = [
-        _md_item(tmp_path, doc_id="d1", payload={"bank_code": "us", "metadata_source": "manifest"}),
-        _md_item(tmp_path, doc_id="d2", payload={"bank_code": "us", "metadata_source": "path"}),
-        _md_item(tmp_path, doc_id="d3", payload={"bank_code": "us", "metadata_source": "path"}),
-        _md_item(tmp_path, doc_id="d4", payload={"bank_code": "us"}),  # no flag at all
+        _md_item(tmp_path, doc_id="d1", payload={"source_code": "us", "metadata_source": "manifest"}),
+        _md_item(tmp_path, doc_id="d2", payload={"source_code": "us", "metadata_source": "path"}),
+        _md_item(tmp_path, doc_id="d3", payload={"source_code": "us", "metadata_source": "path"}),
+        _md_item(tmp_path, doc_id="d4", payload={"source_code": "us"}),  # no flag at all
     ]
     stats = run_ingest(items, collection="c", ledger=SkipSecond(log),
                        store=FakeStore(log), embedder=FakeEmbedder())
@@ -698,11 +698,12 @@ def test_the_default_store_is_built_from_the_settings_it_is_given_not_the_enviro
 
 # ---------------------------------------------------------------------------
 # source_label: ONE rule for sources[] keys, the unsupported count and the
-# count-only breakdown (source_code, then bank_code, then corpus, then unknown).
+# count-only breakdown (source_code, then corpus, then unknown). The legacy
+# cb_corpus key bank_code is no longer read: every source writes source_code.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("payload, corpus, expected", [
     ({"source_code": "ecb", "bank_code": "fr", "corpus": "central-bank"}, None, "ecb"),
-    ({"bank_code": "fr", "corpus": "central-bank"}, None, "fr"),
+    ({"bank_code": "fr", "corpus": "central-bank"}, None, "central-bank"),
     ({"source_code": None, "corpus": "central-bank"}, None, "central-bank"),
     ({"source_code": None}, "central-bank", "central-bank"),
     ({"corpus": "company"}, "central-bank", "company"),
@@ -836,7 +837,7 @@ def test_a_source_that_fails_in_the_middle_of_a_run_carries_the_statistics_so_fa
     source itself (a failing selection query, an unreadable folder)."""
     def items():
         yield _md_item(tmp_path, doc_id="doc0")
-        yield SourceItem(doc_id="gone", path=tmp_path / "gone.md", payload={"bank_code": "fr"})
+        yield SourceItem(doc_id="gone", path=tmp_path / "gone.md", payload={"source_code": "fr"})
         raise OSError("corpus folder went away")
 
     with pytest.raises(OSError, match="corpus folder went away") as info:
@@ -1074,7 +1075,7 @@ def test_a_reserved_key_in_a_hand_built_payload_fails_that_document_only(tmp_pat
     """The previous pipeline overwrote such a key without a word; the engine
     refuses it. Nothing is rewritten behind a caller that built the item."""
     log = []
-    bad = _md_item(tmp_path, doc_id="bad", payload={"bank_code": "us", key: "stale"})
+    bad = _md_item(tmp_path, doc_id="bad", payload={"source_code": "us", key: "stale"})
     stats = run_ingest([bad, _md_item(tmp_path, doc_id="ok")], collection="c",
                        ledger=RecordingLedger(log), store=FakeStore(log),
                        embedder=FakeEmbedder())

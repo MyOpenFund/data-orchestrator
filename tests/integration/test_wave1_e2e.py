@@ -15,9 +15,9 @@ COLL = "central-bank-e5b-v1"
 
 def _items(corpus_dir):
     return [
-        SourceItem("doc-text", corpus_dir / "text.pdf", {"bank_code": "us", "corpus": "central-bank"}),
-        SourceItem("doc-empty", corpus_dir / "empty.pdf", {"bank_code": "fr"}),
-        SourceItem("doc-md", corpus_dir / "note.md", {"bank_code": "ecb"}),
+        SourceItem("doc-text", corpus_dir / "text.pdf", {"source_code": "us", "corpus": "central-bank"}),
+        SourceItem("doc-empty", corpus_dir / "empty.pdf", {"source_code": "fr"}),
+        SourceItem("doc-md", corpus_dir / "note.md", {"source_code": "ecb"}),
     ]
 
 
@@ -126,9 +126,9 @@ def test_e2e_poisoned_doc_first_does_not_block_convergence(clean_state, qdrant_a
         {"doc_id": "doc-c-md", "corpus": "central-bank", "source_code": "ecb"},
     ])
     items = [
-        SourceItem("doc-a-unknown", corpus_dir / "text.pdf", {"bank_code": "us"}),
-        SourceItem("doc-b-text", corpus_dir / "text.pdf", {"bank_code": "us"}),
-        SourceItem("doc-c-md", corpus_dir / "note.md", {"bank_code": "ecb"}),
+        SourceItem("doc-a-unknown", corpus_dir / "text.pdf", {"source_code": "us"}),
+        SourceItem("doc-b-text", corpus_dir / "text.pdf", {"source_code": "us"}),
+        SourceItem("doc-c-md", corpus_dir / "note.md", {"source_code": "ecb"}),
     ]
     stats = _run(clean_state, qdrant_addr, corpus_dir, items=items)
 

@@ -172,7 +172,7 @@ class SourceItem:
         Local filesystem path to the document (PDF for now).
     payload:
         Extra metadata merged into every chunk's Qdrant payload
-        (e.g. bank_code, doc_type, year). The engine adds ``filename``,
+        (e.g. corpus, source_code, doc_type, year). The engine adds ``filename``,
         ``chunk_number``, ``ingestion_date``, ``text`` and ``page`` itself,
         and ``date_start`` / ``date_end`` when the payload holds a readable
         ``date``, and refuses a payload that sets one of them (see
@@ -270,14 +270,14 @@ def source_label(payload_or_code, corpus: str | None = None) -> str:
     ``--count-only`` breakdown, so they cannot drift apart.
 
     ``payload_or_code`` is a payload dict (its ``source_code``, else its
-    ``bank_code``, else its ``corpus``) or a bare source code (a SQL
+    ``corpus``) or a bare source code (a SQL
     ``GROUP BY d.source_code`` value). An empty/NULL code falls back to the
     payload's ``corpus``, then to ``corpus``, then to ``"unknown"`` — so a
     vault document with a NULL source_code is filed under its corpus name
     whichever way it was counted.
     """
     if isinstance(payload_or_code, dict):
-        code = payload_or_code.get("source_code") or payload_or_code.get("bank_code")
+        code = payload_or_code.get("source_code")
         corpus = payload_or_code.get("corpus") or corpus
     else:
         code = payload_or_code

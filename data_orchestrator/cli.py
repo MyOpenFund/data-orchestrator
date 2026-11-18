@@ -75,9 +75,9 @@ SYNC_METADATA = "sync-metadata"
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
-# _count_vault_source).
+# _count_vault_source; cb_corpus payloads use the vault's keys).
 COUNT_KEYS = {
-    "cb_corpus": ("bank_code", "doc_type"),
+    "cb_corpus": ("source_code", "doc_type"),
     "company": ("cik", "doc_type"),
 }
 
@@ -104,6 +104,7 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         groups=_csv(args.groups),
         year_min=args.year_min,
         year_max=args.year_max,
+        corpus=args.corpus,
     )
 
 
@@ -1092,8 +1093,8 @@ def _count_vault_source(args, collection: str) -> int:
     """Count vault-selected documents without any engine work or ledger writes.
 
     Mirrors the cb_corpus ``--count-only`` output format (total + breakdowns),
-    using ``source_code``/``doc_type`` — the vault source's payload columns —
-    in place of cb_corpus's ``bank_code``/``doc_type``. Both source breakdowns
+    by ``source_code``/``doc_type`` — the vault source's payload columns,
+    which cb_corpus payloads use too. Both source breakdowns
     use ``core.source_label`` (a NULL source_code reads as the corpus), the
     label the run report's ``sources[]`` uses; a NULL doc_type reads
     ``unknown``. No Qdrant line: a count never touches Qdrant.

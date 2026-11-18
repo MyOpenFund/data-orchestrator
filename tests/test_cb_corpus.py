@@ -1,4 +1,7 @@
 """Unit tests for the cb_corpus connector's disk walk and its config guards."""
+import datetime
+import json
+
 import pytest
 
 from data_orchestrator.sources.cb_corpus import ROOT_ENV_KEY, iter_items
@@ -75,7 +78,7 @@ def test_html_is_never_yielded_and_include_html_is_gone(tmp_path):
         "us/C1/2015/online-only.html",
     )
     items = list(iter_items(root, prefer_manifest=False))
-    assert [(i.doc_id, i.payload["ext"]) for i in items] == [("both", "pdf")]
+    assert [(i.doc_id, i.path.suffix) for i in items] == [("both", ".pdf")]
     with pytest.raises(TypeError):
         list(iter_items(root, prefer_manifest=False, include_html=True))
 
@@ -96,11 +99,11 @@ def test_prefer_manifest_false_ignores_an_existing_manifest(tmp_path):
     _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "Speech"}')
     (item,) = iter_items(root, prefer_manifest=False)
     assert item.payload["metadata_source"] == "path"
-    assert item.payload["publication_date"] == "2015-01-01"
-    assert item.payload["title"] == ""
+    assert item.payload["date"] == "2015-01-01"
+    assert "title" not in item.payload
 
 
-def test_manifest_hit_carries_the_exact_publication_date(tmp_path):
+def test_manifest_hit_carries_the_exact_date(tmp_path):
     """The manifest is the source of truth for metadata: an indexed document
     must get its real publication date and title, flagged as coming from the
     manifest so the point-in-time layer can trust the date."""
@@ -110,11 +113,11 @@ def test_manifest_hit_carries_the_exact_publication_date(tmp_path):
                           ' "provenance": "bis"}')
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
-    assert item.payload["publication_date"] == "2015-06-30"
-    assert item.payload["date_granularity"] == "source"
+    assert item.payload["date"] == "2015-06-30"
     assert item.payload["title"] == "A speech"
-    assert item.payload["url"] == "https://example.org/a.pdf"
+    assert item.payload["pdf_url"] == "https://example.org/a.pdf"
     assert item.payload["sha256"] == "ab12"
+    assert item.payload["provenance"] == "bis"
 
 
 def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
@@ -124,10 +127,10 @@ def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
     root = _corpus(tmp_path, "us/C1/2015/indexed.pdf", "us/C1/2015/fresh.pdf")
     _manifest(root, "us", '{"doc_id": "indexed", "date": "2015-06-30"}')
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
-    assert payloads["fresh"]["metadata_source"] == "path"
-    assert payloads["fresh"]["publication_date"] == "2015-01-01"
-    assert payloads["fresh"]["date_granularity"] == "year"
-    assert payloads["fresh"]["provenance"] == "disk"
+    assert payloads["fresh"] == {
+        "date_precision": "year", "doc_id": "fresh", "corpus": "central-bank",
+        "source_code": "us", "doc_type": "C1", "date": "2015-01-01", "year": 2015,
+        "metadata_source": "path"}
     assert payloads["indexed"]["metadata_source"] == "manifest"
 
 
@@ -143,8 +146,8 @@ def test_malformed_manifest_line_does_not_cost_its_neighbours(tmp_path):
         '{"doc_id": "b", "date": "2015-07-31"}',
     )
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
-    assert payloads["a"]["publication_date"] == "2015-06-30"
-    assert payloads["b"]["publication_date"] == "2015-07-31"
+    assert payloads["a"]["date"] == "2015-06-30"
+    assert payloads["b"]["date"] == "2015-07-31"
 
 
 def test_per_bank_manifest_layout_is_read(tmp_path):
@@ -155,7 +158,7 @@ def test_per_bank_manifest_layout_is_read(tmp_path):
     _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}')
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
-    assert item.payload["publication_date"] == "2015-06-30"
+    assert item.payload["date"] == "2015-06-30"
 
 
 def test_all_bank_files_are_merged_into_one_index(tmp_path):
@@ -167,9 +170,9 @@ def test_all_bank_files_are_merged_into_one_index(tmp_path):
     _manifest(root, "ecb", '{"doc_id": "c", "date": "2019-03-07", "title": "ECB"}')
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
     assert payloads["a"]["metadata_source"] == "manifest"
-    assert payloads["a"]["publication_date"] == "2015-06-30"
+    assert payloads["a"]["date"] == "2015-06-30"
     assert payloads["c"]["metadata_source"] == "manifest"
-    assert payloads["c"]["publication_date"] == "2019-03-07"
+    assert payloads["c"]["date"] == "2019-03-07"
     assert payloads["c"]["title"] == "ECB"
 
 
@@ -246,13 +249,120 @@ def test_non_numeric_year_dir_is_excluded_only_when_a_bound_is_set(tmp_path):
 
 @pytest.mark.parametrize("indexed", [True, False])
 def test_the_payload_never_sets_a_key_the_engine_writes_itself(tmp_path, indexed):
-    """This connector builds its payload from fixed keys: none of them may be
-    one the engine refuses (filename, text, page, ..., doc_id)."""
-    from rag_engine.schema import RESERVED_KEYS
+    """No key the engine refuses (filename, text, page, ...): the only reserved
+    key is ``doc_id``, the document's own, which the engine accepts (the vault
+    source sends it too)."""
+    from rag_engine.schema import RESERVED_KEYS, build_payload
 
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
     if indexed:
         _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "A speech"}')
     (item,) = iter_items(root, prefer_manifest=indexed)
-    assert not set(item.payload) & set(RESERVED_KEYS)
+    assert set(item.payload) & set(RESERVED_KEYS) == {"doc_id"}
+    assert item.payload["doc_id"] == item.doc_id
     assert item.dropped_keys == ()
+    build_payload(item.doc_id, item.payload, filename="a.pdf", chunk_number=0,
+                  ingestion_date="t", text="t", page=1)  # does not raise
+
+
+# ---------------------------------------------------------------------------
+# The vault's vocabulary (F12): a document gets the same payload from the disk
+# source and from the vault source.
+# ---------------------------------------------------------------------------
+def test_an_undated_path_document_has_no_date_and_no_precision(tmp_path):
+    root = _corpus(tmp_path, "us/C1/undated/u.pdf")
+    (item,) = iter_items(root, prefer_manifest=False)
+    assert item.payload == {"doc_id": "u", "corpus": "central-bank", "source_code": "us",
+                            "doc_type": "C1", "metadata_source": "path"}
+
+
+def test_the_corpus_of_a_disk_payload_is_the_run_s(tmp_path):
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
+    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}',
+              '{"doc_id": "b", "corpus": "own", "date": "2015-06-30"}')
+    payloads = {i.doc_id: i.payload for i in iter_items(root, corpus="scratch")}
+    assert payloads["a"]["corpus"] == "scratch"
+    assert payloads["b"]["corpus"] == "own"  # the row's own corpus, like the vault column
+    (item,) = iter_items(_corpus(tmp_path / "p", "us/C1/2015/c.pdf"), prefer_manifest=False,
+                         corpus="scratch")
+    assert item.payload["corpus"] == "scratch"
+
+
+def test_a_manifest_row_with_unknown_dropped_and_reserved_keys(tmp_path):
+    """Unknown keys are kept (they are the vault's ``extra``), keys dropped by
+    design are left out silently, a reserved key is left out and counted, a
+    null or absent field is absent, never an empty string."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    _manifest(root, "us", json.dumps({
+        "doc_id": "a", "bank_code": "us", "doc_type": "C1", "title": None, "date": "2015-06-30",
+        "year": 2015, "html_path": "/Users/someone/a.html", "alt_urls": ["https://alt"],
+        "alt_source_urls": [], "text": "stale", "repec_handle": "RePEc:x", "speaker": "J. Doe"}))
+    (item,) = iter_items(root)
+    assert item.payload == {
+        "repec_handle": "RePEc:x", "speaker": "J. Doe", "doc_id": "a", "corpus": "central-bank",
+        "source_code": "us", "doc_type": "C1", "date": "2015-06-30", "year": 2015,
+        "metadata_source": "manifest"}
+    assert item.dropped_keys == ("text",)
+
+
+# Manifest rows, adversarial on purpose: a legacy bank_code, NULL columns, an
+# extra-bound key named like a payload key that the vault keeps as a column,
+# keys dropped by design next to a reserved key, unknown keys, a date with a
+# time, a year as a string.
+PARITY_ROWS = [
+    {"doc_id": "a", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+     "title": "A speech", "pdf_url": "https://x.org/a.pdf", "source_url": "https://x.org/a",
+     "date": "2015-06-30", "year": 2015, "language": "en", "provenance": "bis",
+     "mime_type": "application/pdf", "sha256": "ab12", "local_path": "data/raw/us/C1/2015/a.pdf",
+     "date_precision": "day", "date_kind": "publication", "date_source": "title"},
+    {"doc_id": "b", "bank_code": "us", "doc_type": "C1", "title": None, "pdf_url": None,
+     "date": "", "year": "2015", "html_path": "/Users/someone/b.html",
+     "alt_urls": ["https://alt/b"], "alt_source_urls": ["https://alt/b2"], "page": 7,
+     "chunk_number": 1, "repec_handle": "RePEc:b", "nested": {"k": [1, 2]}},
+    {"doc_id": "c", "source_code": "", "bank_code": "us", "doc_type": "C1",
+     "date": "2015-03-01T09:00:00Z", "year": 2015, "date_precision": "month",
+     "local_path": "data/raw/us/C1/2015/c.pdf", "provenance": None, "flag": False},
+]
+
+
+def _vault_row_by_hand(rec):
+    """The ``documents`` row the vault stores for ``rec``, written out here
+    independently of ``payload.manifest_row_to_vault_row``: the columns of the
+    vault's KNOWN_FIELDS, ``date`` a ``datetime.date``, ``year`` an integer, the
+    other fields in ``extra`` after a JSON round trip (JSONB)."""
+    known = {"doc_id", "corpus", "source_code", "bank_code", "doc_type", "title", "pdf_url",
+             "source_url", "date", "year", "language", "provenance", "mime_type", "sha256",
+             "local_path"}
+    date = rec.get("date") or None
+    extra = {k: v for k, v in rec.items() if k not in known}
+    return {
+        "doc_id": rec["doc_id"], "corpus": rec.get("corpus") or "central-bank",
+        "source_code": rec.get("source_code") or rec.get("bank_code"),
+        "doc_type": rec.get("doc_type"), "title": rec.get("title"),
+        "pdf_url": rec.get("pdf_url"), "source_url": rec.get("source_url"),
+        "date": datetime.date.fromisoformat(date[:10]) if date else None,
+        "year": int(rec["year"]) if rec.get("year") is not None else None,
+        "language": rec.get("language"), "provenance": rec.get("provenance"),
+        "mime_type": rec.get("mime_type"), "sha256": rec.get("sha256"),
+        "local_path": rec.get("local_path") or f"data/raw/us/C1/2015/{rec['doc_id']}.pdf",
+        "extra": json.loads(json.dumps(extra)) if extra else None,
+    }
+
+
+@pytest.mark.parametrize("drop", [None, "none", "repec_handle"])
+def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypatch, drop):
+    from data_orchestrator.sources.vault import row_to_item
+
+    if drop is not None:
+        monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", drop)
+    root = _corpus(tmp_path, *(f"us/C1/2015/{r['doc_id']}.pdf" for r in PARITY_ROWS))
+    _manifest(root, "us", *(json.dumps(r) for r in PARITY_ROWS))
+    monkeypatch.setenv(ROOT_ENV_KEY, str(root))
+    disk = {i.doc_id: i for i in iter_items(root)}
+    assert len(disk) == len(PARITY_ROWS)
+    for rec in PARITY_ROWS:
+        vault = row_to_item(_vault_row_by_hand(rec), "central-bank")
+        payload = dict(disk[rec["doc_id"]].payload)
+        assert payload.pop("metadata_source") == "manifest"
+        assert payload == vault.payload, rec["doc_id"]
+        assert disk[rec["doc_id"]].dropped_keys == vault.dropped_keys

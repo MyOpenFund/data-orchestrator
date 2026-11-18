@@ -193,7 +193,7 @@ class VaultLedger:
 
     def mark(self, doc_id: str, chunks: int, payload: dict | None = None) -> None:
         payload = payload or {}
-        source_code = payload.get("source_code") or payload.get("bank_code")
+        source_code = payload.get("source_code")
         try:
             with self._conn.cursor() as cur:
                 cur.execute(UPSERT_INGESTION_SQL, (

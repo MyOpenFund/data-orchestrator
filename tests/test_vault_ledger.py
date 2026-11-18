@@ -89,7 +89,7 @@ def test_resume_set_loaded_at_construction():
 def test_mark_upserts_with_metadata_and_commits():
     conn = FakeConn()
     led = _ledger(conn)
-    led.mark("d9", 42, payload={"bank_code": "us", "title": "x"})
+    led.mark("d9", 42, payload={"source_code": "us", "title": "x"})
     sql, params = conn.executed[-1]
     assert "INSERT INTO rag_ingestions" in sql
     assert "ON CONFLICT (doc_id, collection) DO UPDATE" in sql
@@ -108,6 +108,8 @@ def test_mark_source_code_precedence():
     assert conn.executed[-1][1][3] == "ecb"
     led.mark("d2", 1, payload=None)
     assert conn.executed[-1][1][3] is None
+    led.mark("d3", 1, payload={"bank_code": "us"})  # the legacy key is not read
+    assert conn.executed[-1][1][3] is None
 
 
 def test_mark_rolls_back_and_reraises_on_upsert_failure():
@@ -118,7 +120,7 @@ def test_mark_rolls_back_and_reraises_on_upsert_failure():
     conn = FailOnceConn(fail_exc=RuntimeError("FK violation"))
     led = _ledger(conn)
     with pytest.raises(RuntimeError, match="FK violation"):
-        led.mark("poison", 5, payload={"bank_code": "us"})
+        led.mark("poison", 5, payload={"source_code": "us"})
     assert conn.rollbacks == 1
     assert conn.commits == 0
     assert "poison" not in led  # in-memory resume set untouched by the failure
