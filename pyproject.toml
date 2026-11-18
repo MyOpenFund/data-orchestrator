@@ -23,7 +23,7 @@ keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 # wheel carries CUDA. On Apple Silicon install normally (Metal backend, mps).
 dependencies = [
     "psycopg2-binary>=2.9",
-    "rag-engine[ingest,torch] @ git+https://github.com/MyOpenFund/rag-engine@fbbe09b789828a67c28beadca1f2a95d611158a8",
+    "rag-engine[ingest,torch] @ git+https://github.com/MyOpenFund/rag-engine@6be21ac393d82d7c5c1a058dcad8204ae15c7289",
 ]
 
 [project.optional-dependencies]

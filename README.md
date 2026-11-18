@@ -530,11 +530,18 @@ Every chunk's Qdrant point carries:
 | field | source |
 |---|---|
 | `doc_id`, `corpus`, `source_code`, `doc_type`, `title`, `date`, `year`, `language`, `sha256`, `provenance` | vault (`documents`, merged with corpus-specific `extra`) |
+| `date_precision`, `date_kind`, `date_source`, any other key of `extra` | vault `extra`, copied as given (`date_precision`: `day`/`month`/`year`; `date_kind`: `meeting`/`publication`/`period`) |
 | `filename`, `page`, `chunk_number`, `text` | engine (chunking output; `page` only for formats with pages) |
 | `ingestion_date` | engine — one ISO timestamp per document, shared by all of its points |
+| `date_start`, `date_end` | engine, derived from `date` and `date_precision` (absent without a readable `date`): the first and the last day the document is dated to, RFC 3339 at midnight UTC (`2016-07-01T00:00:00Z` / `2016-07-31T00:00:00Z` for a `month` date of July 2016; a precision that is absent or not one of the three is read as a day) |
 
-This is rag-engine's payload schema v1 (`rag_engine.schema`), the payload this
-repo assembled itself before 2026-11. What was shown about the switch: with
+This is rag-engine's payload schema v2 (`rag_engine.schema`): schema v1, the
+payload this repo assembled itself before 2026-11, plus `date_start` and
+`date_end`, written after every key of v1. Points written under v1 (the whole
+of `central-bank-e5b-v1` before `sync-metadata`) have neither; a search in
+the engine's `auto` mode keeps reading their `date` until they get them (see
+[Correcting dates in Qdrant](#correcting-dates-in-qdrant-sync-metadata)).
+What was shown about the switch: with
 the same versions of the libraries that decide text and vectors (chunknorris
 and its PDF library PyMuPDF, sentence-transformers, torch, transformers, the
 revision of the embedding model) and the same device, the same documents give
@@ -545,7 +552,11 @@ on PostgreSQL and Qdrant with a real small model, and (iii) with OCR on, in
 English, on generated documents. Two payload differences are declared: invalid
 UTF-8 in a text file is replaced by U+FFFD (it was dropped), and a reserved
 key found in a document's free metadata is dropped (a stray `page` on a
-document without pages used to be kept; see below). Another version of one of
+document without pages used to be kept; see below). Since the schema v2 pin
+the parity test checks the captured v1 points plus exactly `date_start` and
+`date_end` (computed by the test itself, not by the engine), and nothing
+else: same ids, same vectors, every other key with its value and position.
+Another version of one of
 those libraries, or another device, is outside what was checked:
 [MIGRATION.md](MIGRATION.md) says how to keep the versions and how to validate
 on real data. The key is `chunk_number`, not `chunk_index`.
@@ -553,9 +564,10 @@ on real data. The key is `chunk_number`, not `chunk_index`.
 ### Reserved payload keys
 
 The engine writes `doc_id`, `filename`, `chunk_number`, `ingestion_date`,
-`text` and `page` itself and **refuses** metadata that sets one of them (a
-`doc_id` equal to the document's is accepted). Policy of this repo, applied
-where metadata it does not own enters:
+`text` and `page` itself, derives `date_start` and `date_end`, and
+**refuses** metadata that sets one of them (a `doc_id` equal to the
+document's is accepted). Policy of this repo, applied where metadata it does
+not own enters:
 
 - **vault source**: such a key in `documents.extra` is left out of the payload
   (the vault's own columns are never dropped; `doc_id` always comes from its
@@ -635,8 +647,9 @@ installed from a local checkout, which records no commit).
 **Bumping the rag-engine pin** changes what is written to Qdrant only if the
 guards say so: `tests/test_engine_parity.py` (the points written for six
 fixture documents must stay the ones captured from the code this repo ran
-before it used rag-engine: ids, payloads, vectors) and `tests/test_routing.py`
-(the supported extensions). The parity test runs with a deterministic test
+before it used rag-engine: ids, payloads, vectors; since the schema v2 pin,
+plus exactly `date_start` and `date_end`, which the test computes itself) and
+`tests/test_routing.py` (the supported extensions). The parity test runs with a deterministic test
 embedder and OCR off: it does not see a change of sentence-transformers,
 torch, transformers or the model. Never regenerate the parity fixture to make
 a failing test pass.

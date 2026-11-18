@@ -36,7 +36,7 @@ from typing import Callable, Iterable, Mapping, Optional
 
 from rag_engine.config import ConfigError, Settings
 from rag_engine.ingest import ingest_document
-from rag_engine.schema import RESERVED_KEYS
+from rag_engine.schema import DERIVED_KEYS, RESERVED_KEYS
 from rag_engine.store import CollectionMismatchError, QdrantAuthError, QdrantStore
 
 from .routing import (
@@ -134,15 +134,17 @@ def split_reserved_keys(metadata: Mapping, doc_id: str | None = None) -> tuple[d
 
     The engine refuses metadata that sets ``filename``, ``chunk_number``,
     ``ingestion_date``, ``text`` or ``page``, or a ``doc_id`` other than the
-    document's (``rag_engine.schema.RESERVED_KEYS``). A source that copies
-    free-form metadata it does not own (the vault's ``extra``, another
+    document's (``rag_engine.schema.RESERVED_KEYS``), and metadata that sets
+    ``date_start`` or ``date_end``, the interval it derives from ``date`` and
+    ``date_precision`` (``rag_engine.schema.DERIVED_KEYS``). A source that
+    copies free-form metadata it does not own (the vault's ``extra``, another
     package's payload) passes it through here, so a stray key is dropped and
     counted (``SourceItem.dropped_keys`` -> the run report) instead of failing
     the document. ``doc_id=None`` drops any ``doc_id``; a ``doc_id`` equal to
     the document's is kept.
     """
     dropped = tuple(
-        key for key in RESERVED_KEYS
+        key for key in (*RESERVED_KEYS, *DERIVED_KEYS)
         if key in metadata and not (key == "doc_id" and doc_id is not None and metadata[key] == doc_id)
     )
     return {k: v for k, v in metadata.items() if k not in dropped}, dropped
@@ -165,10 +167,13 @@ class SourceItem:
     payload:
         Extra metadata merged into every chunk's Qdrant payload
         (e.g. bank_code, doc_type, year). The engine adds ``filename``,
-        ``chunk_number``, ``ingestion_date``, ``text`` and ``page`` itself and
-        refuses a payload that sets one of them (see ``split_reserved_keys``).
+        ``chunk_number``, ``ingestion_date``, ``text`` and ``page`` itself,
+        and ``date_start`` / ``date_end`` when the payload holds a readable
+        ``date``, and refuses a payload that sets one of them (see
+        ``split_reserved_keys``).
     dropped_keys:
-        Reserved keys the source left out of ``payload`` (``split_reserved_keys``).
+        Reserved or derived keys the source left out of ``payload``
+        (``split_reserved_keys``).
         Counted by the run (``IngestStats.payload_keys_dropped``); never sent
         to the engine.
     """

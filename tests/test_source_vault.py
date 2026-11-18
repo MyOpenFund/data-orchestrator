@@ -286,3 +286,52 @@ def test_a_vault_item_with_a_dirty_extra_is_ingested_not_failed(monkeypatch, tmp
     assert stats.payload_keys_dropped == {"filename": 1, "page": 1}
     payload = store.client.points[0].payload
     assert payload["filename"] == "d1.md" and "page" not in payload and payload["cik"] == "0001"
+
+
+def test_a_vault_extra_holding_the_derived_interval_is_ingested_not_failed(monkeypatch, tmp_path):
+    """The vault's ``extra`` must never make ingestion fail: a stale
+    ``date_start`` / ``date_end`` there is left out and counted, and the engine
+    writes the interval it derives from ``date`` and ``date_precision``, which
+    pass through from ``extra`` with ``date_kind``."""
+    import datetime
+
+    from data_orchestrator.core import run_ingest
+    from tests.test_core_engine import FakeEmbedder, FakeStore, _md_item
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    (tmp_path / "raw").mkdir()
+    _md_item(tmp_path / "raw", doc_id="d1")
+    item = row_to_item(_row(local_path="data/raw/d1.md", date=datetime.date(2016, 7, 1),
+                            year=2016,
+                            extra={"date_precision": "month", "date_kind": "meeting",
+                                   "date_source": "title",
+                                   "date_start": "1999-01-01T00:00:00Z", "date_end": 5}),
+                       "central-bank")
+    assert item.dropped_keys == ("date_start", "date_end")
+    store = FakeStore([])
+    stats = run_ingest([item], collection="c", store=store, embedder=FakeEmbedder())
+    assert (stats.docs_ingested, stats.docs_error) == (1, 0)
+    assert stats.payload_keys_dropped == {"date_start": 1, "date_end": 1}
+    payload = store.client.points[0].payload
+    assert payload["date"] == "2016-07-01" and payload["year"] == 2016
+    assert payload["date_precision"] == "month" and payload["date_kind"] == "meeting"
+    assert payload["date_source"] == "title"
+    assert payload["date_start"] == "2016-07-01T00:00:00Z"
+    assert payload["date_end"] == "2016-07-31T00:00:00Z"
+    assert list(payload)[-2:] == ["date_start", "date_end"]
+
+
+def test_an_undated_vault_row_gets_no_interval(monkeypatch, tmp_path):
+    from data_orchestrator.core import run_ingest
+    from tests.test_core_engine import FakeEmbedder, FakeStore, _md_item
+
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    (tmp_path / "raw").mkdir()
+    _md_item(tmp_path / "raw", doc_id="d1")
+    item = row_to_item(_row(local_path="data/raw/d1.md", date=None, year=None,
+                            extra={"date_precision": "garbage"}), "central-bank")
+    store = FakeStore([])
+    run_ingest([item], collection="c", store=store, embedder=FakeEmbedder())
+    payload = store.client.points[0].payload
+    assert "date" not in payload and "date_start" not in payload and "date_end" not in payload
+    assert payload["date_precision"] == "garbage"  # copied as given; the engine reads it as a day

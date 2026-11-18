@@ -12,8 +12,11 @@ never silently. Payloads
 are built from the vault's normalized columns merged with the
 corpus-specific ``extra`` fields (columns always win). A key of ``extra`` that
 the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
-``text``, ``page``) is left out and counted, never sent: the engine refuses
-it, and one stray key must not fail the document. File paths join the per-machine corpus root
+``text``, ``page``, and the derived ``date_start`` / ``date_end``) is left
+out and counted, never sent: the engine refuses it, and one stray key must not
+fail the document. ``date_precision`` and ``date_kind`` are ordinary keys of
+``extra`` and reach the payload as they are; the engine derives the interval
+from ``date`` and ``date_precision``. File paths join the per-machine corpus root
 (routing) with the vault's relative ``local_path``.
 """
 from __future__ import annotations

@@ -1025,6 +1025,31 @@ def test_split_reserved_keys_keeps_a_doc_id_equal_to_the_document_s():
     assert split_reserved_keys({"doc_id": "doc-1"}) == ({}, ("doc_id",))
 
 
+def test_split_reserved_keys_drops_the_interval_the_engine_derives():
+    """``date_start`` / ``date_end`` are derived by the engine from ``date`` and
+    ``date_precision`` and refused in metadata: a free-form ``extra`` holding
+    them must not fail the document."""
+    from rag_engine.schema import DERIVED_KEYS
+
+    assert DERIVED_KEYS == ("date_start", "date_end")
+    metadata = {"date": "2016-07-01", "date_precision": "month", "date_kind": "meeting",
+                "date_start": "1999-01-01T00:00:00Z", "date_end": "garbage"}
+    clean, dropped = split_reserved_keys(metadata, "doc-1")
+    assert clean == {"date": "2016-07-01", "date_precision": "month", "date_kind": "meeting"}
+    assert dropped == ("date_start", "date_end")
+
+
+def test_a_derived_key_in_a_hand_built_payload_fails_that_document_only(tmp_path):
+    log = []
+    bad = _md_item(tmp_path, doc_id="bad", payload={"date": "2016-07-01", "date_end": "x"})
+    stats = run_ingest([bad, _md_item(tmp_path, doc_id="ok")], collection="c",
+                       ledger=RecordingLedger(log), store=FakeStore(log),
+                       embedder=FakeEmbedder())
+    assert (stats.docs_error, stats.docs_ingested) == (1, 1)
+    assert stats.errors[0][1].startswith(
+        "ValueError: metadata may not set derived payload key(s): date_end (document 'bad')")
+
+
 def test_dropped_keys_are_counted_on_every_item_seen_and_never_sent(tmp_path):
     log = []
 
