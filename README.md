@@ -232,6 +232,13 @@ corpus). This source adds one key, `metadata_source`:
 | `metadata_source` | `manifest` | `path` |
 | `filename`, `page`, `chunk_number`, `ingestion_date`, `text` | engine | engine |
 
+The selection flags of this source (`--banks`, `--doctypes`, `--groups`,
+`--year-min`/`--year-max`) still read the **path** (bank, doc-type and year
+folders), while the payload values come from the manifest: a document filed
+under `2015/` whose manifest says `year: 2014` is selected by
+`--year-min 2015` and ingested with `year: 2014` (the same for a doc type or a
+bank that differ from their folder).
+
 A path-only date follows the central-bank corpus convention: a coarse date
 is the first day of its period, and `date_precision` says so (the engine
 derives the interval of the whole year).

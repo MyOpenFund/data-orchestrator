@@ -22,8 +22,8 @@ an ingestion never sends them, so they must be absent and are removed from the
 points ingested before they were dropped). Nothing else is compared or written.
 
 **The expected values come from the ingestion code path.** The vault row goes
-through ``sources.vault.row_to_payload`` (the metadata ``row_to_item`` hands
-the engine) and then through ``rag_engine.schema.build_payload`` (what the
+through ``payload.row_to_payload`` (the metadata ``sources.vault.row_to_item``
+hands the engine) and then through ``rag_engine.schema.build_payload`` (what the
 engine writes on every point); the owned keys are read from that payload. A
 key absent there (a NULL column, a key not in ``extra``) must be absent from
 the points; a null stored in a point counts as absent (Qdrant drops a key set
