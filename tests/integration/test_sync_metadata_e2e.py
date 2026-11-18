@@ -188,15 +188,15 @@ def test_sync_metadata_changes_the_owned_keys_only(
     assert "payload indexes missing: date_start, date_end" in out
     rows = _rows(dry_csv)
     by = {(r["doc_id"], r["field"]): r for r in rows}
-    assert by[("a-moved-year", "date")]["qdrant_value"] == '"2016-01-01"'
-    assert by[("a-moved-year", "date")]["vault_value"] == '"2015-12-17"'
+    assert by[("a-moved-year", "date")]["qdrant_value"] == "2016-01-01"
+    assert by[("a-moved-year", "date")]["vault_value"] == "2015-12-17"
     assert by[("a-moved-year", "year")]["vault_value"] == "2015"
-    assert by[("b-month", "date_end")]["vault_value"] == '"2016-07-31T00:00:00Z"'
+    assert by[("b-month", "date_end")]["vault_value"] == "2016-07-31T00:00:00Z"
     assert ("b-month", "date") not in by
     assert by[("c-undated", "date")]["vault_value"] == "" and by[("c-undated", "date")]["action"] == "undated"
     assert json.loads(by[("d-disagree", "date")]["qdrant_value"]) == ["2014-02-03", "2016-01-01"]
     assert by[("e-deleted", "")]["action"] == "missing-in-vault"
-    assert by[("g-garbage-precision", "date_end")]["vault_value"] == '"2012-05-09T00:00:00Z"'
+    assert by[("g-garbage-precision", "date_end")]["vault_value"] == "2012-05-09T00:00:00Z"
 
     # 2. --write with the read-only key: refused, clearly, nothing written.
     assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_READ_ONLY_KEY,

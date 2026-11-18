@@ -191,12 +191,12 @@ def test_dry_run_reports_and_writes_nothing(tmp_path):
     assert stats.actions[sm.UPDATED] == 1 and stats.to_write == 1 and stats.written == 0
     assert stats.points_read == 3
     assert {r["field"]: (r["qdrant_value"], r["vault_value"]) for r in rows} == {
-        "date": ('"2016-01-01"', '"2015-12-17"'),
+        "date": ("2016-01-01", "2015-12-17"),
         "year": ("2016", "2015"),
-        "date_precision": ("", '"day"'),
-        "date_kind": ("", '"meeting"'),
-        "date_start": ("", '"2015-12-17T00:00:00Z"'),
-        "date_end": ("", '"2015-12-17T00:00:00Z"'),
+        "date_precision": ("", "day"),
+        "date_kind": ("", "meeting"),
+        "date_start": ("", "2015-12-17T00:00:00Z"),
+        "date_end": ("", "2015-12-17T00:00:00Z"),
     }
     assert {r["action"] for r in rows} == {sm.UPDATED}
     # The vault is only read: one query of the ledger (the CLI takes the lock).

@@ -75,6 +75,10 @@ MISSING_IN_QDRANT = "missing-in-qdrant"
 MISSING_IN_VAULT = "missing-in-vault"
 ACTIONS = (UNCHANGED, UPDATED, UNDATED, MISSING_IN_QDRANT, MISSING_IN_VAULT)
 
+#: One row per document and owned key that differs (one row, ``field`` empty,
+#: for a document missing in Qdrant or in the vault). Values: empty when the key
+#: is absent, a string as it is, anything else as JSON; when the points of the
+#: document disagree, ``qdrant_value`` is the JSON list of their values.
 CSV_COLUMNS = ("doc_id", "action", "field", "qdrant_value", "vault_value", "note")
 
 LEDGER_SQL = (
@@ -254,8 +258,13 @@ def read_points(store, collection: str, doc_ids: Sequence[str], keys: Sequence[s
 # Comparison
 # ---------------------------------------------------------------------------
 def _cell(value) -> str:
-    """A CSV cell: empty for an absent key, else the value as JSON."""
-    return "" if value is _ABSENT else json.dumps(value, ensure_ascii=False, sort_keys=True)
+    """A CSV cell: empty for an absent key, a non-empty string as it is, any
+    other value as JSON (``2015``, ``""``, ``["2014-01-01", "2016-01-01"]``)."""
+    if value is _ABSENT:
+        return ""
+    if isinstance(value, str) and value:
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 _ABSENT = object()
