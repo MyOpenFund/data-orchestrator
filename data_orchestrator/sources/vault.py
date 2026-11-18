@@ -10,7 +10,10 @@ foreign or missing extension, or a NULL ``local_path``, is unsupported. The
 candidates it leaves out are counted per source by ``count_unsupported``,
 never silently. Payloads
 are built from the vault's normalized columns merged with the
-corpus-specific ``extra`` fields (columns always win). File paths join the per-machine corpus root
+corpus-specific ``extra`` fields (columns always win). A key of ``extra`` that
+the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
+``text``, ``page``) is left out and counted, never sent: the engine refuses
+it, and one stray key must not fail the document. File paths join the per-machine corpus root
 (routing) with the vault's relative ``local_path``.
 """
 from __future__ import annotations
@@ -18,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Iterator, Sequence
 
-from ..core import SourceItem, source_label
+from ..core import SourceItem, source_label, split_reserved_keys
 from ..routing import (
     resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
 )
@@ -154,15 +157,19 @@ def row_to_item(row: dict, corpus: str) -> SourceItem | None:
         # Defensive only: the selection's SQL predicate already excludes a
         # NULL/blank local_path, so this guard should never fire.
         return None
-    extra = row.get("extra") or {}
-    payload = dict(extra)
+    # ``extra`` is free-form: the keys the engine writes itself are dropped
+    # (and reported on the item). The columns below are the vault's own and
+    # are never dropped; ``doc_id`` always comes from its column.
+    payload, dropped = split_reserved_keys(row.get("extra") or {})
+    dropped = tuple(key for key in dropped if key != "doc_id")
     for col in _PAYLOAD_COLUMNS:
         value = row.get(col)
         if value is None:
             payload.pop(col, None)
             continue
         payload[col] = value.isoformat() if hasattr(value, "isoformat") else value
-    return SourceItem(doc_id=row["doc_id"], path=resolve_local_path(corpus, local_path), payload=payload)
+    return SourceItem(doc_id=row["doc_id"], path=resolve_local_path(corpus, local_path),
+                      payload=payload, dropped_keys=dropped)
 
 
 def iter_items(conn, corpus: str, collection: str, **filters) -> Iterator[SourceItem]:

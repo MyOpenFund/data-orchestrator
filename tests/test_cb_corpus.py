@@ -242,3 +242,17 @@ def test_non_numeric_year_dir_is_excluded_only_when_a_bound_is_set(tmp_path):
     assert sorted(_ids(root)) == ["a", "u"]
     assert _ids(root, year_min=2000) == ["a"]
     assert _ids(root, year_max=2020) == ["a"]
+
+
+@pytest.mark.parametrize("indexed", [True, False])
+def test_the_payload_never_sets_a_key_the_engine_writes_itself(tmp_path, indexed):
+    """This connector builds its payload from fixed keys: none of them may be
+    one the engine refuses (filename, text, page, ..., doc_id)."""
+    from rag_engine.schema import RESERVED_KEYS
+
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    if indexed:
+        _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "A speech"}')
+    (item,) = iter_items(root, prefer_manifest=indexed)
+    assert not set(item.payload) & set(RESERVED_KEYS)
+    assert item.dropped_keys == ()

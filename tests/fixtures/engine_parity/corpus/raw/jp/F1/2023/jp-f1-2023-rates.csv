@@ -1,0 +1,54 @@
+date,policy_rate,decision,comment
+2023-01-18,-0.10,hold,Yield curve control maintained with a wider band
+2023-04-28,-0.10,hold,Review of past monetary policy measures announced
+2023-07-28,-0.10,hold,Greater flexibility in the conduct of yield curve control
+2023-10-31,-0.10,hold,Upper bound of one per cent becomes a reference
+2023-12-19,-0.10,hold,No change while wage developments are assessed
+2024-01-05,0.05,review,Scheduled review number 15 of market operations and collateral terms
+2024-01-12,0.05,review,Scheduled review number 22 of market operations and collateral terms
+2024-01-19,0.05,review,Scheduled review number 29 of market operations and collateral terms
+2024-01-26,0.05,review,Scheduled review number 36 of market operations and collateral terms
+2024-02-05,0.10,review,Scheduled review number 25 of market operations and collateral terms
+2024-02-12,0.10,review,Scheduled review number 32 of market operations and collateral terms
+2024-02-19,0.10,review,Scheduled review number 39 of market operations and collateral terms
+2024-02-26,0.10,review,Scheduled review number 46 of market operations and collateral terms
+2024-03-05,0.15,review,Scheduled review number 35 of market operations and collateral terms
+2024-03-12,0.15,review,Scheduled review number 42 of market operations and collateral terms
+2024-03-19,0.15,review,Scheduled review number 49 of market operations and collateral terms
+2024-03-26,0.15,review,Scheduled review number 56 of market operations and collateral terms
+2024-04-05,0.20,review,Scheduled review number 45 of market operations and collateral terms
+2024-04-12,0.20,review,Scheduled review number 52 of market operations and collateral terms
+2024-04-19,0.20,review,Scheduled review number 59 of market operations and collateral terms
+2024-04-26,0.20,review,Scheduled review number 66 of market operations and collateral terms
+2024-05-05,0.25,review,Scheduled review number 55 of market operations and collateral terms
+2024-05-12,0.25,review,Scheduled review number 62 of market operations and collateral terms
+2024-05-19,0.25,review,Scheduled review number 69 of market operations and collateral terms
+2024-05-26,0.25,review,Scheduled review number 76 of market operations and collateral terms
+2024-06-05,0.30,review,Scheduled review number 65 of market operations and collateral terms
+2024-06-12,0.30,review,Scheduled review number 72 of market operations and collateral terms
+2024-06-19,0.30,review,Scheduled review number 79 of market operations and collateral terms
+2024-06-26,0.30,review,Scheduled review number 86 of market operations and collateral terms
+2024-07-05,0.35,review,Scheduled review number 75 of market operations and collateral terms
+2024-07-12,0.35,review,Scheduled review number 82 of market operations and collateral terms
+2024-07-19,0.35,review,Scheduled review number 89 of market operations and collateral terms
+2024-07-26,0.35,review,Scheduled review number 96 of market operations and collateral terms
+2024-08-05,0.40,review,Scheduled review number 85 of market operations and collateral terms
+2024-08-12,0.40,review,Scheduled review number 92 of market operations and collateral terms
+2024-08-19,0.40,review,Scheduled review number 99 of market operations and collateral terms
+2024-08-26,0.40,review,Scheduled review number 106 of market operations and collateral terms
+2024-09-05,0.45,review,Scheduled review number 95 of market operations and collateral terms
+2024-09-12,0.45,review,Scheduled review number 102 of market operations and collateral terms
+2024-09-19,0.45,review,Scheduled review number 109 of market operations and collateral terms
+2024-09-26,0.45,review,Scheduled review number 116 of market operations and collateral terms
+2024-10-05,0.50,review,Scheduled review number 105 of market operations and collateral terms
+2024-10-12,0.50,review,Scheduled review number 112 of market operations and collateral terms
+2024-10-19,0.50,review,Scheduled review number 119 of market operations and collateral terms
+2024-10-26,0.50,review,Scheduled review number 126 of market operations and collateral terms
+2024-11-05,0.55,review,Scheduled review number 115 of market operations and collateral terms
+2024-11-12,0.55,review,Scheduled review number 122 of market operations and collateral terms
+2024-11-19,0.55,review,Scheduled review number 129 of market operations and collateral terms
+2024-11-26,0.55,review,Scheduled review number 136 of market operations and collateral terms
+2024-12-05,0.60,review,Scheduled review number 125 of market operations and collateral terms
+2024-12-12,0.60,review,Scheduled review number 132 of market operations and collateral terms
+2024-12-19,0.60,review,Scheduled review number 139 of market operations and collateral terms
+2024-12-26,0.60,review,Scheduled review number 146 of market operations and collateral terms

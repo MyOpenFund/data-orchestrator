@@ -1,18 +1,19 @@
 """data_orchestrator.
 
 Ingestion orchestrator: a policy layer that moves documents selected by the
-vault (Postgres) through the **eigenmind** engine (chunking, embedding,
-Qdrant upsert) into Qdrant, the derived projection.
+vault (Postgres) through the **rag-engine** library (chunking, embedding,
+Qdrant write) into Qdrant, the derived projection.
 
-Direction of dependency is one-way: this package *uses* eigenmind (it drives
-its ``chunk_with_chunknorris`` -> ``EmbeddingModel`` -> ``QdrantStore`` pipeline).
-eigenmind never imports this package and keeps working perfectly on its own —
-the orchestrator is purely an add-on for bulk-ingesting the vault's selection
-(or, as a fallback, a fixed on-disk corpus) into Qdrant.
+Direction of dependency is one-way: this package *uses* rag-engine (it calls
+``rag_engine.ingest.ingest_document`` once per document, with a
+``rag_engine.store.QdrantStore`` and an embedder built once per run).
+rag-engine never imports this package — the orchestrator is the policy layer
+that bulk-ingests the vault's selection (or, as a fallback, a fixed on-disk
+corpus) into Qdrant.
 
 Layout
 ------
-- ``core``          reusable engine: chunk -> embed -> upsert + resume ledger
+- ``core``          the run loop around the engine: settings, resume ledger, isolation
 - ``routing``        per-corpus root/collection-naming rules
 - ``vault``          Postgres connection + the rag_ingestions-backed ledger
 - ``probe``          facts probe (has_text_layer / page_count) for OCR policy

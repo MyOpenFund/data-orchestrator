@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Iterator, Optional, Sequence, Union
 
 from ..config import get_path
-from ..core import SourceItem
+from ..core import SourceItem, split_reserved_keys
 
 # Name of the ``.env`` key holding this machine's corpus root. As with cb_corpus
 # the path is never hard-coded: it lives in ``.env`` (see ``.env.example``) or is
@@ -122,9 +122,14 @@ def iter_items(
     ):
         # company_corpus's SourceItem already exposes (doc_id, path, payload)
         # with the same meaning as ours; re-wrap into this repo's dataclass so the
-        # core engine receives exactly the type it expects.
+        # core engine receives exactly the type it expects. The payload is
+        # company_corpus's, not ours: a key the engine writes itself
+        # (filename, text, page, ..., or a doc_id other than the item's) is
+        # left out and counted rather than failing the document.
+        payload, dropped = split_reserved_keys(it.payload, it.doc_id)
         yield SourceItem(
             doc_id=it.doc_id,
             path=Path(it.path),
-            payload=dict(it.payload),
+            payload=payload,
+            dropped_keys=dropped,
         )

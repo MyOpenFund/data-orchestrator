@@ -1,7 +1,7 @@
 """data_orchestrator CLI.
 
 Installed as the ``data-orchestrator`` console script. Standalone repo that
-drives the eigenmind engine (a separate editable install, see ``README.md``)::
+drives the rag-engine library (a dependency, see ``README.md``)::
 
     data-orchestrator vault --corpus central-bank
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -42,7 +43,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, policy
-from .core import Ledger, SourceItem, run_ingest, IngestStats, source_label
+from .core import (
+    Ledger, SourceItem, run_ingest, IngestStats, engine_settings, interrupted_stats, source_label,
+)
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
@@ -129,9 +132,16 @@ def _make_progress(every: int):
     return on_progress
 
 
-def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
+# First line of the summary: a run that reached its end, and a run a fatal
+# error stopped (the counts that follow are then what was done before it).
+SUMMARY_DONE = "Done."
+SUMMARY_INTERRUPTED = "Interrupted by a fatal error. Before it:"
+
+
+def _print_summary(stats: IngestStats, elapsed: float | None = None, *,
+                   interrupted: bool = False) -> None:
     print("─" * 60)
-    print("Done.")
+    print(SUMMARY_INTERRUPTED if interrupted else SUMMARY_DONE)
     print(f"  docs seen      : {stats.docs_seen}")
     print(f"  docs ingested  : {stats.docs_ingested}")
     print(f"  skipped(resume): {stats.docs_skipped_resume}")
@@ -145,6 +155,15 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
         print(f"  first errors   :")
         for path, msg in stats.errors[:10]:
             print(f"    - {path}: {msg}")
+    if stats.payload_keys_dropped:
+        dropped = ", ".join(f"{key} x{n}" for key, n in sorted(stats.payload_keys_dropped.items()))
+        print(
+            f"warning: {sum(stats.payload_keys_dropped.values())} metadata key(s) reserved "
+            f"for the engine were left out of the payloads ({dropped}): the engine "
+            "writes these keys itself. Remove them from the source metadata "
+            "(the vault's documents.extra).",
+            file=sys.stderr,
+        )
     if stats.docs_path_metadata:
         print(
             f"warning: {stats.docs_path_metadata} document(s) were not indexed in the "
@@ -161,7 +180,7 @@ def _print_summary(stats: IngestStats, elapsed: float | None = None) -> None:
 #
 # The ok/degraded rule (incl. the failure-ratio threshold) lives in
 # ``policy.py``; a fatal exception is reported separately as failed/exit 1
-# (_fatal_report).
+# (_fatal_report), with the counts of what was done before it.
 # ---------------------------------------------------------------------------
 
 # Same cap as central-bank-corpus runreport.py (the other writer of runs.extra->>'fatal').
@@ -177,6 +196,11 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
         "docs_failed": stats.docs_error,
         "docs_path_metadata": stats.docs_path_metadata,
     }
+    # Reserved payload keys the sources left out of free-form metadata
+    # (core.split_reserved_keys). Written only when there are some, so the
+    # report of a clean run keeps the shape it always had.
+    if stats.payload_keys_dropped:
+        totals["payload_keys_dropped"] = sum(stats.payload_keys_dropped.values())
     # sources[] lists only the source codes the run touched (stats.by_source):
     # a source with only unsupported documents is not a source the run
     # worked on, so it never appears there (it would read as a run of that
@@ -211,25 +235,47 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
 
 
 def _fatal_report(command: str, started_at: str, exc: Exception, *, corpus: str,
-                  unsupported: dict[str, int] | None = None) -> dict:
+                  unsupported: dict[str, int] | None = None,
+                  stats: IngestStats | None = None) -> dict:
     """Best-effort report for a run that never reached a normal outcome.
 
     The reason goes under ``fatal`` (runs.extra->>'fatal'), the key
     central-bank-corpus already writes; it was ``error`` before 2026-11.
-    ``unsupported`` (the vault source's per-source count, when it was
-    computed before the failure) is passed through so a known
-    ``docs_unsupported`` and ``unsupported_by_source`` are not lost;
-    ``sources[]`` stays empty (the run touched no source).
+    ``stats`` are the statistics of a run interrupted in the middle
+    (``core.interrupted_stats``): the totals and ``sources[]`` then say what
+    was done before the failure, as ``rag_ingestions`` does. Without them
+    (a failure before the run started) the totals are zeros and ``sources[]``
+    is empty. ``unsupported`` (the vault source's per-source count, when it
+    was computed before the failure) is passed through so a known
+    ``docs_unsupported`` and ``unsupported_by_source`` are not lost.
     """
     # The ratio is irrelevant to a fatal outcome (overwritten below); the
     # default is stated explicitly since _build_report has no default.
-    rep = _build_report(command, IngestStats(), started_at, corpus=corpus,
+    rep = _build_report(command, stats if stats is not None else IngestStats(), started_at,
+                        corpus=corpus,
                         ratio=policy.DEFAULT_DEGRADED_FAILURE_RATIO,
                         unsupported=unsupported)
     rep["outcome"] = "failed"
     rep["exit_code"] = 1
     rep["fatal"] = f"{type(exc).__name__}: {exc}"[:FATAL_MAX_CHARS]
     return rep
+
+
+def _print_interrupted_summary(stats: IngestStats | None, elapsed: float | None = None) -> None:
+    """The counts of a run a fatal error stopped after its first document,
+    under ``Interrupted…`` instead of ``Done.`` (the fatal line follows,
+    printed by the caller). Nothing for a run that saw no document.
+
+    Called once the run report is written, and never raises: the fatal error
+    may be stdout itself (a pipe whose reader has gone), and failing to print
+    the summary must not replace the error that ended the run nor change the
+    exit code."""
+    if stats is None or not stats.docs_seen:
+        return
+    try:
+        _print_summary(stats, elapsed, interrupted=True)
+    except Exception:  # noqa: BLE001 — the caller's fatal line says why the run ended
+        pass
 
 
 def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
@@ -256,7 +302,7 @@ def _append_report_jsonl(report: dict) -> None:
         fh.write(json.dumps(report) + "\n")
 
 
-# eigenmind's own defaults (eigenmind/config.py qdrant_host/qdrant_port),
+# The engine's own defaults (rag_engine.config.Settings qdrant_host/qdrant_port),
 # used only to display a store that reports no host/port. 6333 is the LEGACY
 # store.
 QDRANT_DEFAULT_HOST = "localhost"
@@ -267,20 +313,19 @@ QDRANT_API_KEY_ENV = "QDRANT_API_KEY"
 
 def _api_key_state(environ=None) -> str:
     """``"set"`` when ``QDRANT_API_KEY`` is non-blank, else ``"unset"``; the
-    value itself is never returned. Read at ``on_target`` time, i.e. after the
-    store was constructed: eigenmind resolved its key from this same variable
-    (its own python-dotenv ran at first import), and this repo never passes an
-    explicit key, so the state matches the store's."""
+    value itself is never returned. The engine resolves its key from this same
+    variable (``Settings.from_env``, same blank-is-unset rule) and this repo
+    never passes an explicit key, so the state matches the store's."""
     environ = os.environ if environ is None else environ
     return "set" if (environ.get(QDRANT_API_KEY_ENV) or "").strip() else "unset"
 
 
 def _print_qdrant_target(host, port) -> None:
     """``run_ingest``'s ``on_target``: print the Qdrant the constructed store
-    writes to — resolved by eigenmind AFTER its own python-dotenv ran, so the
-    line is right even when that loader set QDRANT_HOST/QDRANT_PORT — and
+    writes to — what the store resolved, not a second reading of the
+    environment — and
     whether an API key is set (never its value), and warn on the legacy port.
-    A store that reports no host or port is displayed with eigenmind's default
+    A store that reports no host or port is displayed with the engine's default
     (an invalid or empty ``QDRANT_PORT`` in the environment never gets here:
     ``_qdrant_port_error`` refuses it before any work); the port is compared
     numerically (``06333`` is 6333)."""
@@ -293,7 +338,7 @@ def _print_qdrant_target(host, port) -> None:
         port = raw  # displayed as is; cannot be the legacy port
     print(f"Qdrant: {host}:{port} (api key: {_api_key_state()})", flush=True)
     if port == QDRANT_DEFAULT_PORT:
-        print(f"warning: Qdrant port {port} is the legacy store (eigenmind's default); "
+        print(f"warning: Qdrant port {port} is the legacy store (the engine's default); "
               "set QDRANT_PORT to the dedicated one unless this is intended",
               file=sys.stderr)
 
@@ -306,7 +351,7 @@ def _qdrant_port_error(environ=None) -> str | None:
     set but is not a plain integer in 1..65535 (surrounding whitespace
     ignored; empty is invalid, ``.env`` values are literal so an inline
     ``# comment`` is part of the value), else ``None``. Absent is fine
-    (eigenmind's default, warned about by ``_print_qdrant_target``)."""
+    (the engine's default, warned about by ``_print_qdrant_target``)."""
     environ = os.environ if environ is None else environ
     raw = environ.get(QDRANT_PORT_ENV)
     if raw is None:
@@ -315,7 +360,89 @@ def _qdrant_port_error(environ=None) -> str | None:
     if text.isascii() and text.isdigit() and 1 <= int(text) <= 65535:
         return None
     return (f"{QDRANT_PORT_ENV}={raw!r} is not a port number (expected a plain "
-            "integer 1..65535; unset it to use eigenmind's default)")
+            "integer 1..65535; unset it to use the engine's default)")
+
+
+LOG_LEVEL_ENV = "DATA_ORCHESTRATOR_LOG_LEVEL"
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+# Libraries that log every HTTP request or file lock at INFO.
+_NOISY_LOGGERS = ("transformers", "sentence_transformers", "huggingface_hub", "urllib3",
+                  "httpx", "httpcore", "filelock")
+
+
+def _setup_logging(environ=None) -> None:
+    """Send the log records of this package and of the engine to stderr.
+
+    The engine, like any library, configures no logging: without this its
+    INFO lines (model loaded, collection created) would be lost and its
+    warnings printed bare. Level: ``DATA_ORCHESTRATOR_LOG_LEVEL`` (default
+    ``INFO``); raises ``ValueError`` on a name that is not a logging level.
+
+    Two things are done:
+
+    - the root logger gets a stderr handler at that level, unless it already
+      has handlers (a host process configured logging): they are then left as
+      they are, the root level too: the level variable does not reach them;
+    - in every case, the libraries that log each HTTP request or file lock at
+      INFO (``_NOISY_LOGGERS``) are set to that level or WARNING, whichever is
+      higher.
+    """
+    environ = os.environ if environ is None else environ
+    raw = (environ.get(LOG_LEVEL_ENV) or "").strip()
+    level = raw.upper() or DEFAULT_LOG_LEVEL
+    if level not in LOG_LEVELS:
+        raise ValueError(f"{LOG_LEVEL_ENV}={raw!r} is not a log level "
+                         f"(one of {', '.join(LOG_LEVELS)})")
+    logging.basicConfig(
+        level=getattr(logging, level),
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    for noisy in _NOISY_LOGGERS:
+        logging.getLogger(noisy).setLevel(max(logging.WARNING, getattr(logging, level)))
+
+
+TESSDATA_PREFIX_ENV = "TESSDATA_PREFIX"
+
+
+def _forced_ocr_error(ocr: str, environ=None) -> str | None:
+    """Pre-flight for an ingest run: the error message when ``--ocr always``
+    is asked on a host without ``TESSDATA_PREFIX`` (unset or blank), else
+    ``None``. Forced OCR does not look at ``ENABLE_OCR`` but still needs the
+    language data: asking for it without the variable is a configuration
+    error, refused whatever the selection holds (the parser would refuse each
+    PDF of it; a selection without PDFs would not notice)."""
+    environ = os.environ if environ is None else environ
+    if ocr != "always" or (environ.get(TESSDATA_PREFIX_ENV) or "").strip():
+        return None
+    return (f"forced OCR needs {TESSDATA_PREFIX_ENV}; set it or use --ocr auto/never "
+            f"(--ocr always was asked and {TESSDATA_PREFIX_ENV}, the folder of "
+            "Tesseract's *.traineddata files or its parent, is not set)")
+
+
+def _print_ocr_state(settings, ocr: str) -> None:
+    """Say, before a run, whether scanned pages will be read by OCR.
+
+    ``--ocr auto`` depends on the host: the engine runs OCR only when
+    ``ENABLE_OCR`` is ``true`` and ``TESSDATA_PREFIX`` is set, both read from
+    the process environment each time a file is chunked — so they must be in
+    this repo's ``.env`` (or the real environment). A silent "auto -> never"
+    is what this line is for. The languages are ``RAG_ENGINE_OCR_LANGUAGES``.
+    ``--ocr always`` gets here only with ``TESSDATA_PREFIX`` set
+    (``_forced_ocr_error`` refuses the run otherwise).
+    """
+    from rag_engine.chunking import ocr_available
+
+    languages = f"languages: {settings.ocr_languages}"
+    if ocr == "never":
+        print("OCR: off (--ocr never)", flush=True)
+    elif ocr == "always":
+        print(f"OCR: forced (--ocr always, {languages})", flush=True)
+    elif ocr_available():
+        print(f"OCR: available ({languages})", flush=True)
+    else:
+        print("OCR: off (ENABLE_OCR not true or TESSDATA_PREFIX unset)", flush=True)
 
 
 def _validate_corpus_root(corpus: str) -> int | None:
@@ -385,9 +512,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
     args = parser.parse_args(argv)
-    # The one .env loader (issue #8), run before anything can import eigenmind:
-    # eigenmind's own python-dotenv (override=False) runs at its first import
-    # and can then only add keys this file did not set. No $VAR interpolation
+    # The one .env loader (issue #8), run before anything reads the
+    # environment: the engine loads no .env of its own, it reads the process
+    # environment when asked (its settings below; ENABLE_OCR / TESSDATA_PREFIX
+    # each time a file is chunked). No $VAR interpolation
     # here — values are taken literally, surrounding quotes stripped.
     # DATA_ORCHESTRATOR_DOTENV (real environment only) names the file
     # explicitly; a missing one is an operator error, before any work.
@@ -409,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
     # Run policy, read once from the (now loaded) environment: an invalid
     # value is an operator error (exit 2), caught before any DB/engine work.
     try:
+        _setup_logging()
         args.degraded_ratio = policy.degraded_failure_ratio()
         args.supported_mimes = supported_mime_types()
     except ValueError as exc:
@@ -431,6 +560,19 @@ def main(argv: list[str] | None = None) -> int:
         port_error = _qdrant_port_error()
         if port_error is not None:
             print(f"error: {port_error}", file=sys.stderr)
+            return 2
+        # The engine's settings (model and dimension, batch size, OCR
+        # languages, Qdrant timeout, ...), read once from the loaded
+        # environment: an invalid value is one operator error here, not a
+        # failure per document later.
+        try:
+            args.engine_settings = engine_settings()
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        ocr_error = _forced_ocr_error(args.ocr)
+        if ocr_error is not None:
+            print(f"error: {ocr_error}", file=sys.stderr)
             return 2
 
     # Each disk source implies its own vault corpus; an explicit --corpus
@@ -541,6 +683,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ledger = None
     vault_conn = None
+    t0 = None  # set when the engine run starts
     started_at = datetime.now(timezone.utc).isoformat()
     try:
         if not args.no_resume:
@@ -563,6 +706,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"→ Ingesting source '{args.source}' into collection '{collection}' "
               f"(ocr={args.ocr}, limit={args.limit})")
+        _print_ocr_state(args.engine_settings, args.ocr)
         t0 = time.time()
         stats = run_ingest(
             items,
@@ -572,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             on_progress=_make_progress(args.progress_every),
             on_target=_print_qdrant_target,
+            settings=args.engine_settings,
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
@@ -607,7 +752,10 @@ def main(argv: list[str] | None = None) -> int:
                     report_conn.close()
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
-        rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus)
+        # The report first, then the summary: printing can fail too.
+        stats = interrupted_stats(exc)
+        elapsed = None if t0 is None else time.time() - t0
+        rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus, stats=stats)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -632,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if report_conn is not None:
                     report_conn.close()
+        _print_interrupted_summary(stats, elapsed)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:
@@ -680,10 +829,11 @@ def _run_vault_source(args, collection: str) -> int:
         items = vault_source.iter_items(conn, args.corpus, collection, **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
               f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
+        _print_ocr_state(args.engine_settings, args.ocr)
         stats = run_ingest(
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
-            on_target=_print_qdrant_target,
+            on_target=_print_qdrant_target, settings=args.engine_settings,
         )
         _print_summary(stats)
 
@@ -695,10 +845,13 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         return rep["exit_code"]
     except Exception as exc:  # noqa: BLE001 — fatal: best-effort report, honest exit code
+        # The report first, then the summary: printing can fail too.
+        stats = interrupted_stats(exc)
         rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
-                            unsupported=unsupported)
+                            unsupported=unsupported, stats=stats)
         if conn is not None:
             _insert_fatal_report(vault_mod, conn, rep)
+        _print_interrupted_summary(stats)
         print(f"error: fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return rep["exit_code"]
     finally:

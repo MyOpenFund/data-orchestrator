@@ -12,9 +12,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from rag_engine.chunking import SUPPORTED_EXTENSIONS
+
 from .config import get_path
 
 EMBEDDING_MODEL_ENV = "DATA_ORCHESTRATOR_EMBEDDING_MODEL"
+# Vector dimension of the model above; required for any model but the default
+# (core.engine_settings). The engine's own names are read as fallbacks.
+EMBEDDING_DIM_ENV = "DATA_ORCHESTRATOR_EMBEDDING_DIM"
+ENGINE_MODEL_ENV = "RAG_ENGINE_MODEL"
+ENGINE_DIM_ENV = "RAG_ENGINE_DIM"
 DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 
 # Policy tag recorded in rag_ingestions.embedding_version: bump when the
@@ -28,9 +35,20 @@ MODEL_TAGS = {
 }
 
 
-def embedding_model_name() -> str:
-    """The sentence-transformers model to embed with (env-overridable for CI)."""
-    return os.environ.get(EMBEDDING_MODEL_ENV) or DEFAULT_EMBEDDING_MODEL
+def embedding_model_name(environ=None) -> str:
+    """The sentence-transformers model to embed with.
+
+    ``DATA_ORCHESTRATOR_EMBEDDING_MODEL``, else the engine's own
+    ``RAG_ENGINE_MODEL``, else the default. One resolution for the model that
+    embeds (``core.engine_settings``), the collection name and the
+    ``rag_ingestions`` rows, so they cannot disagree.
+    """
+    environ = os.environ if environ is None else environ
+    for key in (EMBEDDING_MODEL_ENV, ENGINE_MODEL_ENV):
+        value = (environ.get(key) or "").strip()
+        if value:
+            return value
+    return DEFAULT_EMBEDDING_MODEL
 
 
 def model_tag(model_name: str) -> str:
@@ -47,22 +65,36 @@ def collection_name(corpus: str, model_name: str | None = None, version: int = 1
     return f"{corpus}-{model_tag(model_name or embedding_model_name())}-v{version}"
 
 
-# What the pinned eigenmind engine can chunk: eigenmind 84d2ac4
-# (``eigenmind/core/chunking.py``, ``chunk_with_chunknorris``) dispatches on the
-# file extension: pdf/docx/xlsx/csv/md natively, txt read as markdown, pptx via
-# markitdown. Bump this table together with the eigenmind pin in CI.
-MIME_EXTENSIONS: dict[str, tuple[str, ...]] = {
-    "application/pdf": (".pdf",),
-    "text/markdown": (".md",),
-    "text/plain": (".txt",),
-    "text/csv": (".csv",),
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (".docx",),
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (".xlsx",),
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (".pptx",),
+# The mime type of each file extension the engine reads. The extensions are the
+# engine's (``rag_engine.chunking.SUPPORTED_EXTENSIONS``: ``chunk_file``
+# dispatches on the file extension); the mime mapping is this repo's, since
+# the vault describes documents by mime type. An extension the engine reads
+# and this table does not name is not offered to it;
+# tests/test_routing.py asserts the two stay in sync.
+_EXTENSION_MIME: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+
+def _mime_extensions() -> dict[str, tuple[str, ...]]:
+    """{mime: extensions} for the extensions the engine reads, in this table's order."""
+    table: dict[str, tuple[str, ...]] = {}
+    for ext, mime in _EXTENSION_MIME.items():
+        if ext in SUPPORTED_EXTENSIONS:
+            table[mime] = table.get(mime, ()) + (ext,)
+    return table
+
+
+MIME_EXTENSIONS: dict[str, tuple[str, ...]] = _mime_extensions()
 SUPPORTED_MIME_ENV = "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES"
 # Default = everything the engine reads (decided 2026-11-10). text/html is
-# deliberately absent: HTML is converted to .md or PDF before eigenmind.
+# deliberately absent: HTML is converted to .md or PDF before the engine.
 DEFAULT_SUPPORTED_MIME_TYPES: tuple[str, ...] = tuple(MIME_EXTENSIONS)
 
 

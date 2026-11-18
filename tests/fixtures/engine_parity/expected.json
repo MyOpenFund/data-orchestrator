@@ -1,0 +1,832 @@
+{
+ "captured_from": {
+  "data_orchestrator": "7196bfc364e8e38d986335cdf9e5ca18722689c2",
+  "engine_fork": "6e9093a777d059aefac5340de51c2c77fc93dec7",
+  "python": "3.13.18",
+  "chunknorris": "1.5.0",
+  "pymupdf": "1.27.2.2",
+  "qdrant_client": "1.20.0",
+  "rag_engine_fake_embedder": "0.1.0"
+ },
+ "corpus": "central-bank",
+ "collection": "central-bank-e5b-v1",
+ "embedder": {
+  "name": "parity-fake",
+  "dim": 8,
+  "passage_prefix": "passage: ",
+  "query_prefix": "query: ",
+  "seed": 0
+ },
+ "ocr": "never",
+ "documents": [
+  {
+   "row": {
+    "doc_id": "ecb-a1-2025-10-30-statement",
+    "corpus": "central-bank",
+    "source_code": "ecb",
+    "doc_type": "A1",
+    "title": "Décision de politique monétaire",
+    "date": "2025-10-30",
+    "year": 2025,
+    "language": "fr",
+    "provenance": "manifest",
+    "local_path": "data/raw/ecb/A1/2025/ecb-a1-2025-10-30-statement.md",
+    "extra": {
+     "doc_group": "A",
+     "pdf_url": "https://example.org/ecb/2025-10-30.html"
+    }
+   },
+   "written": 7,
+   "points": [
+    {
+     "id": 1188225081070927015,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 0,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Taux directeurs\n\nLe Conseil des gouverneurs a décidé aujourd'hui de laisser inchangés les trois taux d'intérêt\ndirecteurs de la BCE. L'inflation se situe actuellement à un niveau proche de l'objectif de\n2 % à moyen terme et l'évaluation des perspectives d'inflation reste globalement inchangée."
+     },
+     "vector": [
+      0.45309334993362427,
+      0.319105863571167,
+      -0.46146562695503235,
+      -0.03170366585254669,
+      -0.00826987624168396,
+      0.41879066824913025,
+      0.45723801851272583,
+      -0.30724838376045227
+     ]
+    },
+    {
+     "id": 711488192911114122,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 1,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Economic activity\n\nThe economy has continued to grow despite the challenging global environment. The robust\nlabour market, solid private sector balance sheets and the past interest rate cuts remain\nimportant sources of resilience, while the outlook is still uncertain owing to trade disputes\nand geopolitical tensions."
+     },
+     "vector": [
+      -0.60136878490448,
+      0.20510360598564148,
+      0.041481588035821915,
+      -0.009954211302101612,
+      0.6051409840583801,
+      -0.004573296755552292,
+      0.22886675596237183,
+      0.41937071084976196
+     ]
+    },
+    {
+     "id": 913848515190851959,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 2,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Programme d'achats\n\nLes portefeuilles du programme d'achats d'actifs et du programme d'achats d'urgence face à la\npandémie se contractent à un rythme mesuré et prévisible, l'Eurosystème ne réinvestissant plus\nles remboursements au titre du principal des titres arrivant à échéance."
+     },
+     "vector": [
+      -0.3659704029560089,
+      -0.34538504481315613,
+      0.46304556727409363,
+      0.16997264325618744,
+      -0.40281733870506287,
+      0.47528111934661865,
+      -0.3309483528137207,
+      0.0761062502861023
+     ]
+    },
+    {
+     "id": 4056798414061596073,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 3,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Annexe 1 : évaluation des risques\n\nSection 1. Les risques pesant sur la croissance économique restent orientés à la baisse. Une\nnouvelle escalade des tensions commerciales mondiales et les incertitudes qui y sont associées\npourraient freiner la croissance en pesant sur les exportations, l'investissement et la\nconsommation. Une détérioration du sentiment sur les marchés financiers pourrait entraîner un\ndurcissement des conditions de financement et une plus grande aversion au risque.\n\nThe outlook for inflation is more uncertain than usual, on account of the still volatile\nglobal trade policy environment. A stronger euro could bring inflation down further than\nexpected, while higher defence and infrastructure spending could raise it over the medium\nterm. Extreme weather events could drive up food prices by more than expected in annex 1."
+     },
+     "vector": [
+      0.3562658727169037,
+      0.4937150478363037,
+      0.49331310391426086,
+      -0.2218373715877533,
+      0.10596120357513428,
+      -0.013834884390234947,
+      -0.5670713782310486,
+      0.06132984906435013
+     ]
+    },
+    {
+     "id": 2423545189750989326,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 4,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Annexe 2 : évaluation des risques\n\nSection 2. Les risques pesant sur la croissance économique restent orientés à la baisse. Une\nnouvelle escalade des tensions commerciales mondiales et les incertitudes qui y sont associées\npourraient freiner la croissance en pesant sur les exportations, l'investissement et la\nconsommation. Une détérioration du sentiment sur les marchés financiers pourrait entraîner un\ndurcissement des conditions de financement et une plus grande aversion au risque.\n\nThe outlook for inflation is more uncertain than usual, on account of the still volatile\nglobal trade policy environment. A stronger euro could bring inflation down further than\nexpected, while higher defence and infrastructure spending could raise it over the medium\nterm. Extreme weather events could drive up food prices by more than expected in annex 2."
+     },
+     "vector": [
+      -0.5069931745529175,
+      -0.040475040674209595,
+      0.02741881273686886,
+      0.3568344712257385,
+      -0.5455323457717896,
+      0.022828606888651848,
+      0.19237129390239716,
+      -0.5273553729057312
+     ]
+    },
+    {
+     "id": 978812344119523740,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 5,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Annexe 3 : évaluation des risques\n\nSection 3. Les risques pesant sur la croissance économique restent orientés à la baisse. Une\nnouvelle escalade des tensions commerciales mondiales et les incertitudes qui y sont associées\npourraient freiner la croissance en pesant sur les exportations, l'investissement et la\nconsommation. Une détérioration du sentiment sur les marchés financiers pourrait entraîner un\ndurcissement des conditions de financement et une plus grande aversion au risque.\n\nThe outlook for inflation is more uncertain than usual, on account of the still volatile\nglobal trade policy environment. A stronger euro could bring inflation down further than\nexpected, while higher defence and infrastructure spending could raise it over the medium\nterm. Extreme weather events could drive up food prices by more than expected in annex 3."
+     },
+     "vector": [
+      -0.354658842086792,
+      0.00296763121150434,
+      -0.581166684627533,
+      0.6221006512641907,
+      0.047393735498189926,
+      0.3194912374019623,
+      -0.18878106772899628,
+      0.09739244729280472
+     ]
+    },
+    {
+     "id": 3293790807641158765,
+     "payload": {
+      "doc_id": "ecb-a1-2025-10-30-statement",
+      "doc_group": "A",
+      "pdf_url": "https://example.org/ecb/2025-10-30.html",
+      "corpus": "central-bank",
+      "source_code": "ecb",
+      "doc_type": "A1",
+      "title": "Décision de politique monétaire",
+      "date": "2025-10-30",
+      "year": 2025,
+      "language": "fr",
+      "sha256": "cf7f41c1b4deb65cf024e540bb85ee58e5da1bc849f7127d6217c646023c156c",
+      "provenance": "manifest",
+      "filename": "ecb-a1-2025-10-30-statement.md",
+      "chunk_number": 6,
+      "ingestion_date": "2026-11-17T20:54:49.560589",
+      "text": "# Décision de politique monétaire\n\n## Annexe 4 : évaluation des risques\n\nSection 4. Les risques pesant sur la croissance économique restent orientés à la baisse. Une\nnouvelle escalade des tensions commerciales mondiales et les incertitudes qui y sont associées\npourraient freiner la croissance en pesant sur les exportations, l'investissement et la\nconsommation. Une détérioration du sentiment sur les marchés financiers pourrait entraîner un\ndurcissement des conditions de financement et une plus grande aversion au risque.\n\nThe outlook for inflation is more uncertain than usual, on account of the still volatile\nglobal trade policy environment. A stronger euro could bring inflation down further than\nexpected, while higher defence and infrastructure spending could raise it over the medium\nterm. Extreme weather events could drive up food prices by more than expected in annex 4."
+     },
+     "vector": [
+      0.4394824504852295,
+      -0.17184366285800934,
+      0.39146947860717773,
+      -0.14962564408779144,
+      -0.2975562810897827,
+      0.4932071268558502,
+      -0.49642065167427063,
+      -0.15317396819591522
+     ]
+    }
+   ]
+  },
+  {
+   "row": {
+    "doc_id": "us-a3-2024-06-12-minutes",
+    "corpus": "central-bank",
+    "source_code": "us",
+    "doc_type": "A3",
+    "title": "Minutes of the Federal Open Market Committee",
+    "date": "2024-06-12",
+    "year": 2024,
+    "language": "en",
+    "provenance": "manifest",
+    "local_path": "data/raw/us/A3/2024/us-a3-2024-06-12-minutes.txt",
+    "extra": {
+     "filename": "stale-name.txt",
+     "text": "stale text",
+     "chunk_number": 99,
+     "ingestion_date": "1999-01-01T00:00:00",
+     "meeting": "June 2024"
+    }
+   },
+   "written": 2,
+   "points": [
+    {
+     "id": 7892982476066526288,
+     "payload": {
+      "doc_id": "us-a3-2024-06-12-minutes",
+      "filename": "us-a3-2024-06-12-minutes.txt",
+      "text": "Minutes of the Federal Open Market Committee\n\nParticipants observed that inflation had eased over the past year but remained elevated. They\nnoted that recent monthly data had shown modest further progress toward the two per cent\nobjective, and that the labour market had come into better balance.\n\nIn their discussion of monetary policy, all participants judged it appropriate to maintain the\ntarget range for the federal funds rate. Participants emphasised that they did not expect it\nwould be appropriate to lower the target range until additional information had emerged that\ngave them greater confidence that inflation was moving sustainably toward two per cent.\n\nSeveral participants remarked that the staff outlook was little changed, with real output\ngrowth projected to slow, and unemployment to edge up over the coming quarters.\n\nParagraph 1 of the staff review. The staff provided an update on its assessment of the\nstability of the financial system. Asset valuation pressures were judged to be notable, house\nprices remained high relative to rents, and corporate bond spreads were narrow by historical\nstandards. Vulnerabilities associated with business and household debt were characterised as\nmoderate, while leverage in the financial sector was described as notable, in part because of\nthe sensitivity of some banks to changes in longer-term interest rates noted in review 1.\n\nParagraph 2 of the staff review. The staff provided an update on its assessment of the\nstability of the financial system. Asset valuation pressures were judged to be notable, house\nprices remained high relative to rents, and corporate bond spreads were narrow by historical\nstandards. Vulnerabilities associated with business and household debt were characterised as\nmoderate, while leverage in the financial sector was described as notable, in part because of\nthe sensitivity of some banks to changes in longer-term interest rates noted in review 2.\n\nParagraph 3 of the staff review. The staff provided an update on its assessment of the\nstability of the financial system. Asset valuation pressures were judged to be notable, house",
+      "chunk_number": 0,
+      "ingestion_date": "2026-11-17T20:54:49.561946",
+      "meeting": "June 2024",
+      "corpus": "central-bank",
+      "source_code": "us",
+      "doc_type": "A3",
+      "title": "Minutes of the Federal Open Market Committee",
+      "date": "2024-06-12",
+      "year": 2024,
+      "language": "en",
+      "sha256": "88095709f52af8596b3cc2027eee8b831d9ab27777603390a9c0a0d463470e46",
+      "provenance": "manifest"
+     },
+     "vector": [
+      0.20942634344100952,
+      0.12648548185825348,
+      0.3617522120475769,
+      0.0023166544269770384,
+      0.29789841175079346,
+      -0.7346949577331543,
+      -0.18761110305786133,
+      0.3815153241157532
+     ]
+    },
+    {
+     "id": 4447536640457311972,
+     "payload": {
+      "doc_id": "us-a3-2024-06-12-minutes",
+      "filename": "us-a3-2024-06-12-minutes.txt",
+      "text": "prices remained high relative to rents, and corporate bond spreads were narrow by historical\nstandards. Vulnerabilities associated with business and household debt were characterised as\nmoderate, while leverage in the financial sector was described as notable, in part because of\nthe sensitivity of some banks to changes in longer-term interest rates noted in review 3.\n\nParagraph 4 of the staff review. The staff provided an update on its assessment of the\nstability of the financial system. Asset valuation pressures were judged to be notable, house\nprices remained high relative to rents, and corporate bond spreads were narrow by historical\nstandards. Vulnerabilities associated with business and household debt were characterised as\nmoderate, while leverage in the financial sector was described as notable, in part because of\nthe sensitivity of some banks to changes in longer-term interest rates noted in review 4.\n\nParagraph 5 of the staff review. The staff provided an update on its assessment of the\nstability of the financial system. Asset valuation pressures were judged to be notable, house\nprices remained high relative to rents, and corporate bond spreads were narrow by historical\nstandards. Vulnerabilities associated with business and household debt were characterised as\nmoderate, while leverage in the financial sector was described as notable, in part because of\nthe sensitivity of some banks to changes in longer-term interest rates noted in review 5.\n\nParagraph 6 of the staff review. The staff provided an update on its assessment of the\nstability of the financial system. Asset valuation pressures were judged to be notable, house\nprices remained high relative to rents, and corporate bond spreads were narrow by historical\nstandards. Vulnerabilities associated with business and household debt were characterised as\nmoderate, while leverage in the financial sector was described as notable, in part because of\nthe sensitivity of some banks to changes in longer-term interest rates noted in review 6.",
+      "chunk_number": 1,
+      "ingestion_date": "2026-11-17T20:54:49.561946",
+      "meeting": "June 2024",
+      "corpus": "central-bank",
+      "source_code": "us",
+      "doc_type": "A3",
+      "title": "Minutes of the Federal Open Market Committee",
+      "date": "2024-06-12",
+      "year": 2024,
+      "language": "en",
+      "sha256": "88095709f52af8596b3cc2027eee8b831d9ab27777603390a9c0a0d463470e46",
+      "provenance": "manifest"
+     },
+     "vector": [
+      -0.023772256448864937,
+      -0.00621002446860075,
+      0.405378520488739,
+      0.47435373067855835,
+      0.4836835265159607,
+      0.15862080454826355,
+      0.3468882143497467,
+      -0.48022013902664185
+     ]
+    }
+   ]
+  },
+  {
+   "row": {
+    "doc_id": "jp-f1-2023-rates",
+    "corpus": "central-bank",
+    "source_code": "jp",
+    "doc_type": "F1",
+    "title": null,
+    "date": null,
+    "year": 2023,
+    "language": null,
+    "provenance": "disk",
+    "local_path": "data/raw/jp/F1/2023/jp-f1-2023-rates.csv",
+    "extra": null
+   },
+   "written": 2,
+   "points": [
+    {
+     "id": 1207173618566255514,
+     "payload": {
+      "doc_id": "jp-f1-2023-rates",
+      "corpus": "central-bank",
+      "source_code": "jp",
+      "doc_type": "F1",
+      "year": 2023,
+      "sha256": "bd66a3ed156f0d1c1597c9f8ec7356b75a297a395967183a5cf9a9886fb1980c",
+      "provenance": "disk",
+      "filename": "jp-f1-2023-rates.csv",
+      "chunk_number": 0,
+      "ingestion_date": "2026-11-17T20:54:49.566501",
+      "text": "{\"date\":\"2023-01-18\",\"policy_rate\":-0.1,\"decision\":\"hold\",\"comment\":\"Yield curve control maintained with a wider band\"}\n{\"date\":\"2023-04-28\",\"policy_rate\":-0.1,\"decision\":\"hold\",\"comment\":\"Review of past monetary policy measures announced\"}\n{\"date\":\"2023-07-28\",\"policy_rate\":-0.1,\"decision\":\"hold\",\"comment\":\"Greater flexibility in the conduct of yield curve control\"}\n{\"date\":\"2023-10-31\",\"policy_rate\":-0.1,\"decision\":\"hold\",\"comment\":\"Upper bound of one per cent becomes a reference\"}\n{\"date\":\"2023-12-19\",\"policy_rate\":-0.1,\"decision\":\"hold\",\"comment\":\"No change while wage developments are assessed\"}\n{\"date\":\"2024-01-05\",\"policy_rate\":0.05,\"decision\":\"review\",\"comment\":\"Scheduled review number 15 of market operations and collateral terms\"}\n{\"date\":\"2024-01-12\",\"policy_rate\":0.05,\"decision\":\"review\",\"comment\":\"Scheduled review number 22 of market operations and collateral terms\"}\n{\"date\":\"2024-01-19\",\"policy_rate\":0.05,\"decision\":\"review\",\"comment\":\"Scheduled review number 29 of market operations and collateral terms\"}\n{\"date\":\"2024-01-26\",\"policy_rate\":0.05,\"decision\":\"review\",\"comment\":\"Scheduled review number 36 of market operations and collateral terms\"}\n{\"date\":\"2024-02-05\",\"policy_rate\":0.1,\"decision\":\"review\",\"comment\":\"Scheduled review number 25 of market operations and collateral terms\"}\n{\"date\":\"2024-02-12\",\"policy_rate\":0.1,\"decision\":\"review\",\"comment\":\"Scheduled review number 32 of market operations and collateral terms\"}\n{\"date\":\"2024-02-19\",\"policy_rate\":0.1,\"decision\":\"review\",\"comment\":\"Scheduled review number 39 of market operations and collateral terms\"}\n{\"date\":\"2024-02-26\",\"policy_rate\":0.1,\"decision\":\"review\",\"comment\":\"Scheduled review number 46 of market operations and collateral terms\"}\n{\"date\":\"2024-03-05\",\"policy_rate\":0.15,\"decision\":\"review\",\"comment\":\"Scheduled review number 35 of market operations and collateral terms\"}\n{\"date\":\"2024-03-12\",\"policy_rate\":0.15,\"decision\":\"review\",\"comment\":\"Scheduled review number 42 of market operations and collateral terms\"}\n{\"date\":\"2024-03-19\",\"policy_rate\":0.15,\"decision\":\"review\",\"comment\":\"Scheduled review number 49 of market operations and collateral terms\"}\n{\"date\":\"2024-03-26\",\"policy_rate\":0.15,\"decision\":\"review\",\"comment\":\"Scheduled review number 56 of market operations and collateral terms\"}\n{\"date\":\"2024-04-05\",\"policy_rate\":0.2,\"decision\":\"review\",\"comment\":\"Scheduled review number 45 of market operations and collateral terms\"}\n{\"date\":\"2024-04-12\",\"policy_rate\":0.2,\"decision\":\"review\",\"comment\":\"Scheduled review number 52 of market operations and collateral terms\"}\n{\"date\":\"2024-04-19\",\"policy_rate\":0.2,\"decision\":\"review\",\"comment\":\"Scheduled review number 59 of market operations and collateral terms\"}\n{\"date\":\"2024-04-26\",\"policy_rate\":0.2,\"decision\":\"review\",\"comment\":\"Scheduled review number 66 of market operations and collateral terms\"}\n{\"date\":\"2024-05-05\",\"policy_rate\":0.25,\"decision\":\"review\",\"comment\":\"Scheduled review number 55 of market operations and collateral terms\"}\n{\"date\":\"2024-05-12\",\"policy_rate\":0.25,\"decision\":\"review\",\"comment\":\"Scheduled review number 62 of market operations and collateral terms\"}\n{\"date\":\"2024-05-19\",\"policy_rate\":0.25,\"decision\":\"review\",\"comment\":\"Scheduled review number 69 of market operations and collateral terms\"}\n{\"date\":\"2024-05-26\",\"policy_rate\":0.25,\"decision\":\"review\",\"comment\":\"Scheduled review number 76 of market operations and collateral terms\"}\n{\"date\":\"2024-06-05\",\"policy_rate\":0.3,\"decision\":\"review\",\"comment\":\"Scheduled review number 65 of market operations and collateral terms\"}\n{\"date\":\"2024-06-12\",\"policy_rate\":0.3,\"decision\":\"review\",\"comment\":\"Scheduled review number 72 of market operations and collateral terms\"}\n{\"date\":\"2024-06-19\",\"policy_rate\":0.3,\"decision\":\"review\",\"comment\":\"Scheduled review number 79 of market operations and collateral terms\"}\n{\"date\":\"2024-06-26\",\"policy_rate\":0.3,\"decision\":\"review\",\"comment\":\"Scheduled review number 86 of market operations and collateral terms\"}\n{\"date\":\"2024-07-05\",\"policy_rate\":0.35,\"decision\":\"review\",\"comment\":\"Scheduled review number 75 of market operations and collateral terms\"}\n{\"date\":\"2024-07-12\",\"policy_rate\":0.35,\"decision\":\"review\",\"comment\":\"Scheduled review number 82 of market operations and collateral terms\"}\n{\"date\":\"2024-07-19\",\"policy_rate\":0.35,\"decision\":\"review\",\"comment\":\"Scheduled review number 89 of market operations and collateral terms\"}\n{\"date\":\"2024-07-26\",\"policy_rate\":0.35,\"decision\":\"review\",\"comment\":\"Scheduled review number 96 of market operations and collateral terms\"}\n{\"date\":\"2024-08-05\",\"policy_rate\":0.4,\"decision\":\"review\",\"comment\":\"Scheduled review number 85 of market operations and collateral terms\"}\n{\"date\":\"2024-08-12\",\"policy_rate\":0.4,\"decision\":\"review\",\"comment\":\"Scheduled review number 92 of market operations and collateral terms\"}\n{\"date\":\"2024-08-19\",\"policy_rate\":0.4,\"decision\":\"review\",\"comment\":\"Scheduled review number 99 of market operations and collateral terms\"}\n{\"date\":\"2024-08-26\",\"policy_rate\":0.4,\"decision\":\"review\",\"comment\":\"Scheduled review number 106 of market operations and collateral terms\"}"
+     },
+     "vector": [
+      0.3133060336112976,
+      0.3479325473308563,
+      0.5763907432556152,
+      0.21249108016490936,
+      0.2881430685520172,
+      -0.3398888409137726,
+      -0.08708073198795319,
+      -0.444150447845459
+     ]
+    },
+    {
+     "id": 2000283191974613765,
+     "payload": {
+      "doc_id": "jp-f1-2023-rates",
+      "corpus": "central-bank",
+      "source_code": "jp",
+      "doc_type": "F1",
+      "year": 2023,
+      "sha256": "bd66a3ed156f0d1c1597c9f8ec7356b75a297a395967183a5cf9a9886fb1980c",
+      "provenance": "disk",
+      "filename": "jp-f1-2023-rates.csv",
+      "chunk_number": 1,
+      "ingestion_date": "2026-11-17T20:54:49.566501",
+      "text": "{\"date\":\"2024-09-05\",\"policy_rate\":0.45,\"decision\":\"review\",\"comment\":\"Scheduled review number 95 of market operations and collateral terms\"}\n{\"date\":\"2024-09-12\",\"policy_rate\":0.45,\"decision\":\"review\",\"comment\":\"Scheduled review number 102 of market operations and collateral terms\"}\n{\"date\":\"2024-09-19\",\"policy_rate\":0.45,\"decision\":\"review\",\"comment\":\"Scheduled review number 109 of market operations and collateral terms\"}\n{\"date\":\"2024-09-26\",\"policy_rate\":0.45,\"decision\":\"review\",\"comment\":\"Scheduled review number 116 of market operations and collateral terms\"}\n{\"date\":\"2024-10-05\",\"policy_rate\":0.5,\"decision\":\"review\",\"comment\":\"Scheduled review number 105 of market operations and collateral terms\"}\n{\"date\":\"2024-10-12\",\"policy_rate\":0.5,\"decision\":\"review\",\"comment\":\"Scheduled review number 112 of market operations and collateral terms\"}\n{\"date\":\"2024-10-19\",\"policy_rate\":0.5,\"decision\":\"review\",\"comment\":\"Scheduled review number 119 of market operations and collateral terms\"}\n{\"date\":\"2024-10-26\",\"policy_rate\":0.5,\"decision\":\"review\",\"comment\":\"Scheduled review number 126 of market operations and collateral terms\"}\n{\"date\":\"2024-11-05\",\"policy_rate\":0.55,\"decision\":\"review\",\"comment\":\"Scheduled review number 115 of market operations and collateral terms\"}\n{\"date\":\"2024-11-12\",\"policy_rate\":0.55,\"decision\":\"review\",\"comment\":\"Scheduled review number 122 of market operations and collateral terms\"}\n{\"date\":\"2024-11-19\",\"policy_rate\":0.55,\"decision\":\"review\",\"comment\":\"Scheduled review number 129 of market operations and collateral terms\"}\n{\"date\":\"2024-11-26\",\"policy_rate\":0.55,\"decision\":\"review\",\"comment\":\"Scheduled review number 136 of market operations and collateral terms\"}\n{\"date\":\"2024-12-05\",\"policy_rate\":0.6,\"decision\":\"review\",\"comment\":\"Scheduled review number 125 of market operations and collateral terms\"}\n{\"date\":\"2024-12-12\",\"policy_rate\":0.6,\"decision\":\"review\",\"comment\":\"Scheduled review number 132 of market operations and collateral terms\"}\n{\"date\":\"2024-12-19\",\"policy_rate\":0.6,\"decision\":\"review\",\"comment\":\"Scheduled review number 139 of market operations and collateral terms\"}\n{\"date\":\"2024-12-26\",\"policy_rate\":0.6,\"decision\":\"review\",\"comment\":\"Scheduled review number 146 of market operations and collateral terms\"}"
+     },
+     "vector": [
+      -0.012123879045248032,
+      0.44884568452835083,
+      -0.3609403371810913,
+      -0.22460506856441498,
+      -0.45132923126220703,
+      0.4064323902130127,
+      -0.39755040407180786,
+      -0.3012200891971588
+     ]
+    }
+   ]
+  },
+  {
+   "row": {
+    "doc_id": "gb-e1-2024-08-01-report",
+    "corpus": "central-bank",
+    "source_code": "gb",
+    "doc_type": "E1",
+    "title": "Monetary Policy Report, August 2024 (extract)",
+    "date": "2024-08-01",
+    "year": 2024,
+    "language": "en",
+    "provenance": "manifest",
+    "local_path": "data/raw/gb/E1/2024/gb-e1-2024-08-01-report.pdf",
+    "extra": {
+     "series": "Monetary Policy Report",
+     "year": 1900,
+     "doc_id": "stale-id"
+    }
+   },
+   "written": 3,
+   "points": [
+    {
+     "id": 3941084309279441591,
+     "payload": {
+      "doc_id": "gb-e1-2024-08-01-report",
+      "series": "Monetary Policy Report",
+      "year": 2024,
+      "corpus": "central-bank",
+      "source_code": "gb",
+      "doc_type": "E1",
+      "title": "Monetary Policy Report, August 2024 (extract)",
+      "date": "2024-08-01",
+      "language": "en",
+      "sha256": "38b3353a8b1b8c768d2996c5564f24e71f7f361aa98e60591a349c34129d6eaa",
+      "provenance": "manifest",
+      "filename": "gb-e1-2024-08-01-report.pdf",
+      "chunk_number": 0,
+      "ingestion_date": "2026-11-17T20:54:49.574653",
+      "text": "## **Monetary Policy Report**\nThe Monetary Policy Committee sets monetary policy to meet the two per cent inflation target, and in a way that helps to sustain growth and employment. At its meeting ending on 31 July, the Committee voted by a majority of five to four to reduce Bank Rate by a quarter of a percentage point, to five per cent.\nTwelve-month consumer price inflation was at the target in both May and June. The Committee expects the fall in headline inflation to continue to feed through to weaker pay and price-setting dynamics over the coming quarters.",
+      "page": 0
+     },
+     "vector": [
+      0.34273815155029297,
+      -0.15570569038391113,
+      -0.46761488914489746,
+      0.3370679020881653,
+      0.3608154058456421,
+      0.39361461997032166,
+      0.44287899136543274,
+      -0.21153205633163452
+     ]
+    },
+    {
+     "id": 2228006339620491958,
+     "payload": {
+      "doc_id": "gb-e1-2024-08-01-report",
+      "series": "Monetary Policy Report",
+      "year": 2024,
+      "corpus": "central-bank",
+      "source_code": "gb",
+      "doc_type": "E1",
+      "title": "Monetary Policy Report, August 2024 (extract)",
+      "date": "2024-08-01",
+      "language": "en",
+      "sha256": "38b3353a8b1b8c768d2996c5564f24e71f7f361aa98e60591a349c34129d6eaa",
+      "provenance": "manifest",
+      "filename": "gb-e1-2024-08-01-report.pdf",
+      "chunk_number": 1,
+      "ingestion_date": "2026-11-17T20:54:49.574653",
+      "text": "## **Demand and output**\nA margin of slack is projected to emerge in the economy as activity falls below potential and the labour market eases further. Unemployment is expected to rise gradually over the forecast period.",
+      "page": 1
+     },
+     "vector": [
+      -0.47883689403533936,
+      -0.23910218477249146,
+      0.20875269174575806,
+      0.2820245921611786,
+      -0.062445223331451416,
+      0.09048691391944885,
+      -0.6033809185028076,
+      0.46289733052253723
+     ]
+    },
+    {
+     "id": 8774417397447368929,
+     "payload": {
+      "doc_id": "gb-e1-2024-08-01-report",
+      "series": "Monetary Policy Report",
+      "year": 2024,
+      "corpus": "central-bank",
+      "source_code": "gb",
+      "doc_type": "E1",
+      "title": "Monetary Policy Report, August 2024 (extract)",
+      "date": "2024-08-01",
+      "language": "en",
+      "sha256": "38b3353a8b1b8c768d2996c5564f24e71f7f361aa98e60591a349c34129d6eaa",
+      "provenance": "manifest",
+      "filename": "gb-e1-2024-08-01-report.pdf",
+      "chunk_number": 2,
+      "ingestion_date": "2026-11-17T20:54:49.574653",
+      "text": "## **Costs and prices**\nServices price inflation has remained elevated, at 5.7 per cent in June. Private sector regular average weekly earnings growth has fallen to 5.6 per cent in the three months to May, and is expected to ease further.\nConditional on market interest rates, inflation is projected to fall back to 1.7 per cent in two years' time and to 1.5 per cent in three years, reflecting the continued restrictiveness of the policy stance.",
+      "page": 2
+     },
+     "vector": [
+      -0.11258246004581451,
+      0.0690644159913063,
+      -0.3673148453235626,
+      0.01718139834702015,
+      0.37279367446899414,
+      -0.06458187848329544,
+      0.5280157327651978,
+      -0.6522218585014343
+     ]
+    }
+   ]
+  },
+  {
+   "row": {
+    "doc_id": "au-e1-2022-02-statement",
+    "corpus": "central-bank",
+    "source_code": "au",
+    "doc_type": "E1",
+    "title": "Statement on Monetary Policy",
+    "date": "2022-02-01",
+    "year": 2022,
+    "language": "en",
+    "provenance": "manifest",
+    "local_path": "data/raw/au/E1/2022/au-e1-2022-02-statement.pdf",
+    "extra": {}
+   },
+   "written": 3,
+   "points": [
+    {
+     "id": 5626651635051751007,
+     "payload": {
+      "doc_id": "au-e1-2022-02-statement",
+      "corpus": "central-bank",
+      "source_code": "au",
+      "doc_type": "E1",
+      "title": "Statement on Monetary Policy",
+      "date": "2022-02-01",
+      "year": 2022,
+      "language": "en",
+      "sha256": "417aa59b2177cb10abccd3e24deb94c51d43c9d1230dd0d1cf655d760c8b902a",
+      "provenance": "manifest",
+      "filename": "au-e1-2022-02-statement.pdf",
+      "chunk_number": 0,
+      "ingestion_date": "2026-11-17T20:54:49.580150",
+      "text": "## **Statement on Monetary Policy**\nThe Australian economy has been resilient to the Omicron outbreak. Household spending is expected to recover strongly, supported by a high household saving rate, a tight labour market and the easing of restrictions.\nInflation has picked up more quickly than the Bank had expected, but remains lower than in many other countries. Underlying inflation has reached the middle of the target band for the first time in more than seven years.",
+      "page": 0
+     },
+     "vector": [
+      -0.3268566429615021,
+      -0.3916622996330261,
+      -0.4494968056678772,
+      0.4209967851638794,
+      0.1899424046278,
+      0.006230764091014862,
+      -0.38843441009521484,
+      0.41651108860969543
+     ]
+    },
+    {
+     "id": 6440411823013974882,
+     "payload": {
+      "doc_id": "au-e1-2022-02-statement",
+      "corpus": "central-bank",
+      "source_code": "au",
+      "doc_type": "E1",
+      "title": "Statement on Monetary Policy",
+      "date": "2022-02-01",
+      "year": 2022,
+      "language": "en",
+      "sha256": "417aa59b2177cb10abccd3e24deb94c51d43c9d1230dd0d1cf655d760c8b902a",
+      "provenance": "manifest",
+      "filename": "au-e1-2022-02-statement.pdf",
+      "chunk_number": 1,
+      "ingestion_date": "2026-11-17T20:54:49.580150",
+      "text": "## **Outlook**\nThe central forecast is for gross domestic product to grow by around four and a quarter per cent over 2022 and two per cent over 2023. The unemployment rate is expected to decline to below four per cent later in the year and to remain there.\nWages growth has picked up but, at the aggregate level, has only returned to the relatively low rates prevailing before the pandemic. A further pick-up in wages growth is expected as the labour market tightens, although this is likely to be gradual.\nThe Board is prepared to be patient as it monitors how the various factors affecting inflation in Australia evolve. It will not increase the cash rate until actual inflation is sustainably within the two to three per cent target range.",
+      "page": 2
+     },
+     "vector": [
+      0.33173951506614685,
+      -0.5416868925094604,
+      0.07544004172086716,
+      0.44926348328590393,
+      -0.1997462958097458,
+      -0.21882061660289764,
+      -0.1623520851135254,
+      -0.5242671966552734
+     ]
+    },
+    {
+     "id": 7074463330784887685,
+     "payload": {
+      "doc_id": "au-e1-2022-02-statement",
+      "corpus": "central-bank",
+      "source_code": "au",
+      "doc_type": "E1",
+      "title": "Statement on Monetary Policy",
+      "date": "2022-02-01",
+      "year": 2022,
+      "language": "en",
+      "sha256": "417aa59b2177cb10abccd3e24deb94c51d43c9d1230dd0d1cf655d760c8b902a",
+      "provenance": "manifest",
+      "filename": "au-e1-2022-02-statement.pdf",
+      "chunk_number": 2,
+      "ingestion_date": "2026-11-17T20:54:49.580150",
+      "text": "## **Financial conditions**\nFinancial conditions remain highly accommodative, with lending rates for households and businesses at record lows. Housing credit growth has been strong, although the value of new housing loan commitments has stabilised over recent months at a high level.\nThe Australian dollar exchange rate is around its lowest level in a year and a half, while bond yields have risen alongside the increase in yields in other economies.",
+      "page": 3
+     },
+     "vector": [
+      0.09539221227169037,
+      -0.5589811205863953,
+      0.2789371907711029,
+      0.28082117438316345,
+      -0.22367411851882935,
+      -0.07208286225795746,
+      0.6601230502128601,
+      0.1754578948020935
+     ]
+    }
+   ]
+  },
+  {
+   "row": {
+    "doc_id": "ca-a3-2023-01-25-deliberations",
+    "corpus": "central-bank",
+    "source_code": null,
+    "doc_type": "A3",
+    "title": "Summary of Governing Council deliberations",
+    "date": "2023-01-25",
+    "year": 2023,
+    "language": "en",
+    "provenance": "manifest",
+    "local_path": "data/raw/ca/A3/2023/ca-a3-2023-01-25-deliberations.docx  ",
+    "extra": {
+     "date_granularity": "source"
+    }
+   },
+   "written": 6,
+   "points": [
+    {
+     "id": 8173315017152372664,
+     "payload": {
+      "doc_id": "ca-a3-2023-01-25-deliberations",
+      "date_granularity": "source",
+      "corpus": "central-bank",
+      "doc_type": "A3",
+      "title": "Summary of Governing Council deliberations",
+      "date": "2023-01-25",
+      "year": 2023,
+      "language": "en",
+      "sha256": "ccfc9b26c863b6ea56e93ce141cbc2700bee40f4a70d6a84fb0107320d62cfa1",
+      "provenance": "manifest",
+      "filename": "ca-a3-2023-01-25-deliberations.docx",
+      "chunk_number": 0,
+      "ingestion_date": "2026-11-17T20:54:49.586438",
+      "text": "# Summary of Governing Council deliberations\n\nGoverning Council members discussed the evolution of the global economy. They noted that growth had slowed in most regions as higher interest rates weighed on demand, while supply chains had continued to improve and energy prices had declined."
+     },
+     "vector": [
+      -0.22386278212070465,
+      -0.08331387490034103,
+      0.09045905619859695,
+      -0.28221577405929565,
+      -0.19628341495990753,
+      -0.7189269661903381,
+      -0.5319921970367432,
+      -0.12929324805736542
+     ]
+    },
+    {
+     "id": 3295268936608317881,
+     "payload": {
+      "doc_id": "ca-a3-2023-01-25-deliberations",
+      "date_granularity": "source",
+      "corpus": "central-bank",
+      "doc_type": "A3",
+      "title": "Summary of Governing Council deliberations",
+      "date": "2023-01-25",
+      "year": 2023,
+      "language": "en",
+      "sha256": "ccfc9b26c863b6ea56e93ce141cbc2700bee40f4a70d6a84fb0107320d62cfa1",
+      "provenance": "manifest",
+      "filename": "ca-a3-2023-01-25-deliberations.docx",
+      "chunk_number": 1,
+      "ingestion_date": "2026-11-17T20:54:49.586438",
+      "text": "# Summary of Governing Council deliberations\n\n## Considerations for monetary policy\n\nMembers agreed that the policy rate needed to rise further and debated whether to signal a pause. They concluded that a conditional pause would give time to assess whether monetary policy was sufficiently restrictive to return inflation to target.\nThe Council also agreed that quantitative tightening was complementing the increases in the policy rate and that it should continue as planned."
+     },
+     "vector": [
+      0.31081339716911316,
+      0.03850302845239639,
+      0.473608136177063,
+      -0.19566988945007324,
+      0.5532484650611877,
+      -0.028283648192882538,
+      0.3987540006637573,
+      0.41645240783691406
+     ]
+    },
+    {
+     "id": 3511275151130617806,
+     "payload": {
+      "doc_id": "ca-a3-2023-01-25-deliberations",
+      "date_granularity": "source",
+      "corpus": "central-bank",
+      "doc_type": "A3",
+      "title": "Summary of Governing Council deliberations",
+      "date": "2023-01-25",
+      "year": 2023,
+      "language": "en",
+      "sha256": "ccfc9b26c863b6ea56e93ce141cbc2700bee40f4a70d6a84fb0107320d62cfa1",
+      "provenance": "manifest",
+      "filename": "ca-a3-2023-01-25-deliberations.docx",
+      "chunk_number": 2,
+      "ingestion_date": "2026-11-17T20:54:49.586438",
+      "text": "# Summary of Governing Council deliberations\n\n## Domestic conditions, part 1\n\nIn part 1 of the discussion, members reviewed domestic data. The economy remained in excess demand and labour markets were tight, with the unemployment rate near its record low. Growth in household spending was slowing, particularly for housing and big-ticket items that are sensitive to interest rates, and the effects of past increases were expected to keep working through the economy.\nMembers observed that three-month measures of core inflation had come down, suggesting that core inflation had peaked. They discussed the risk that services price inflation and wage growth could remain persistent (item 1)."
+     },
+     "vector": [
+      0.3531549274921417,
+      -0.2896071970462799,
+      -0.3598819375038147,
+      -0.01539115235209465,
+      0.21440812945365906,
+      0.53574138879776,
+      0.5567576289176941,
+      0.13670644164085388
+     ]
+    },
+    {
+     "id": 356450030966276258,
+     "payload": {
+      "doc_id": "ca-a3-2023-01-25-deliberations",
+      "date_granularity": "source",
+      "corpus": "central-bank",
+      "doc_type": "A3",
+      "title": "Summary of Governing Council deliberations",
+      "date": "2023-01-25",
+      "year": 2023,
+      "language": "en",
+      "sha256": "ccfc9b26c863b6ea56e93ce141cbc2700bee40f4a70d6a84fb0107320d62cfa1",
+      "provenance": "manifest",
+      "filename": "ca-a3-2023-01-25-deliberations.docx",
+      "chunk_number": 3,
+      "ingestion_date": "2026-11-17T20:54:49.586438",
+      "text": "# Summary of Governing Council deliberations\n\n## Domestic conditions, part 2\n\nIn part 2 of the discussion, members reviewed domestic data. The economy remained in excess demand and labour markets were tight, with the unemployment rate near its record low. Growth in household spending was slowing, particularly for housing and big-ticket items that are sensitive to interest rates, and the effects of past increases were expected to keep working through the economy.\nMembers observed that three-month measures of core inflation had come down, suggesting that core inflation had peaked. They discussed the risk that services price inflation and wage growth could remain persistent (item 2)."
+     },
+     "vector": [
+      0.2266545593738556,
+      -0.47540754079818726,
+      0.03582638129591942,
+      -0.20463520288467407,
+      0.3019300401210785,
+      -0.1669120192527771,
+      0.5387909412384033,
+      0.5197491645812988
+     ]
+    },
+    {
+     "id": 4948157304063385409,
+     "payload": {
+      "doc_id": "ca-a3-2023-01-25-deliberations",
+      "date_granularity": "source",
+      "corpus": "central-bank",
+      "doc_type": "A3",
+      "title": "Summary of Governing Council deliberations",
+      "date": "2023-01-25",
+      "year": 2023,
+      "language": "en",
+      "sha256": "ccfc9b26c863b6ea56e93ce141cbc2700bee40f4a70d6a84fb0107320d62cfa1",
+      "provenance": "manifest",
+      "filename": "ca-a3-2023-01-25-deliberations.docx",
+      "chunk_number": 4,
+      "ingestion_date": "2026-11-17T20:54:49.586438",
+      "text": "# Summary of Governing Council deliberations\n\n## Domestic conditions, part 3\n\nIn part 3 of the discussion, members reviewed domestic data. The economy remained in excess demand and labour markets were tight, with the unemployment rate near its record low. Growth in household spending was slowing, particularly for housing and big-ticket items that are sensitive to interest rates, and the effects of past increases were expected to keep working through the economy.\nMembers observed that three-month measures of core inflation had come down, suggesting that core inflation had peaked. They discussed the risk that services price inflation and wage growth could remain persistent (item 3)."
+     },
+     "vector": [
+      0.3688879609107971,
+      0.30798712372779846,
+      0.38669121265411377,
+      0.16330592334270477,
+      0.15383319556713104,
+      0.30491599440574646,
+      -0.6506003141403198,
+      -0.2301032692193985
+     ]
+    },
+    {
+     "id": 8497864705292474091,
+     "payload": {
+      "doc_id": "ca-a3-2023-01-25-deliberations",
+      "date_granularity": "source",
+      "corpus": "central-bank",
+      "doc_type": "A3",
+      "title": "Summary of Governing Council deliberations",
+      "date": "2023-01-25",
+      "year": 2023,
+      "language": "en",
+      "sha256": "ccfc9b26c863b6ea56e93ce141cbc2700bee40f4a70d6a84fb0107320d62cfa1",
+      "provenance": "manifest",
+      "filename": "ca-a3-2023-01-25-deliberations.docx",
+      "chunk_number": 5,
+      "ingestion_date": "2026-11-17T20:54:49.586438",
+      "text": "# Summary of Governing Council deliberations\n\n## Domestic conditions, part 4\n\nIn part 4 of the discussion, members reviewed domestic data. The economy remained in excess demand and labour markets were tight, with the unemployment rate near its record low. Growth in household spending was slowing, particularly for housing and big-ticket items that are sensitive to interest rates, and the effects of past increases were expected to keep working through the economy.\nMembers observed that three-month measures of core inflation had come down, suggesting that core inflation had peaked. They discussed the risk that services price inflation and wage growth could remain persistent (item 4)."
+     },
+     "vector": [
+      -0.12991207838058472,
+      -0.062187906354665756,
+      -0.06651341170072556,
+      -0.3305618464946747,
+      -0.5305939316749573,
+      -0.024265380576252937,
+      -0.5410552024841309,
+      0.5391668677330017
+     ]
+    }
+   ]
+  }
+ ]
+}

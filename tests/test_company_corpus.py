@@ -135,3 +135,40 @@ def test_cli_count_only_groups_by_cik_and_doctype(fake_company_corpus, capsys):
     assert "by cik:" in out
     assert "by doc_type:" in out
     assert "320193" in out
+
+
+# ---------------------------------------------------------------------------
+# Reserved payload keys: the payload is company_corpus's, not ours. A key the
+# engine writes itself is left out and reported, so it cannot fail a filing.
+# ---------------------------------------------------------------------------
+def test_reserved_keys_of_the_package_payload_are_dropped_and_reported(fake_company_corpus):
+    original = {"source": "company-corpus", "cik": "320193", "filename": "10-K.pdf",
+                "page": 1, "text": "x", "doc_id": "another-id"}
+    fake_company_corpus["set_items"]([
+        _FakeItem(doc_id="320193-10K-2024", path=Path("/x.pdf"), payload=original),
+    ])
+    (item,) = connector.iter_items()
+    assert item.payload == {"source": "company-corpus", "cik": "320193"}
+    assert sorted(item.dropped_keys) == ["doc_id", "filename", "page", "text"]
+    assert "filename" in original  # the package's payload is not changed
+
+
+def test_a_payload_doc_id_equal_to_the_item_s_is_kept(fake_company_corpus):
+    fake_company_corpus["set_items"]([
+        _FakeItem(doc_id="d1", path=Path("/x.pdf"),
+                  payload={"doc_id": "d1", "cik": "320193", "year": 2024}),
+    ])
+    (item,) = connector.iter_items()
+    assert item.payload == {"doc_id": "d1", "cik": "320193", "year": 2024}
+    assert item.dropped_keys == ()
+
+
+def test_the_documented_payload_has_no_reserved_key(fake_company_corpus):
+    """The keys the connector's contract names (source, cik, company, doc_type,
+    year, url) pass through untouched."""
+    payload = {"source": "company-corpus", "cik": "320193", "company": "Apple Inc.",
+               "doc_type": "A1", "year": 2024, "url": "https://sec.gov/..."}
+    fake_company_corpus["set_items"]([_FakeItem(doc_id="d1", path=Path("/x.pdf"),
+                                                payload=dict(payload))])
+    (item,) = connector.iter_items()
+    assert item.payload == payload and item.dropped_keys == ()

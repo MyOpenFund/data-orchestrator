@@ -12,8 +12,12 @@ even though neither is exercised by the rest of the suite.
 from __future__ import annotations
 
 import subprocess
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: tomli is the same parser, installed with pytest there
+    import tomli as tomllib
 
 import pytest
 
@@ -113,3 +117,36 @@ def test_no_bottom_up_corpus_references_remain():
     hits = [line for line in result.stdout.splitlines() if line.strip()]
     hits = [h for h in hits if (repo_root / h).resolve() != this_file]
     assert hits == [], f"stray bottom_up references: {hits}"
+
+
+def test_the_engine_is_a_dependency_pinned_by_commit():
+    """rag-engine decides point ids, payloads and chunk boundaries: it is
+    installed with the package (no separate checkout) and pinned by a full
+    commit hash, with the parsers and the PyTorch backend."""
+    import re
+
+    deps = _load_pyproject()["project"]["dependencies"]
+    (engine,) = [d for d in deps if d.startswith("rag-engine")]
+    assert re.fullmatch(
+        r"rag-engine\[ingest,torch\] @ "
+        r"git\+https://github\.com/MyOpenFund/rag-engine@[0-9a-f]{40}", engine)
+    extras = _load_pyproject()["project"]["optional-dependencies"]
+    assert set(extras) == {"company", "dev"}
+
+
+def test_nothing_imports_the_engine_fork():
+    """The fork this repo used to drive is gone from the code: no import, no
+    setting. (Docs and the parity fixture still name it, as history.)"""
+    repo_root = Path(__file__).resolve().parents[1]
+    this_file = Path(__file__).resolve()
+    hits = []
+    for path in sorted([*repo_root.glob("data_orchestrator/**/*.py"),
+                        *repo_root.glob("tests/**/*.py"),
+                        repo_root / "pyproject.toml", repo_root / ".env.example",
+                        repo_root / "pytest.ini",
+                        repo_root / ".github" / "workflows" / "tests.yml"]):
+        if path.resolve() == this_file:
+            continue
+        if "eigenmind" in path.read_text(encoding="utf-8").lower():
+            hits.append(str(path.relative_to(repo_root)))
+    assert hits == []

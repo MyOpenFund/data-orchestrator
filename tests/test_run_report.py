@@ -32,6 +32,36 @@ def test_report_shape_and_ok_outcome():
     assert set(rep) >= {"run_id", "started_at", "finished_at"}
 
 
+def test_dropped_payload_keys_are_reported_only_when_there_are_some():
+    """totals.payload_keys_dropped: the number of reserved keys the sources
+    left out of free-form metadata. Absent on a clean run, so its report
+    keeps the shape it had before the key existed."""
+    s = _stats(docs_seen=3, docs_ingested=3,
+               payload_keys_dropped={"filename": 2, "text": 1},
+               by_source={"us": {"docs_seen": 3, "docs_new": 3, "docs_failed": 0}})
+    rep = _build_report("vault", s, "2026-08-31T00:00:00+00:00", corpus="central-bank",
+                        ratio=R)
+    assert rep["totals"] == {"docs_seen": 3, "docs_new": 3, "docs_failed": 0,
+                             "docs_path_metadata": 0, "payload_keys_dropped": 3}
+    assert rep["outcome"] == "ok" and rep["exit_code"] == 0  # never drives the outcome
+
+    clean = _build_report("vault", _stats(docs_seen=1, docs_ingested=1), "t",
+                          corpus="central-bank", ratio=R)
+    assert "payload_keys_dropped" not in clean["totals"]
+
+
+def test_the_summary_warns_about_dropped_payload_keys(capsys):
+    from data_orchestrator import cli
+
+    cli._print_summary(_stats(docs_seen=2, docs_ingested=2,
+                              payload_keys_dropped={"text": 1, "filename": 2}))
+    err = capsys.readouterr().err
+    assert "warning: 3 metadata key(s) reserved for the engine" in err
+    assert "(filename x2, text x1)" in err
+    cli._print_summary(_stats(docs_seen=2, docs_ingested=2))
+    assert capsys.readouterr().err == ""
+
+
 def test_all_failed_is_degraded_exit_three():
     s = _stats(docs_seen=3, docs_ingested=0, docs_error=3,
                by_source={"us": {"docs_seen": 3, "docs_new": 0, "docs_failed": 3}})
@@ -395,6 +425,20 @@ def test_fatal_report_keeps_the_known_split_without_unsupported_only_sources():
     assert rep["sources"] == []
     assert rep["totals"]["docs_unsupported"] == 5
     assert rep["unsupported_by_source"] == {"ecb": 4, "fr": 1}
+
+
+def test_fatal_report_is_built_from_the_statistics_of_the_interrupted_run():
+    from data_orchestrator.cli import _fatal_report
+    s = _stats(docs_seen=3, docs_ingested=2, docs_error=1,
+               by_source={"us": {"docs_seen": 3, "docs_new": 2, "docs_failed": 1}})
+    rep = _fatal_report("vault", "t", RuntimeError("x"), corpus="central-bank",
+                        unsupported={"us": 4}, stats=s)
+    assert rep["totals"] == {"docs_seen": 3, "docs_new": 2, "docs_failed": 1,
+                             "docs_path_metadata": 0, "docs_unsupported": 4}
+    assert rep["sources"] == [{"source_code": "us", "docs_seen": 3, "docs_new": 2,
+                               "docs_failed": 1, "docs_unsupported": 4}]
+    # Whatever the counts would have made of the run, a fatal is failed/1.
+    assert (rep["outcome"], rep["exit_code"], rep["fatal"]) == ("failed", 1, "RuntimeError: x")
 
 
 def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, capsys,
