@@ -20,6 +20,9 @@ class FakeCursor:
     def fetchall(self):
         return [(d,) for d in self._conn.resume_rows]
 
+    def fetchone(self):  # vault.lock_collection: the lock is free
+        return (True,)
+
 
 class FakeConn:
     def __init__(self, resume_rows=()):

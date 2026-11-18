@@ -341,7 +341,9 @@ class _DispatchCursor:
         if self._conn.aborted:  # psycopg: "current transaction is aborted"
             raise RuntimeError("InFailedSqlTransaction: current transaction is aborted")
         self._conn.executed.append((sql, params))
-        if "FROM rag_ingestions WHERE collection" in sql:
+        if "pg_try_advisory_lock" in sql:
+            self._rows = [(self._conn.lock_free,)]  # vault.lock_collection
+        elif "FROM rag_ingestions WHERE collection" in sql:
             self._rows = []                       # resume ledger: nothing done yet
         elif "GROUP BY d.source_code" in sql:
             self._rows = list(self._conn.unsupported)
@@ -358,6 +360,9 @@ class _DispatchCursor:
 
     def fetchall(self):
         return list(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
     def __iter__(self):
         return iter(self._rows)
@@ -377,6 +382,7 @@ class _DispatchConn:
         self.aborted = False          # a failed statement poisons the transaction
         self.rollbacks = 0
         self.closed = False
+        self.lock_free = True         # the collection lock is not held by a sync-metadata run
 
     def cursor(self):
         return _DispatchCursor(self)

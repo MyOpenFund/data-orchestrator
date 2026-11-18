@@ -64,8 +64,10 @@ def state_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "state"
 
 
-# Selectable sources.
-SOURCES = ("cb_corpus", "company", "vault", "probe")
+# Selectable sources (and the two vault maintenance commands, probe and
+# sync-metadata, which take the same first positional argument).
+SOURCES = ("cb_corpus", "company", "vault", "probe", "sync-metadata")
+SYNC_METADATA = "sync-metadata"
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
@@ -511,6 +513,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
+    sync = parser.add_argument_group(
+        "sync-metadata", "correct the date metadata of ingested documents in Qdrant "
+        "from the vault (dry run unless --write; README, 'Correcting dates in Qdrant')")
+    sync.add_argument("--write", action="store_true",
+                      help="apply the corrections (set_payload; creates the missing payload "
+                           "indexes first). Without it nothing is written to Qdrant")
+    sync.add_argument("--doc-ids", help="comma list of doc_ids: only these ledger documents")
+    sync.add_argument("--csv", help="path of the CSV of differences (default: "
+                                    "<state dir>/sync-metadata-<collection>-<UTC time>.csv)")
+    sync.add_argument("--page-size", type=int, default=None,
+                      help="points per Qdrant scroll request (default: 256)")
+    sync.add_argument("--doc-batch", type=int, default=None,
+                      help="documents per Qdrant read, one doc_id filter (default: 100)")
+    sync.add_argument("--include-title", action="store_true",
+                      help="also compare and write title (off by default)")
+    sync.add_argument("--create-indexes", action="store_true",
+                      help="only create the missing payload indexes of rag-engine "
+                           "(date_start, date_end) and exit; needs a key allowed to write")
     args = parser.parse_args(argv)
     # The one .env loader (issue #8), run before anything reads the
     # environment: the engine loads no .env of its own, it reads the process
@@ -543,6 +563,19 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    sync_flags = [flag for flag, given in (
+        ("--write", args.write), ("--doc-ids", args.doc_ids is not None),
+        ("--csv", args.csv is not None), ("--page-size", args.page_size is not None),
+        ("--doc-batch", args.doc_batch is not None), ("--include-title", args.include_title),
+        ("--create-indexes", args.create_indexes),
+    ) if given]
+    if args.source != SYNC_METADATA and sync_flags:
+        print(f"error: {', '.join(sync_flags)} only apply to sync-metadata", file=sys.stderr)
+        return 2
+
+    if args.source == SYNC_METADATA:
+        return _sync_metadata(args)
 
     if args.source == "probe":
         unsupported_flags = [flag for flag, given in (
@@ -696,6 +729,10 @@ def main(argv: list[str] | None = None) -> int:
                 from .routing import EMBEDDING_VERSION, embedding_model_name
 
                 vault_conn = vault_mod.connect()
+                # Never alongside a sync-metadata run of this collection
+                # (shared: ingestions do not exclude each other).
+                vault_mod.lock_collection(vault_conn, collection, exclusive=False,
+                                          holder=f"{args.source} ingestion")
                 ledger = vault_mod.VaultLedger(
                     vault_conn, collection=collection, corpus=args.corpus,
                     embedding_model=embedding_model_name(),
@@ -788,6 +825,146 @@ def main(argv: list[str] | None = None) -> int:
             vault_conn.close()
 
 
+def _sync_metadata(args) -> int:
+    """``sync-metadata``: compare the date metadata of the ledger's documents
+    in Qdrant with the vault and, with ``--write``, correct it
+    (``data_orchestrator.sync_metadata``). No run report is written (like
+    ``probe``): the CSV is the record of a run. Exit 0 when the run reached
+    its end, 1 on a fatal error (the vault, Qdrant, a refused key, the
+    collection lock held by an ingestion), 2 on a usage or configuration error.
+    """
+    from . import sync_metadata as sm
+    from . import vault as vault_mod
+    from .routing import ROUTING
+
+    unsupported = [flag for flag, given in (
+        ("--count-only", args.count_only), ("--no-vault", args.no_vault),
+        ("--no-resume", args.no_resume), ("--ledger", args.ledger is not None),
+        ("--source-codes", args.source_codes is not None),
+        ("--doctypes", args.doctypes is not None), ("--languages", args.languages is not None),
+        ("--year-min", args.year_min is not None), ("--year-max", args.year_max is not None),
+        ("--banks", args.banks is not None), ("--groups", args.groups is not None),
+        ("--ciks", args.ciks is not None), ("--root", args.root is not None),
+    ) if given]
+    if unsupported:
+        print(f"error: {', '.join(unsupported)} not supported by sync-metadata (it reads "
+              "the rag_ingestions ledger of the collection; narrow it with --doc-ids or "
+              "--limit)", file=sys.stderr)
+        return 2
+    for flag, value in (("--page-size", args.page_size), ("--doc-batch", args.doc_batch)):
+        if value is not None and value < 1:
+            print(f"error: {flag} must be >= 1", file=sys.stderr)
+            return 2
+    if args.create_indexes and (args.write or args.doc_ids or args.limit or args.csv
+                                or args.include_title):
+        print("error: --create-indexes only creates the payload indexes; run it alone",
+              file=sys.stderr)
+        return 2
+    doc_ids = _csv(args.doc_ids)
+    if args.doc_ids is not None and not doc_ids:
+        print("error: --doc-ids is empty", file=sys.stderr)
+        return 2
+    port_error = _qdrant_port_error()
+    if port_error is not None:
+        print(f"error: {port_error}", file=sys.stderr)
+        return 2
+    try:
+        settings = engine_settings()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.corpus is None:
+        args.corpus = "central-bank"
+    if args.corpus not in ROUTING:
+        print(f"error: unknown corpus '{args.corpus}' (known: {', '.join(sorted(ROUTING))})",
+              file=sys.stderr)
+        return 1
+    collection = args.collection or collection_name(args.corpus)
+    from .core import build_store
+
+    store = build_store(settings)
+    _print_qdrant_target(getattr(store, "host", None), getattr(store, "port", None))
+
+    if args.create_indexes:
+        try:
+            created = store.ensure_payload_indexes(collection)
+        except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
+            print(f"error: fatal: {type(exc).__name__}: {exc}{_sync_advice(exc, collection)}",
+                  file=sys.stderr)
+            return 1
+        print(f"Payload indexes created on '{collection}': "
+              f"{', '.join(created) if created else 'none (all exist)'}")
+        return 0
+
+    csv_path = Path(args.csv).expanduser() if args.csv else sm.default_csv_path(state_dir(), collection)
+    keys = sm.owned_keys(args.include_title)
+    mode = "WRITE: corrections are applied" if args.write else "dry run: nothing is written to Qdrant"
+    print(f"→ sync-metadata: collection '{collection}', corpus '{args.corpus}' ({mode})")
+    print(f"  keys compared: {', '.join(keys)}")
+    every = args.progress_every
+    t0 = time.time()
+    conn = None
+    try:
+        conn = vault_mod.connect()
+        vault_mod.lock_collection(conn, collection, exclusive=True, holder="sync-metadata")
+        schema = sm.payload_schema(store, collection)
+        from rag_engine.schema import PAYLOAD_INDEXES
+
+        missing = [f for f, _kind in PAYLOAD_INDEXES if f not in schema]
+        if missing:
+            print(f"  payload indexes missing: {', '.join(missing)} ("
+                  + ("created before any correction" if args.write
+                     else "--write creates them first, or --create-indexes") + ")")
+
+        def progress(stats):
+            if stats.documents % every == 0:
+                print(f"  documents={stats.documents} "
+                      + " ".join(f"{a}={n}" for a, n in stats.actions.items())
+                      + f" {'written' if args.write else 'to_write'}="
+                      + f"{stats.written if args.write else stats.to_write}", flush=True)
+
+        stats = sm.run_sync(
+            conn, store, corpus=args.corpus, collection=collection, csv_path=csv_path,
+            write=args.write, include_title=args.include_title, doc_ids=doc_ids,
+            limit=args.limit,
+            page_size=args.page_size or sm.DEFAULT_PAGE_SIZE,
+            doc_batch=args.doc_batch or sm.DEFAULT_DOC_BATCH,
+            on_progress=progress,
+        )
+    except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
+        print(f"error: fatal: {type(exc).__name__}: {exc}{_sync_advice(exc, collection)}",
+              file=sys.stderr)
+        if csv_path.exists():
+            print(f"  CSV of the documents seen before the error: {csv_path}", file=sys.stderr)
+        return 1
+    finally:
+        if conn is not None:
+            conn.close()
+    if stats.indexes_created:
+        print(f"  payload indexes created: {', '.join(stats.indexes_created)}")
+    if doc_ids:
+        missing_ids = sorted(set(doc_ids) - stats.seen_ids)
+        if missing_ids:
+            print(f"warning: {len(missing_ids)} of the --doc-ids are not in rag_ingestions for "
+                  f"'{collection}' and corpus '{args.corpus}': {', '.join(missing_ids[:10])}",
+                  file=sys.stderr)
+    sm.print_summary(stats, write=args.write, elapsed=time.time() - t0, csv_path=csv_path)
+    return 0
+
+
+def _sync_advice(exc: BaseException, collection: str) -> str:
+    """What to do about the fatal error of a sync-metadata run."""
+    from rag_engine.store import MissingIndexError, QdrantAuthError
+
+    if isinstance(exc, MissingIndexError):
+        return (f". Create the payload indexes first: data-orchestrator sync-metadata "
+                f"--create-indexes --collection {collection} (with a key allowed to write)")
+    if isinstance(exc, QdrantAuthError):
+        return (". A dry run needs a key allowed to read; --write and --create-indexes "
+                "need a key allowed to write (a read-only key is refused)")
+    return ""
+
+
 def _vault_filters(args) -> dict:
     """Selection filters shared by the vault selection and its unsupported count."""
     return dict(
@@ -807,6 +984,9 @@ def _run_vault_source(args, collection: str) -> int:
     unsupported = None  # known once count_unsupported ran; kept by a fatal report
     try:
         conn = vault_mod.connect()
+        # Never alongside a sync-metadata run of this collection (shared:
+        # ingestions do not exclude each other).
+        vault_mod.lock_collection(conn, collection, exclusive=False, holder="vault ingestion")
         # --no-resume is rejected for this source before we ever get here
         # (main()), so the ledger — and therefore the anti-join's resume
         # semantics — is always coherent: always on.

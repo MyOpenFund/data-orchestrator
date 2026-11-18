@@ -145,3 +145,47 @@ class VaultLedger:
             self._conn.rollback()
             raise
         self._done.add(doc_id)
+
+
+# ---------------------------------------------------------------------------
+# Collection lock: no sync-metadata alongside an ingestion of the same
+# collection (rag-engine's set_payload must not run beside an ingestion of the
+# same document: a batch written after the correction puts the old metadata
+# back). A Postgres session-level advisory lock on (COLLECTION_LOCK_CLASS,
+# hashtext(collection)), held by the vault connection of the run and released
+# when it closes (or when the process dies). Ingestion runs take it SHARED, so
+# they never exclude each other; sync-metadata takes it EXCLUSIVE.
+# Diagnosis: SELECT * FROM pg_locks WHERE locktype = 'advisory' AND classid = 7468;
+# ---------------------------------------------------------------------------
+COLLECTION_LOCK_CLASS = 7468
+
+_LOCK_SQL = {
+    False: "SELECT pg_try_advisory_lock_shared(%s, hashtext(%s))",
+    True: "SELECT pg_try_advisory_lock(%s, hashtext(%s))",
+}
+
+
+class CollectionBusyError(RuntimeError):
+    """The collection lock is held by a run that excludes this one."""
+
+
+def lock_collection(conn, collection: str, *, exclusive: bool, holder: str) -> None:
+    """Take the collection lock on ``conn`` without waiting, or raise
+    :class:`CollectionBusyError`. ``holder`` names the run asking, for the message.
+
+    The lock lives as long as the session: ``conn.close()`` releases it, a
+    commit or a rollback does not.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_LOCK_SQL[exclusive], (COLLECTION_LOCK_CLASS, collection))
+        (acquired,) = cur.fetchone()
+    conn.commit()
+    if acquired:
+        return
+    if exclusive:
+        other = "an ingestion (or another sync-metadata run)"
+    else:
+        other = "a sync-metadata run"
+    raise CollectionBusyError(
+        f"{holder}: {other} holds collection {collection!r} (vault advisory lock "
+        f"{COLLECTION_LOCK_CLASS}); wait for it to end, then run again")

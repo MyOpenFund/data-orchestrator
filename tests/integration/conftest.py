@@ -4,7 +4,17 @@ The Postgres schema replicates the vault's contract tables (documents +
 rag_ingestions) — the minimal columns this repo's code touches. Schema drift
 against the real vault is guarded by the contract documented in the vault
 README, not by importing vault code here.
+
+Without Docker, the suite can run against services already started on this
+machine (README, "Testing"): ``DATA_ORCHESTRATOR_IT_DATABASE_URL`` (an empty,
+throwaway Postgres database: its tables are dropped and re-created),
+``DATA_ORCHESTRATOR_IT_QDRANT`` (``host:port`` of a throwaway Qdrant without a
+key: every collection on it is deleted) and ``DATA_ORCHESTRATOR_IT_QDRANT_KEYED``
+(``host:port`` of a throwaway Qdrant started with ``IT_QDRANT_KEY`` as its API
+key and ``IT_QDRANT_READ_ONLY_KEY`` as its read-only key). Never point them at
+a Qdrant or a database that holds data.
 """
+import os
 import subprocess
 import time
 import uuid
@@ -111,8 +121,27 @@ def _no_repo_dotenv(tmp_path, monkeypatch):
     yield
 
 
+IT_DATABASE_URL_ENV = "DATA_ORCHESTRATOR_IT_DATABASE_URL"
+IT_QDRANT_ENV = "DATA_ORCHESTRATOR_IT_QDRANT"
+IT_QDRANT_KEYED_ENV = "DATA_ORCHESTRATOR_IT_QDRANT_KEYED"
+
+
+def _external_addr(env):
+    """``(host, port)`` of a service named by ``env`` (``host:port``), else ``None``."""
+    value = (os.environ.get(env) or "").strip()
+    if not value:
+        return None
+    host, _, port = value.rpartition(":")
+    return host, int(port)
+
+
 @pytest.fixture(scope="module")
 def pg_url():
+    external = (os.environ.get(IT_DATABASE_URL_ENV) or "").strip()
+    if external:
+        assert _wait_port(lambda: psycopg2.connect(external).close(), tries=5), "postgres not ready"
+        yield external
+        return
     if not docker_available():
         pytest.skip("docker unavailable")
     name = f"data-orchestrator-it-pg-{uuid.uuid4().hex[:8]}"
@@ -135,6 +164,10 @@ def pg_url():
 
 @pytest.fixture(scope="module")
 def qdrant_addr():
+    external = _external_addr(IT_QDRANT_ENV)
+    if external is not None:
+        yield external
+        return
     if not docker_available():
         pytest.skip("docker unavailable")
     from qdrant_client import QdrantClient
@@ -157,11 +190,22 @@ def qdrant_addr():
 
 
 IT_QDRANT_KEY = "it-key-not-a-secret"
+IT_QDRANT_READ_ONLY_KEY = "it-ro-key-not-a-secret"
 
 
 @pytest.fixture(scope="module")
 def qdrant_keyed_addr():
-    """A Qdrant that requires ``IT_QDRANT_KEY`` (the NAS setup in miniature)."""
+    """A Qdrant that requires ``IT_QDRANT_KEY`` and also accepts the read-only
+    ``IT_QDRANT_READ_ONLY_KEY`` (the NAS setup in miniature)."""
+    external = _external_addr(IT_QDRANT_KEYED_ENV)
+    if external is not None:
+        from qdrant_client import QdrantClient
+        client = QdrantClient(host=external[0], port=external[1], https=False,
+                              api_key=IT_QDRANT_KEY)
+        for coll in client.get_collections().collections:  # a fresh server per module, as with Docker
+            client.delete_collection(coll.name)
+        yield external
+        return
     if not docker_available():
         pytest.skip("docker unavailable")
     from qdrant_client import QdrantClient
@@ -169,6 +213,7 @@ def qdrant_keyed_addr():
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name,
          "-e", f"QDRANT__SERVICE__API_KEY={IT_QDRANT_KEY}",
+         "-e", f"QDRANT__SERVICE__READ_ONLY_API_KEY={IT_QDRANT_READ_ONLY_KEY}",
          "-p", "127.0.0.1:0:6333", QDRANT_IMAGE],
         check=True, capture_output=True, timeout=300,
     )

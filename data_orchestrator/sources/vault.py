@@ -149,17 +149,17 @@ def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
     return out
 
 
-def row_to_item(row: dict, corpus: str) -> SourceItem | None:
-    """Map one selection row to a SourceItem. None when local_path is NULL."""
-    local_path = row.get("local_path")
-    if local_path:
-        # Same trailing-whitespace trim as the SQL predicate (_PATH_EXPR), so
-        # the file opened is the one whose extension was matched.
-        local_path = local_path.rstrip(" \t\r\n")
-    if not local_path:
-        # Defensive only: the selection's SQL predicate already excludes a
-        # NULL/blank local_path, so this guard should never fire.
-        return None
+def row_to_payload(row: dict) -> tuple[dict, tuple[str, ...]]:
+    """The metadata a vault row is ingested with, and the keys of ``extra`` left out.
+
+    The one rule for both ingestion (:func:`row_to_item`) and
+    ``sync-metadata``, which compares this metadata with what Qdrant holds:
+    ``extra`` first, without the keys the engine writes or derives itself
+    (``core.split_reserved_keys``), then the vault's columns, which always
+    win; a NULL column is left out (and removes the same key of ``extra``);
+    a date is written as its ISO string. ``doc_id`` always comes from its
+    column and is never reported as dropped.
+    """
     # ``extra`` is free-form: the keys the engine writes itself are dropped
     # (and reported on the item). The columns below are the vault's own and
     # are never dropped; ``doc_id`` always comes from its column.
@@ -171,6 +171,21 @@ def row_to_item(row: dict, corpus: str) -> SourceItem | None:
             payload.pop(col, None)
             continue
         payload[col] = value.isoformat() if hasattr(value, "isoformat") else value
+    return payload, dropped
+
+
+def row_to_item(row: dict, corpus: str) -> SourceItem | None:
+    """Map one selection row to a SourceItem. None when local_path is NULL."""
+    local_path = row.get("local_path")
+    if local_path:
+        # Same trailing-whitespace trim as the SQL predicate (_PATH_EXPR), so
+        # the file opened is the one whose extension was matched.
+        local_path = local_path.rstrip(" \t\r\n")
+    if not local_path:
+        # Defensive only: the selection's SQL predicate already excludes a
+        # NULL/blank local_path, so this guard should never fire.
+        return None
+    payload, dropped = row_to_payload(row)
     return SourceItem(doc_id=row["doc_id"], path=resolve_local_path(corpus, local_path),
                       payload=payload, dropped_keys=dropped)
 
