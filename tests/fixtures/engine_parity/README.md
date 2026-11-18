@@ -12,6 +12,14 @@ that, for these documents, with a deterministic test embedder and OCR off, the s
 nothing in what is written; `MIGRATION.md` ("What was checked") says what that does and does
 not cover.
 
+**Schema v2 (rag-engine `6be21ac`, 2026-11).** The engine now appends `date_start` and
+`date_end` to every point of a dated document. The fixture was **not** regenerated: it
+keeps the v1 points as captured, and the test adds exactly those two keys to them
+(`_v2` in the test, computed from the row's `date` without calling the engine) and
+requires everything else to be unchanged. The undated row (`jp-f1-2023-rates.csv`) gets
+nothing. A second test gives one row a `date_precision` and a `date_kind` in `extra` and
+checks that only those two keys and their month interval are added.
+
 **Do not regenerate `expected.json` to make a failing test pass.** A difference means the
 orchestrator no longer writes what is stored.
 

@@ -10,6 +10,9 @@ drives the rag-engine library (a dependency, see ``README.md``)::
     data-orchestrator company --ciks 320193 --collection company-e5b-v1
     data-orchestrator company --ciks 320193 --doctypes A1 --year-min 2024
 
+    data-orchestrator sync-metadata --collection central-bank-e5b-v1           # dry run
+    data-orchestrator sync-metadata --collection central-bank-e5b-v1 --write
+
 (equivalently ``python -m data_orchestrator.cli <source> ...``)
 
 The default collection is routed per corpus by
@@ -64,8 +67,10 @@ def state_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "state"
 
 
-# Selectable sources.
-SOURCES = ("cb_corpus", "company", "vault", "probe")
+# Selectable sources (and the two vault maintenance commands, probe and
+# sync-metadata, which take the same first positional argument).
+SOURCES = ("cb_corpus", "company", "vault", "probe", "sync-metadata")
+SYNC_METADATA = "sync-metadata"
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
@@ -278,12 +283,28 @@ def _print_interrupted_summary(stats: IngestStats | None, elapsed: float | None 
         pass
 
 
+def _lock_guard(vault_mod, conn, collection: str, holder: str):
+    """``run_ingest``'s guard: before each document, the run's vault session
+    must be alive and still hold the shared collection lock."""
+    def guard():
+        vault_mod.check_collection_lock(conn, collection, exclusive=False, holder=holder)
+    return guard
+
+
 def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
     """Write a fatal report on a connection the failure may have left inside
     an aborted transaction: roll back first (a failing rollback is not
     itself fatal; the insert then says whether the connection is usable),
     and warn on an insert failure — never silent, never masking the run's
     own fatal outcome."""
+    fresh = None
+    if getattr(conn, "closed", 0):
+        # The session itself is gone (VaultSessionLost): a new one for the report.
+        try:
+            conn = fresh = vault_mod.connect()
+        except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+            print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+            return
     try:
         conn.rollback()
     except Exception:  # noqa: BLE001 — the insert below reports a dead connection
@@ -292,6 +313,9 @@ def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
         vault_mod.insert_run_report(conn, report)
     except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
         print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+    finally:
+        if fresh is not None:
+            fresh.close()
 
 
 def _append_report_jsonl(report: dict) -> None:
@@ -511,6 +535,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
                         help="print progress every N documents (default: 25)")
+    sync = parser.add_argument_group(
+        "sync-metadata", "correct the date metadata of ingested documents in Qdrant "
+        "from the vault (dry run unless --write; README, 'Correcting dates in Qdrant')")
+    sync.add_argument("--write", action="store_true",
+                      help="apply the corrections (set_payload; creates the missing payload "
+                           "indexes first). Without it nothing is written to Qdrant")
+    sync.add_argument("--doc-ids", help="comma list of doc_ids: only these ledger documents")
+    sync.add_argument("--csv", help="path of the CSV of differences (default: "
+                                    "<state dir>/sync-metadata-<collection>-<UTC time>.csv)")
+    sync.add_argument("--page-size", type=int, default=None,
+                      help="points per Qdrant scroll request (default: 256)")
+    sync.add_argument("--doc-batch", type=int, default=None,
+                      help="documents per Qdrant read, one doc_id filter (default: 100)")
+    sync.add_argument("--include-title", action="store_true",
+                      help="also compare and write title (off by default)")
+    sync.add_argument("--create-indexes", action="store_true",
+                      help="only create the missing payload indexes of rag-engine "
+                           "(date_start, date_end) and exit; needs a key allowed to write")
     args = parser.parse_args(argv)
     # The one .env loader (issue #8), run before anything reads the
     # environment: the engine loads no .env of its own, it reads the process
@@ -539,10 +581,26 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _setup_logging()
         args.degraded_ratio = policy.degraded_failure_ratio()
+        from . import vault as _vault
+
+        _vault.keepalive_options()  # DATA_ORCHESTRATOR_PG_KEEPALIVES_*: exit 2 here, not mid-run
         args.supported_mimes = supported_mime_types()
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    sync_flags = [flag for flag, given in (
+        ("--write", args.write), ("--doc-ids", args.doc_ids is not None),
+        ("--csv", args.csv is not None), ("--page-size", args.page_size is not None),
+        ("--doc-batch", args.doc_batch is not None), ("--include-title", args.include_title),
+        ("--create-indexes", args.create_indexes),
+    ) if given]
+    if args.source != SYNC_METADATA and sync_flags:
+        print(f"error: {', '.join(sync_flags)} only apply to sync-metadata", file=sys.stderr)
+        return 2
+
+    if args.source == SYNC_METADATA:
+        return _sync_metadata(args)
 
     if args.source == "probe":
         unsupported_flags = [flag for flag, given in (
@@ -686,16 +744,19 @@ def main(argv: list[str] | None = None) -> int:
     t0 = None  # set when the engine run starts
     started_at = datetime.now(timezone.utc).isoformat()
     try:
-        if not args.no_resume:
-            if args.no_vault:
-                ledger_path = Path(args.ledger) if args.ledger else state_dir() / f"{collection}.jsonl"
-                ledger = Ledger(ledger_path)
-                print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
-            else:
-                from . import vault as vault_mod
-                from .routing import EMBEDDING_VERSION, embedding_model_name
+        if not args.no_vault:
+            from . import vault as vault_mod
+            from .routing import EMBEDDING_VERSION, embedding_model_name
 
-                vault_conn = vault_mod.connect()
+            # Vault mode, with or without the resume ledger: the run writes
+            # the points of documents a sync-metadata run may be correcting
+            # (--no-resume rewrites the payloads of ingested documents), so it
+            # never runs alongside one (shared: ingestions do not exclude
+            # each other). The connection is also the one of the run report.
+            vault_conn = vault_mod.connect()
+            vault_mod.lock_collection(vault_conn, collection, exclusive=False,
+                                      holder=f"{args.source} ingestion")
+            if not args.no_resume:
                 ledger = vault_mod.VaultLedger(
                     vault_conn, collection=collection, corpus=args.corpus,
                     embedding_model=embedding_model_name(),
@@ -703,6 +764,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"Resume ledger (vault): rag_ingestions/{collection} "
                       f"({len(ledger)} docs already done)")
+        elif not args.no_resume:
+            ledger_path = Path(args.ledger) if args.ledger else state_dir() / f"{collection}.jsonl"
+            ledger = Ledger(ledger_path)
+            print(f"Resume ledger (file): {ledger_path} ({len(ledger)} docs already done)")
 
         print(f"→ Ingesting source '{args.source}' into collection '{collection}' "
               f"(ocr={args.ocr}, limit={args.limit})")
@@ -717,6 +782,8 @@ def main(argv: list[str] | None = None) -> int:
             on_progress=_make_progress(args.progress_every),
             on_target=_print_qdrant_target,
             settings=args.engine_settings,
+            guard=(None if vault_conn is None else
+                   _lock_guard(vault_mod, vault_conn, collection, f"{args.source} ingestion")),
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
@@ -734,11 +801,12 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
                 print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
         else:
-            # Vault mode (not --no-vault) but no ledger connection was ever
-            # opened (--no-resume skips the "if not args.no_resume" block
-            # above) — open a short-lived one just for the report insert so
-            # the run isn't silently unreported. Same warn-only contract: a
-            # report failure must never mask the run's own outcome.
+            # Defensive: vault mode always opens vault_conn (and takes the
+            # collection lock) before the run, with or without --no-resume.
+            # Should it be missing, open a short-lived one just for the
+            # report insert so the run isn't silently unreported. Same
+            # warn-only contract: a report failure must never mask the run's
+            # own outcome.
             from . import vault as vault_mod
 
             report_conn = None
@@ -788,6 +856,154 @@ def main(argv: list[str] | None = None) -> int:
             vault_conn.close()
 
 
+def _sync_metadata(args) -> int:
+    """``sync-metadata``: compare the date metadata of the ledger's documents
+    in Qdrant with the vault and, with ``--write``, correct it
+    (``data_orchestrator.sync_metadata``). No run report is written (like
+    ``probe``): the CSV is the record of a run. Exit 0 when the run reached
+    its end, 1 on a fatal error (the vault, Qdrant, a refused key, the
+    collection lock held by an ingestion), 2 on a usage or configuration error.
+    """
+    from . import sync_metadata as sm
+    from . import vault as vault_mod
+    from .routing import ROUTING
+
+    unsupported = [flag for flag, given in (
+        ("--count-only", args.count_only), ("--no-vault", args.no_vault),
+        ("--no-resume", args.no_resume), ("--ledger", args.ledger is not None),
+        ("--source-codes", args.source_codes is not None),
+        ("--doctypes", args.doctypes is not None), ("--languages", args.languages is not None),
+        ("--year-min", args.year_min is not None), ("--year-max", args.year_max is not None),
+        ("--banks", args.banks is not None), ("--groups", args.groups is not None),
+        ("--ciks", args.ciks is not None), ("--root", args.root is not None),
+    ) if given]
+    if unsupported:
+        print(f"error: {', '.join(unsupported)} not supported by sync-metadata (it reads "
+              "the rag_ingestions ledger of the collection; narrow it with --doc-ids or "
+              "--limit)", file=sys.stderr)
+        return 2
+    for flag, value in (("--page-size", args.page_size), ("--doc-batch", args.doc_batch)):
+        if value is not None and value < 1:
+            print(f"error: {flag} must be >= 1", file=sys.stderr)
+            return 2
+    if args.create_indexes and (args.write or args.doc_ids or args.limit or args.csv
+                                or args.include_title):
+        print("error: --create-indexes only creates the payload indexes; run it alone",
+              file=sys.stderr)
+        return 2
+    doc_ids = _csv(args.doc_ids)
+    if args.doc_ids is not None and not doc_ids:
+        print("error: --doc-ids is empty", file=sys.stderr)
+        return 2
+    port_error = _qdrant_port_error()
+    if port_error is not None:
+        print(f"error: {port_error}", file=sys.stderr)
+        return 2
+    try:
+        settings = engine_settings()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.corpus is None:
+        args.corpus = "central-bank"
+    if args.corpus not in ROUTING:
+        print(f"error: unknown corpus '{args.corpus}' (known: {', '.join(sorted(ROUTING))})",
+              file=sys.stderr)
+        return 1
+    collection = args.collection or collection_name(args.corpus)
+    from .core import build_store
+
+    store = build_store(settings)
+    _print_qdrant_target(getattr(store, "host", None), getattr(store, "port", None))
+
+    if args.create_indexes:
+        try:
+            created = store.ensure_payload_indexes(collection)
+        except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
+            print(f"error: fatal: {type(exc).__name__}: {exc}{_sync_advice(exc, collection)}",
+                  file=sys.stderr)
+            return 1
+        print(f"Payload indexes created on '{collection}': "
+              f"{', '.join(created) if created else 'none (all exist)'}")
+        return 0
+
+    csv_path = Path(args.csv).expanduser() if args.csv else sm.default_csv_path(state_dir(), collection)
+    keys = sm.owned_keys(args.include_title)
+    mode = "WRITE: corrections are applied" if args.write else "dry run: nothing is written to Qdrant"
+    print(f"→ sync-metadata: collection '{collection}', corpus '{args.corpus}' ({mode})")
+    print(f"  keys compared: {', '.join(keys)}")
+    every = args.progress_every
+    t0 = time.time()
+    conn = None
+    try:
+        conn = vault_mod.connect()
+        # --write: exclusive (no ingestion, no other sync-metadata). A dry run
+        # only reads: shared, so an ingestion may start or go on beside it
+        # (its report may then be stale for the documents that ingestion
+        # writes), but it never runs beside a --write.
+        vault_mod.lock_collection(conn, collection, exclusive=args.write, holder="sync-metadata")
+        schema = sm.payload_schema(store, collection)
+        from rag_engine.schema import PAYLOAD_INDEXES
+
+        missing = [f for f, _kind in PAYLOAD_INDEXES if f not in schema]
+        if missing:
+            print(f"  payload indexes missing: {', '.join(missing)} ("
+                  + ("created before any correction" if args.write
+                     else "--write creates them first, or --create-indexes") + ")")
+
+        def progress(stats):
+            if stats.documents % every == 0:
+                print(f"  documents={stats.documents} "
+                      + " ".join(f"{a}={n}" for a, n in stats.actions.items())
+                      + f" {'written' if args.write else 'to_write'}="
+                      + f"{stats.written if args.write else stats.to_write}", flush=True)
+
+        def guard(conn=conn):
+            vault_mod.check_collection_lock(conn, collection, exclusive=args.write,
+                                            holder="sync-metadata")
+
+        stats = sm.run_sync(
+            conn, store, corpus=args.corpus, collection=collection, csv_path=csv_path,
+            write=args.write, include_title=args.include_title, doc_ids=doc_ids,
+            limit=args.limit,
+            page_size=args.page_size or sm.DEFAULT_PAGE_SIZE,
+            doc_batch=args.doc_batch or sm.DEFAULT_DOC_BATCH,
+            on_progress=progress, guard=guard, schema=schema,
+        )
+    except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
+        print(f"error: fatal: {type(exc).__name__}: {exc}{_sync_advice(exc, collection)}",
+              file=sys.stderr)
+        if csv_path.exists():
+            print(f"  CSV of the documents seen before the error: {csv_path}", file=sys.stderr)
+        return 1
+    finally:
+        if conn is not None:
+            conn.close()
+    if stats.indexes_created:
+        print(f"  payload indexes created: {', '.join(stats.indexes_created)}")
+    if doc_ids:
+        missing_ids = sorted(set(doc_ids) - stats.seen_ids)
+        if missing_ids:
+            print(f"warning: {len(missing_ids)} of the --doc-ids are not in rag_ingestions for "
+                  f"'{collection}' and corpus '{args.corpus}': {', '.join(missing_ids[:10])}",
+                  file=sys.stderr)
+    sm.print_summary(stats, write=args.write, elapsed=time.time() - t0, csv_path=csv_path)
+    return 0
+
+
+def _sync_advice(exc: BaseException, collection: str) -> str:
+    """What to do about the fatal error of a sync-metadata run."""
+    from rag_engine.store import MissingIndexError, QdrantAuthError
+
+    if isinstance(exc, MissingIndexError):
+        return (f". Create the payload indexes first: data-orchestrator sync-metadata "
+                f"--create-indexes --collection {collection} (with a key allowed to write)")
+    if isinstance(exc, QdrantAuthError):
+        return (". A dry run needs a key allowed to read; --write and --create-indexes "
+                "need a key allowed to write (a read-only key is refused)")
+    return ""
+
+
 def _vault_filters(args) -> dict:
     """Selection filters shared by the vault selection and its unsupported count."""
     return dict(
@@ -807,6 +1023,9 @@ def _run_vault_source(args, collection: str) -> int:
     unsupported = None  # known once count_unsupported ran; kept by a fatal report
     try:
         conn = vault_mod.connect()
+        # Never alongside a sync-metadata run of this collection (shared:
+        # ingestions do not exclude each other).
+        vault_mod.lock_collection(conn, collection, exclusive=False, holder="vault ingestion")
         # --no-resume is rejected for this source before we ever get here
         # (main()), so the ledger — and therefore the anti-join's resume
         # semantics — is always coherent: always on.
@@ -834,6 +1053,7 @@ def _run_vault_source(args, collection: str) -> int:
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
             on_target=_print_qdrant_target, settings=args.engine_settings,
+            guard=_lock_guard(vault_mod, conn, collection, "vault ingestion"),
         )
         _print_summary(stats)
 

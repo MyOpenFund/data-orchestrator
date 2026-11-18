@@ -12,8 +12,11 @@ never silently. Payloads
 are built from the vault's normalized columns merged with the
 corpus-specific ``extra`` fields (columns always win). A key of ``extra`` that
 the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
-``text``, ``page``) is left out and counted, never sent: the engine refuses
-it, and one stray key must not fail the document. File paths join the per-machine corpus root
+``text``, ``page``, and the derived ``date_start`` / ``date_end``) is left
+out and counted, never sent: the engine refuses it, and one stray key must not
+fail the document. ``date_precision`` and ``date_kind`` are ordinary keys of
+``extra`` and reach the payload as they are; the engine derives the interval
+from ``date`` and ``date_precision``. File paths join the per-machine corpus root
 (routing) with the vault's relative ``local_path``.
 """
 from __future__ import annotations
@@ -146,17 +149,17 @@ def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
     return out
 
 
-def row_to_item(row: dict, corpus: str) -> SourceItem | None:
-    """Map one selection row to a SourceItem. None when local_path is NULL."""
-    local_path = row.get("local_path")
-    if local_path:
-        # Same trailing-whitespace trim as the SQL predicate (_PATH_EXPR), so
-        # the file opened is the one whose extension was matched.
-        local_path = local_path.rstrip(" \t\r\n")
-    if not local_path:
-        # Defensive only: the selection's SQL predicate already excludes a
-        # NULL/blank local_path, so this guard should never fire.
-        return None
+def row_to_payload(row: dict) -> tuple[dict, tuple[str, ...]]:
+    """The metadata a vault row is ingested with, and the keys of ``extra`` left out.
+
+    The one rule for both ingestion (:func:`row_to_item`) and
+    ``sync-metadata``, which compares this metadata with what Qdrant holds:
+    ``extra`` first, without the keys the engine writes or derives itself
+    (``core.split_reserved_keys``), then the vault's columns, which always
+    win; a NULL column is left out (and removes the same key of ``extra``);
+    a date is written as its ISO string. ``doc_id`` always comes from its
+    column and is never reported as dropped.
+    """
     # ``extra`` is free-form: the keys the engine writes itself are dropped
     # (and reported on the item). The columns below are the vault's own and
     # are never dropped; ``doc_id`` always comes from its column.
@@ -168,6 +171,21 @@ def row_to_item(row: dict, corpus: str) -> SourceItem | None:
             payload.pop(col, None)
             continue
         payload[col] = value.isoformat() if hasattr(value, "isoformat") else value
+    return payload, dropped
+
+
+def row_to_item(row: dict, corpus: str) -> SourceItem | None:
+    """Map one selection row to a SourceItem. None when local_path is NULL."""
+    local_path = row.get("local_path")
+    if local_path:
+        # Same trailing-whitespace trim as the SQL predicate (_PATH_EXPR), so
+        # the file opened is the one whose extension was matched.
+        local_path = local_path.rstrip(" \t\r\n")
+    if not local_path:
+        # Defensive only: the selection's SQL predicate already excludes a
+        # NULL/blank local_path, so this guard should never fire.
+        return None
+    payload, dropped = row_to_payload(row)
     return SourceItem(doc_id=row["doc_id"], path=resolve_local_path(corpus, local_path),
                       payload=payload, dropped_keys=dropped)
 
