@@ -387,6 +387,7 @@ def test_a_refusal_names_the_session_that_holds_the_lock(
         err = capsys.readouterr().err
         assert f"held by pid {pid} (ShareLock" in err
         assert "application data-orchestrator@sleeping-mac" in err and "session started" in err
+        assert "/32" not in err  # the address, not the inet with its mask
         assert f"SELECT pg_terminate_backend({pid});" in err
 
         # A role that may not read another role's session details.

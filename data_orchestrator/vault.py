@@ -309,7 +309,7 @@ def lock_collection(conn, collection: str, *, exclusive: bool, holder: str) -> N
 
 
 _HOLDERS_SQL = (
-    "SELECT l.pid, l.mode, a.usename, a.application_name, a.client_addr::text, a.backend_start "
+    "SELECT l.pid, l.mode, a.usename, a.application_name, host(a.client_addr), a.backend_start "
     "FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
     "WHERE l.locktype = 'advisory' AND l.granted AND l.classid = %s "
     "AND l.objid = (hashtext(%s)::bigint & 4294967295)::oid AND l.objsubid = 2 "
