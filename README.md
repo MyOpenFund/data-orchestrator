@@ -193,10 +193,18 @@ while a document not yet indexed is ingested with path-derived metadata
 (`<year>-01-01`) and counted — the run summary warns and the run report
 carries `totals.docs_path_metadata`.
 
-The payload is in the **vault's vocabulary**: a document gets the same
-payload keys and values from this source as from the `vault` source
-(`payload.manifest_row_to_payload`, checked by
-`tests/test_cb_corpus.py::test_the_disk_and_the_vault_sources_give_the_same_payload`).
+The payload is in the **vault's vocabulary**: a document is meant to get the
+same payload keys and values from this source as from the `vault` source
+(`payload.manifest_row_to_payload`). Both sources build it with the same
+`payload.row_to_payload`, so what can differ is the split of a manifest row
+into the vault's columns and `extra` (`payload.manifest_row_to_vault_row`).
+`tests/test_cb_corpus.py::test_the_disk_and_the_vault_sources_give_the_same_payload`
+compares it with a split written out by hand in the test;
+`tests/test_payload.py::test_the_vault_split_copies_the_vault_s_known_fields`
+compares `payload.VAULT_KNOWN_FIELDS` with the vault's own `KNOWN_FIELDS`, only
+when a vault checkout is named by `DATA_ORCHESTRATOR_VAULT_CHECKOUT` (skipped
+otherwise, and in CI). The rest of the vault's ingestion (its casts, its
+refusals) is not checked against the vault's code.
 A manifest row is split the way the vault splits it on ingestion: its known
 fields (the vault's `KNOWN_FIELDS`: `doc_id`, `corpus`, `source_code` or the
 legacy `bank_code`, `doc_type`, `title`, `pdf_url`, `source_url`, `date`,
@@ -936,6 +944,13 @@ The integration tests (they need Docker):
 
 ```bash
 python -m pytest -m integration -q
+```
+
+The contract test against the vault's `KNOWN_FIELDS` (skipped without a
+checkout of the vault repository):
+
+```bash
+DATA_ORCHESTRATOR_VAULT_CHECKOUT=~/myopenfund/vault python -m pytest -q tests/test_payload.py
 ```
 
 The check that the rag-engine installed is the pinned commit:

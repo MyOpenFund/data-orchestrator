@@ -120,3 +120,54 @@ def test_a_null_key_of_extra_is_left_out_and_not_counted():
     row = {"doc_id": "a", "extra": {"date_kind": None, "series": "S", "page": None}}
     payload, dropped = pl.row_to_payload(row)
     assert payload == {"series": "S", "doc_id": "a"} and dropped == ()
+
+
+# ---------------------------------------------------------------------------
+# Contract with the vault: its KNOWN_FIELDS, read from a checkout
+# ---------------------------------------------------------------------------
+VAULT_CHECKOUT_ENV = "DATA_ORCHESTRATOR_VAULT_CHECKOUT"
+
+
+def vault_known_fields(checkout):
+    """``KNOWN_FIELDS`` of the vault's ``ingestion/ingest.py``, read from its
+    source (parsed, not imported: the vault's dependencies are not this
+    package's). None when the module assigns no literal ``KNOWN_FIELDS``."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(checkout) / "ingestion" / "ingest.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        targets = (node.targets if isinstance(node, ast.Assign)
+                   else [node.target] if isinstance(node, ast.AnnAssign) and node.value else [])
+        if any(isinstance(t, ast.Name) and t.id == "KNOWN_FIELDS" for t in targets):
+            return frozenset(ast.literal_eval(node.value))
+    return None
+
+
+def test_the_known_fields_reader_reads_a_literal_set(tmp_path):
+    (tmp_path / "ingestion").mkdir()
+    (tmp_path / "ingestion" / "ingest.py").write_text(
+        'import os\nKNOWN_FIELDS = {\n    "doc_id", "title",\n}\nOTHER = 1\n', encoding="utf-8")
+    assert vault_known_fields(tmp_path) == {"doc_id", "title"}
+    (tmp_path / "ingestion" / "ingest.py").write_text("X = 1\n", encoding="utf-8")
+    assert vault_known_fields(tmp_path) is None
+
+
+def test_the_vault_split_copies_the_vault_s_known_fields():
+    """The split of a manifest row is the vault's when ``VAULT_KNOWN_FIELDS`` is
+    its ``KNOWN_FIELDS``: checked against a vault checkout named by
+    ``DATA_ORCHESTRATOR_VAULT_CHECKOUT`` (skipped without one)."""
+    import os
+
+    checkout = os.environ.get(VAULT_CHECKOUT_ENV)
+    if not checkout:
+        pytest.skip(f"{VAULT_CHECKOUT_ENV} names no vault checkout")
+    known = vault_known_fields(checkout)
+    assert known is not None, f"no literal KNOWN_FIELDS in {checkout}/ingestion/ingest.py"
+    assert pl.VAULT_KNOWN_FIELDS == known
+
+
+def test_the_vault_row_has_a_column_for_every_known_field_but_the_legacy_one():
+    row = pl.manifest_row_to_vault_row({}, "c")
+    assert set(row) == (pl.VAULT_KNOWN_FIELDS - {"bank_code"}) | {"extra"}
+    assert set(pl.PAYLOAD_COLUMNS) <= pl.VAULT_KNOWN_FIELDS
