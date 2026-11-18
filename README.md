@@ -115,6 +115,7 @@ via their own connector (`--no-vault`) in the meantime:
    | `RAG_ENGINE_BACKEND` | leave unset (default `torch`): ingestion uses the torch backend, the one this package installs. `onnx`, the engine's backend for search services, is not installed here and is refused on an ingest run (`error: RAG_ENGINE_BACKEND='onnx': ingestion uses the torch backend, …`, exit 2, before any work), like any other value |
    | `RAG_ENGINE_SEARCH_LIMIT` / `RAG_ENGINE_SEARCH_MAX_LIMIT` / `RAG_ENGINE_PARITY_MIN` / `RAG_ENGINE_ONNX_THREADS` | leave unset (defaults `10`, `50`, `0.999`, none). Settings of the engine's search side: ingestion does not use them, but the engine reads all of its settings at once, so an invalid value (not a number, a limit below 1, a parity outside `(0, 1]`) stops an ingest run with exit 2 |
    | `DATA_ORCHESTRATOR_DOTENV` | optional (default: unset, the `.env` is searched as described below), **real environment only** (never read from a `.env`): explicit path of the `.env` to load instead of searching (a relative path is resolved against the current directory; the absolute path is what is read and printed); a missing file is an error (exit 2 from the CLI, `FileNotFoundError` for a library caller) |
+   | `DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE` / `_INTERVAL` / `_COUNT` | optional, TCP keepalives of the vault connection (libpq `keepalives_idle`, `keepalives_interval`, `keepalives_count`; always on; defaults `30` s, `10` s, `3`): a dead peer (a laptop asleep, a dropped link) is noticed within idle + interval x count seconds. A whole number >= 1, else exit 2 |
    | `DATA_ORCHESTRATOR_LOG_LEVEL` | optional, level of the log lines the CLI sends to stderr (this package's and the engine's: model loaded, collection created, a text file with invalid bytes, …): `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`; anything else is an error (exit 2) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
    | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (default: every type the pinned engine reads; see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
@@ -702,7 +703,20 @@ CollectionBusyError: … holds collection '<name>' (vault advisory lock 7468);
 wait for it to end, then run again` and exit 1. **The lock only knows runs of
 this version**: an ingestion started by an older checkout (another machine),
 or a disk-source run with `--no-vault`, takes no lock; check that none runs
-before `--write`. To see who holds it:
+before `--write`.
+
+**The lock is checked during the run, not only at its start.** It lives in
+the run's vault session, which a server restart, `pg_terminate_backend` or a
+dropped network link (a laptop asleep) ends silently, releasing the lock.
+So `sync-metadata` checks, on its own session, that it still holds the lock
+(`pg_locks` for its backend) before each batch it reads and before each
+document it writes, and an ingestion before each document; the vault
+connection has TCP keepalives on (`DATA_ORCHESTRATOR_PG_KEEPALIVES_*`). A
+lost session ends the run at once: `error: fatal: VaultSessionLost: … the
+run stops here and can be run again`, exit 1, nothing more written (for an
+ingestion, a failure to record a document because the session is gone is
+this same fatal error, not one failed document; its points are written again
+by the next run). Both commands are resumable: run the same command again. To see who holds it:
 `SELECT * FROM pg_locks WHERE locktype = 'advisory' AND classid = 7468;`.
 
 ### Options

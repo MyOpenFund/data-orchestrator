@@ -44,6 +44,9 @@ class LedgerCursor:
         if "pg_try_advisory_lock" in sql:
             self._rows = [(self._conn.lock_free,)]
             return
+        if "FROM pg_locks" in sql:
+            self._rows = [(int(self._conn.lock_held),)]
+            return
         assert "FROM rag_ingestions r" in sql
         assert params["collection"] == COLLECTION and params["corpus"] == CORPUS
         rows = sorted(self._conn.ledger, key=lambda r: r["ledger_doc_id"])
@@ -70,6 +73,7 @@ class LedgerConn:
     def __init__(self, ledger=(), lock_free=True):
         self.ledger = list(ledger)
         self.lock_free = lock_free
+        self.lock_held = True
         self.executed = []
         self.closed = False
 
@@ -525,3 +529,36 @@ def test_a_disk_source_ingestion_in_vault_mode_takes_the_lock(monkeypatch, tmp_p
     assert "a sync-metadata run holds collection" in capsys.readouterr().err
     locks = [p for sql, p in conn.executed if "pg_try_advisory_lock_shared" in sql]
     assert locks and locks[0][1] == "central-bank-e5b-v1"
+
+
+def test_cli_stops_when_the_vault_session_loses_the_lock(cli_env, capsys):
+    """A lost lock (the session terminated, the network gone) stops the run
+    before the next write instead of letting it write unlocked."""
+    store, conn = cli_env
+    for i in range(3):
+        seed(store, f"d{i}", n=1)
+    conn.ledger = [vault_row(f"d{i}", date=datetime.date(2015, 1, 1 + i)) for i in range(3)]
+    writes = []
+    real = store.set_payload
+
+    def counting(collection, doc_id, fields):
+        writes.append(doc_id)
+        conn.lock_held = False  # the session is lost right after the first write
+        return real(collection, doc_id, fields)
+
+    store.set_payload = counting
+    rc = cli.main(["sync-metadata", "--collection", COLLECTION, "--write", "--doc-batch", "1"])
+    err = capsys.readouterr().err
+    assert rc == 1 and writes == ["d0"]
+    assert "VaultSessionLost" in err and "no longer holds the lock" in err
+    assert "can be run again" in err
+
+
+def test_run_sync_checks_the_guard_before_each_batch_and_each_write(tmp_path):
+    store = make_store()
+    for i in range(3):
+        seed(store, f"d{i}", n=1)
+    conn = LedgerConn([vault_row(f"d{i}", date=datetime.date(2015, 1, 1 + i)) for i in range(3)])
+    calls = []
+    run(conn, store, tmp_path, write=True, doc_batch=2, guard=lambda: calls.append(1))
+    assert len(calls) == 2 + 3  # two batches, three writes

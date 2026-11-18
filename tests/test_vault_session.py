@@ -1,0 +1,129 @@
+"""The vault session that holds the collection lock: keepalives, the lock
+re-checked during a run, and a lost session fatal for the run."""
+import psycopg2
+import pytest
+
+from data_orchestrator import vault
+from data_orchestrator.core import FatalRunError, run_ingest
+from tests.test_core_engine import FakeEmbedder, FakeStore, RecordingLedger, _md_item
+
+
+class _Cur:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.conn.executed.append((" ".join(sql.split()), params))
+        if self.conn.dead:
+            self.conn.closed = 2
+            raise psycopg2.OperationalError("server closed the connection unexpectedly")
+
+    def fetchone(self):
+        return (self.conn.held,)
+
+
+class _Conn:
+    def __init__(self, held=1, dead=False):
+        self.held, self.dead, self.closed = held, dead, 0
+        self.executed = []
+
+    def cursor(self):
+        return _Cur(self)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        if self.closed:
+            raise psycopg2.InterfaceError("connection already closed")
+
+
+def test_keepalives_have_defaults_and_can_be_set():
+    assert vault.keepalive_options({}) == {
+        "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3}
+    assert vault.keepalive_options({
+        "DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE": "60",
+        "DATA_ORCHESTRATOR_PG_KEEPALIVES_INTERVAL": " 5 ",
+        "DATA_ORCHESTRATOR_PG_KEEPALIVES_COUNT": "4"})["keepalives_idle"] == 60
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x", "1.5", ""])
+def test_a_bad_keepalive_value_is_refused(value):
+    with pytest.raises(ValueError, match="DATA_ORCHESTRATOR_PG_KEEPALIVES_COUNT"):
+        vault.keepalive_options({"DATA_ORCHESTRATOR_PG_KEEPALIVES_COUNT": value})
+
+
+def test_connect_turns_the_keepalives_on(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/db")
+    monkeypatch.setattr(vault.psycopg2, "connect", lambda url, **kw: seen.update(url=url, **kw))
+    vault.connect()
+    assert seen["url"] == "postgresql://u@h/db"
+    assert seen["keepalives"] == 1 and seen["keepalives_idle"] == 30
+
+
+def test_the_lock_check_passes_while_the_lock_is_held():
+    conn = _Conn(held=1)
+    vault.check_collection_lock(conn, "c", exclusive=True, holder="sync-metadata")
+    sql, params = conn.executed[0]
+    assert "pg_locks" in sql and "pg_backend_pid()" in sql
+    assert params == (vault.COLLECTION_LOCK_CLASS, "c", "ExclusiveLock")
+
+
+def test_a_lock_no_longer_held_is_a_lost_session():
+    with pytest.raises(vault.VaultSessionLost, match="no longer holds"):
+        vault.check_collection_lock(_Conn(held=0), "c", exclusive=False, holder="vault ingestion")
+
+
+def test_a_dead_vault_session_is_a_lost_session():
+    with pytest.raises(vault.VaultSessionLost, match="vault session"):
+        vault.check_collection_lock(_Conn(dead=True), "c", exclusive=True, holder="sync-metadata")
+    assert issubclass(vault.VaultSessionLost, FatalRunError)
+
+
+def test_a_ledger_write_on_a_dead_session_is_fatal_not_a_document_error(tmp_path):
+    class Ledger(vault.VaultLedger):
+        def __init__(self, conn):
+            self._conn, self.collection, self.corpus = conn, "c", "central-bank"
+            self.embedding_model, self.embedding_version, self._done = "m", "v", set()
+
+    conn = _Conn(dead=True)
+    items = [_md_item(tmp_path, doc_id=f"d{i}") for i in range(3)]
+    store = FakeStore([])
+    with pytest.raises(vault.VaultSessionLost):
+        run_ingest(items, collection="c", ledger=Ledger(conn), store=store,
+                   embedder=FakeEmbedder())
+    assert {p.payload["doc_id"] for p in store.client.points} == {"d0"}  # stopped at once
+
+
+def test_a_guard_that_fails_stops_the_run_before_the_next_document(tmp_path):
+    calls = []
+
+    def guard():
+        calls.append(1)
+        if len(calls) == 2:
+            raise vault.VaultSessionLost("gone")
+
+    log = []
+    items = [_md_item(tmp_path, doc_id=f"d{i}") for i in range(3)]
+    store = FakeStore(log)
+    with pytest.raises(vault.VaultSessionLost) as exc:
+        run_ingest(items, collection="c", ledger=RecordingLedger(log), store=store,
+                   embedder=FakeEmbedder(), guard=guard)
+    assert {p.payload["doc_id"] for p in store.client.points} == {"d0"}
+    assert exc.value.ingest_stats.docs_ingested == 1
+
+
+def test_a_bad_keepalive_setting_is_a_usage_error_before_any_work(monkeypatch, capsys):
+    from data_orchestrator import cli
+
+    monkeypatch.setenv("DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE", "0")
+    monkeypatch.setattr(vault, "connect", lambda: pytest.fail("connected"))
+    assert cli.main(["sync-metadata"]) == 2
+    assert "DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE" in capsys.readouterr().err

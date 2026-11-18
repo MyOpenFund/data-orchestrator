@@ -14,6 +14,7 @@ import os
 import psycopg2
 
 from .config import load_dotenv
+from .core import FatalRunError
 
 RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
 
@@ -55,8 +56,42 @@ ON CONFLICT (doc_id, collection) DO UPDATE SET
 """
 
 
+# TCP keepalives of the vault connection (libpq ``keepalives_idle``,
+# ``keepalives_interval``, ``keepalives_count``): a run holds its session, and
+# the collection lock with it, for hours while it mostly talks to Qdrant; a
+# peer that went away (a laptop asleep, a dropped tailnet link) is then
+# noticed by the operating system within idle + interval x count seconds
+# instead of never. Environment variable -> (libpq parameter, default).
+KEEPALIVE_ENV = {
+    "DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE": ("keepalives_idle", 30),
+    "DATA_ORCHESTRATOR_PG_KEEPALIVES_INTERVAL": ("keepalives_interval", 10),
+    "DATA_ORCHESTRATOR_PG_KEEPALIVES_COUNT": ("keepalives_count", 3),
+}
+
+
+def keepalive_options(environ=None) -> dict:
+    """The keepalive parameters :func:`connect` passes to libpq (always on).
+
+    Each value is a whole number of seconds (or probes) >= 1, else
+    ``ValueError`` naming the variable; unset or blank is the default.
+    """
+    environ = os.environ if environ is None else environ
+    options = {"keepalives": 1}
+    for env, (param, default) in KEEPALIVE_ENV.items():
+        raw = environ.get(env)
+        if raw is None:
+            options[param] = default
+            continue
+        text = raw.strip()
+        if not (text.isascii() and text.isdigit() and int(text) >= 1):
+            raise ValueError(f"{env}={raw!r} is not a whole number >= 1")
+        options[param] = int(text)
+    return options
+
+
 def connect():
-    """Connect to the vault Postgres (DATABASE_URL from .env / environment).
+    """Connect to the vault Postgres (DATABASE_URL from .env / environment),
+    with TCP keepalives on (:func:`keepalive_options`).
 
     Runs ``config.load_dotenv()`` first (a no-op once loaded): a library
     caller whose ``DATA_ORCHESTRATOR_DOTENV`` names a missing file gets
@@ -69,7 +104,7 @@ def connect():
             "DATABASE_URL is not set (.env or environment). Set it, or run "
             "with --no-vault to use the local file ledger without vault state."
         )
-    return psycopg2.connect(url)
+    return psycopg2.connect(url, **keepalive_options())
 
 
 def insert_run_report(conn, report: dict) -> None:
@@ -133,7 +168,14 @@ class VaultLedger:
                     self.embedding_model, self.embedding_version, chunks,
                 ))
             self._conn.commit()
-        except Exception:
+        except Exception as exc:
+            if getattr(self._conn, "closed", 0):
+                # The session itself is gone (and the collection lock with
+                # it): every later document would fail the same way.
+                raise VaultSessionLost(
+                    f"the vault session was lost while recording document {doc_id!r} "
+                    f"({type(exc).__name__}: {str(exc).strip()}); its points are written, "
+                    "the next run writes them again") from exc
             # A raising execute (e.g. an FK violation for a doc_id unknown to
             # `documents`) leaves this shared connection in aborted-transaction
             # state: every later statement on it would raise
@@ -167,6 +209,41 @@ _LOCK_SQL = {
 
 class CollectionBusyError(RuntimeError):
     """The collection lock is held by a run that excludes this one."""
+
+
+class VaultSessionLost(FatalRunError):
+    """The vault session of the run is gone, or no longer holds the collection
+    lock (``pg_terminate_backend``, a dropped network link, a server restart):
+    another run may now take the lock. The run stops; it is resumable."""
+
+
+_HOLDS_SQL = (
+    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
+    "AND pid = pg_backend_pid() AND classid = %s "
+    "AND objid = (hashtext(%s)::bigint & 4294967295)::oid AND objsubid = 2 AND mode = %s"
+)
+
+
+def check_collection_lock(conn, collection: str, *, exclusive: bool, holder: str) -> None:
+    """Check, on the run's own session, that it is alive and still holds the
+    collection lock taken by :func:`lock_collection`; raise
+    :class:`VaultSessionLost` otherwise. One small query; the transaction it
+    opens is ended at once (the lock is a session lock, it stays)."""
+    mode = "ExclusiveLock" if exclusive else "ShareLock"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_HOLDS_SQL, (COLLECTION_LOCK_CLASS, collection, mode))
+            (held,) = cur.fetchone()
+        conn.rollback()
+    except Exception as exc:  # noqa: BLE001 — any failure of this query means the session is unusable
+        raise VaultSessionLost(
+            f"{holder}: the vault session holding the lock of collection {collection!r} "
+            f"is gone ({type(exc).__name__}: {str(exc).strip()}); the run stops here and "
+            "can be run again") from exc
+    if not held:
+        raise VaultSessionLost(
+            f"{holder}: the vault session no longer holds the lock of collection "
+            f"{collection!r}; the run stops here and can be run again")
 
 
 def lock_collection(conn, collection: str, *, exclusive: bool, holder: str) -> None:

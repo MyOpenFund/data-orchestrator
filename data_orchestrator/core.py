@@ -128,6 +128,12 @@ def _check_batch_size(batch_size: int | None) -> None:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
 
+class FatalRunError(RuntimeError):
+    """An error that ends a run instead of failing one document: whatever the
+    next document, it would fail the same way (e.g. the vault session that
+    holds the collection lock is gone, ``vault.VaultSessionLost``)."""
+
+
 def split_reserved_keys(metadata: Mapping, doc_id: str | None = None) -> tuple[dict, tuple[str, ...]]:
     """``metadata`` without the payload keys the engine writes itself, and the
     names of the keys left out.
@@ -350,6 +356,7 @@ def run_ingest(
     embedder: object | None = None,
     on_target: Optional[Callable[[object, object], None]] = None,
     settings: Settings | None = None,
+    guard: Optional[Callable[[], None]] = None,
 ) -> IngestStats:
     """Ingest a stream of items into ``collection``.
 
@@ -377,6 +384,14 @@ def run_ingest(
     can report what was done before the failure (:func:`interrupted_stats`).
     The document being written when a key is refused is counted as seen,
     neither ingested nor failed.
+
+    ``guard()`` is called before each document is written (the CLI checks
+    there that the vault session still holds the collection lock); an
+    exception it raises ends the run, before that document. A
+    :class:`FatalRunError` raised while writing a document or its ledger
+    record ends the run too (the document is counted as seen, neither
+    ingested nor failed; the next run writes it again over the same ids),
+    instead of failing that document only.
 
     ``on_target(host, port)`` is called once, right after the store is
     constructed and before any collection work, with the store's ``host`` and
@@ -416,6 +431,9 @@ def run_ingest(
                     on_progress(stats, item, "skip-resume")
                 continue
 
+            if guard is not None:
+                guard()
+
             # The ledger mark is inside this per-document try (both the n > 0
             # and the n == 0 "empty doc" case) so a ledger write failure
             # (e.g. an FK violation for a doc_id unknown to the vault) is
@@ -431,6 +449,9 @@ def run_ingest(
                 )
                 if ledger is not None:
                     ledger.mark(item.doc_id, n, payload=item.payload)
+            except FatalRunError:
+                _bump(stats, item)  # seen; neither new nor failed
+                raise
             except QdrantAuthError as exc:
                 # Not this document's fault, and every later one would fail
                 # the same way: one fatal instead of N per-document errors.

@@ -283,12 +283,28 @@ def _print_interrupted_summary(stats: IngestStats | None, elapsed: float | None 
         pass
 
 
+def _lock_guard(vault_mod, conn, collection: str, holder: str):
+    """``run_ingest``'s guard: before each document, the run's vault session
+    must be alive and still hold the shared collection lock."""
+    def guard():
+        vault_mod.check_collection_lock(conn, collection, exclusive=False, holder=holder)
+    return guard
+
+
 def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
     """Write a fatal report on a connection the failure may have left inside
     an aborted transaction: roll back first (a failing rollback is not
     itself fatal; the insert then says whether the connection is usable),
     and warn on an insert failure — never silent, never masking the run's
     own fatal outcome."""
+    fresh = None
+    if getattr(conn, "closed", 0):
+        # The session itself is gone (VaultSessionLost): a new one for the report.
+        try:
+            conn = fresh = vault_mod.connect()
+        except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
+            print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+            return
     try:
         conn.rollback()
     except Exception:  # noqa: BLE001 — the insert below reports a dead connection
@@ -297,6 +313,9 @@ def _insert_fatal_report(vault_mod, conn, report: dict) -> None:
         vault_mod.insert_run_report(conn, report)
     except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
         print(f"warning: failed to write run report to vault: {exc}", file=sys.stderr)
+    finally:
+        if fresh is not None:
+            fresh.close()
 
 
 def _append_report_jsonl(report: dict) -> None:
@@ -562,6 +581,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _setup_logging()
         args.degraded_ratio = policy.degraded_failure_ratio()
+        from . import vault as _vault
+
+        _vault.keepalive_options()  # DATA_ORCHESTRATOR_PG_KEEPALIVES_*: exit 2 here, not mid-run
         args.supported_mimes = supported_mime_types()
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -760,6 +782,8 @@ def main(argv: list[str] | None = None) -> int:
             on_progress=_make_progress(args.progress_every),
             on_target=_print_qdrant_target,
             settings=args.engine_settings,
+            guard=(None if vault_conn is None else
+                   _lock_guard(vault_mod, vault_conn, collection, f"{args.source} ingestion")),
         )
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
@@ -930,13 +954,17 @@ def _sync_metadata(args) -> int:
                       + f" {'written' if args.write else 'to_write'}="
                       + f"{stats.written if args.write else stats.to_write}", flush=True)
 
+        def guard(conn=conn):
+            vault_mod.check_collection_lock(conn, collection, exclusive=True,
+                                            holder="sync-metadata")
+
         stats = sm.run_sync(
             conn, store, corpus=args.corpus, collection=collection, csv_path=csv_path,
             write=args.write, include_title=args.include_title, doc_ids=doc_ids,
             limit=args.limit,
             page_size=args.page_size or sm.DEFAULT_PAGE_SIZE,
             doc_batch=args.doc_batch or sm.DEFAULT_DOC_BATCH,
-            on_progress=progress,
+            on_progress=progress, guard=guard,
         )
     except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
         print(f"error: fatal: {type(exc).__name__}: {exc}{_sync_advice(exc, collection)}",
@@ -1021,6 +1049,7 @@ def _run_vault_source(args, collection: str) -> int:
             items, collection=collection, ledger=ledger, ocr=args.ocr,
             limit=args.limit, on_progress=_make_progress(args.progress_every),
             on_target=_print_qdrant_target, settings=args.engine_settings,
+            guard=_lock_guard(vault_mod, conn, collection, "vault ingestion"),
         )
         _print_summary(stats)
 

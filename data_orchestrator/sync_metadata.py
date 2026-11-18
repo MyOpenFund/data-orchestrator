@@ -318,6 +318,7 @@ def run_sync(
     doc_batch: int = DEFAULT_DOC_BATCH,
     create_indexes: bool = True,
     on_progress: Callable[[SyncStats], None] | None = None,
+    guard: Callable[[], None] | None = None,
 ) -> SyncStats:
     """Compare (and with ``write``, correct) the owned keys of every ledger document.
 
@@ -328,6 +329,11 @@ def run_sync(
     ``create_indexes`` is False; the rag-engine README states that creating
     them before the points have their interval is safe. Without ``write``
     nothing is written anywhere but ``csv_path``.
+
+    ``guard()`` is called before each batch is read and before each document
+    is written (the CLI checks there that the vault session still holds the
+    collection lock); an exception it raises ends the run there, every
+    document before it being either corrected or not.
     """
     for name, value in (("page_size", page_size), ("doc_batch", doc_batch)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -348,11 +354,13 @@ def run_sync(
         writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         for batch in _batches(rows, doc_batch):
+            if guard is not None:
+                guard()
             ids = [r["ledger_doc_id"] for r in batch]
             points = read_points(store, collection, ids, keys, page_size=page_size)
             for row in batch:
                 out = _one(row, points.get(row["ledger_doc_id"], []), keys, stats, store,
-                           collection, write=write, include_title=include_title)
+                           collection, write=write, include_title=include_title, guard=guard)
                 for rec in out:
                     writer.writerow(rec)
                 stats.csv_rows += len(out)
@@ -362,7 +370,8 @@ def run_sync(
     return stats
 
 
-def _one(row, points, keys, stats: SyncStats, store, collection, *, write, include_title):
+def _one(row, points, keys, stats: SyncStats, store, collection, *, write, include_title,
+         guard=None):
     doc_id = row["ledger_doc_id"]
     stats.documents += 1
     stats.seen_ids.add(doc_id)
@@ -394,6 +403,8 @@ def _one(row, points, keys, stats: SyncStats, store, collection, *, write, inclu
         stats.fields[key] = stats.fields.get(key, 0) + 1
     note = f"points disagree ({len(points)} points)" if disagree else ""
     if write:
+        if guard is not None:
+            guard()
         reached = store.set_payload(collection, doc_id, fields)
         stats.written += 1
         stats.points_written += reached
