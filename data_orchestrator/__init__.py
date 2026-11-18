@@ -17,6 +17,7 @@ Layout
 - ``routing``        per-corpus root/collection-naming rules
 - ``vault``          Postgres connection + the rag_ingestions-backed ledger
 - ``probe``          facts probe (has_text_layer / page_count) for OCR policy
+- ``sync_metadata``  vault date metadata -> Qdrant payloads (set_payload, no re-embedding)
 - ``sources/``      one module per data source (``vault`` and ``cb_corpus``)
 - ``cli``           console entrypoint (``data-orchestrator``)
 

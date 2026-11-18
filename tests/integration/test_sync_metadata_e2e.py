@@ -44,7 +44,7 @@ def corpus_dir(tmp_path):
     sections = "".join(
         f"## Section {i}\n\nThe committee discussed inflation, wages and the outlook for "
         f"policy rates in part {i}. Members noted that price pressures had eased and that "
-        f"the balance of risks to growth had shifted over the quarter under review.\n\n"
+        f"the balance of risks to growth had shifted over the quarter.\n\n"
         for i in range(1, 6))
     (d / "raw" / "gb" / "A3" / "d.md").write_text("# Minutes\n\n" + sections, encoding="utf-8")
     return d

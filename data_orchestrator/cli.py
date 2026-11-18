@@ -10,6 +10,9 @@ drives the rag-engine library (a dependency, see ``README.md``)::
     data-orchestrator company --ciks 320193 --collection company-e5b-v1
     data-orchestrator company --ciks 320193 --doctypes A1 --year-min 2024
 
+    data-orchestrator sync-metadata --collection central-bank-e5b-v1           # dry run
+    data-orchestrator sync-metadata --collection central-bank-e5b-v1 --write
+
 (equivalently ``python -m data_orchestrator.cli <source> ...``)
 
 The default collection is routed per corpus by

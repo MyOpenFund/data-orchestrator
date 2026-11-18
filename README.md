@@ -40,6 +40,7 @@ data-orchestrator/
     routing.py              # per-corpus routing, collection naming, supported types
     vault.py                 # Postgres connection + the rag_ingestions-backed ledger
     probe.py                 # facts probe (has_text_layer / page_count) for OCR policy
+    sync_metadata.py         # sync-metadata: vault date metadata -> Qdrant payloads, no re-embedding
     cli.py                    # console entrypoint (`data-orchestrator`)
     sources/
       vault.py                # source #1: vault-selected documents (any corpus)
@@ -314,6 +315,14 @@ Facts probe: fills `has_text_layer` / `page_count` for a corpus's documents
 data-orchestrator probe --corpus central-bank
 ```
 
+Date metadata of the ingested documents, vault to Qdrant, without
+re-embedding (dry run; `--write` applies; see
+[Correcting dates in Qdrant](#correcting-dates-in-qdrant-sync-metadata)).
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1
+```
+
 Forced OCR instead of the engine's page-by-page detection (needs
 `TESSDATA_PREFIX`, see the flags below).
 
@@ -341,10 +350,15 @@ data-orchestrator vault --corpus central-bank --ocr always
 | `--ciks 320193,789019` | (company source) only these SEC CIK numbers |
 | `--prefer pdf\|text` | (company source) rendered PDF (default) or cleaned text |
 | `--root PATH` | (cb_corpus/company sources) corpus root override |
-| `--limit N` | stop after N newly ingested docs; for `probe`, probe at most N documents (`N >= 1`; `0` or negative is an error, exit 2) |
+| `--limit N` | stop after N newly ingested docs; for `probe`, probe at most N documents; for `sync-metadata`, examine the first N ledger documents in `doc_id` order (`N >= 1`; `0` or negative is an error, exit 2) |
 | `--progress-every N` | progress line every N documents (`N >= 1`, default 25) |
 | `--no-resume` | (disk sources) ignore the resume ledger, re-ingest everything. **Rejected for the `vault` source** (exit 2), by design: its resume *is* the `documents`/`rag_ingestions` anti-join, and a policy change means a fresh collection — re-ingest into a new `--collection` name. Re-ingesting into the same collection would leave stale chunks behind when the new chunking yields fewer chunks than the points already stored. Also rejected for `probe` (exit 2), which is resumable by construction |
 | `--count-only` | just count matching documents, do not ingest (cb_corpus, company, vault; **rejected for `probe`**, exit 2); for `vault`, also the unsupported documents and their per-source split. A NULL `source_code` is counted under the corpus name — the label the run report's `sources[]` uses (`core.source_label`) — and a NULL `doc_type` as `unknown`. No run report, no `Qdrant:` line |
+
+The flags of `sync-metadata` (`--write`, `--doc-ids`, `--csv`,
+`--page-size`, `--doc-batch`, `--include-title`, `--create-indexes`) are
+listed in [its section](#correcting-dates-in-qdrant-sync-metadata); any of
+them on another command is an error (exit 2).
 
 `--include-html` was removed (argparse rejects it, exit 2): the engine has no
 HTML reader, so every such file was a per-document error. HTML is converted to
@@ -425,7 +439,7 @@ then the `error: fatal:` line. When standard output is itself what failed (the
 command piped into a reader that has gone, e.g. `| head`), the counts cannot
 be printed: the report is written all the same and the exit code stays 1. A
 fatal error before the first document reports zeros and prints no summary. **No report**
-is written by `--count-only`, by `probe`, or by a run stopped by a pre-flight
+is written by `--count-only`, by `probe`, by `sync-metadata`, or by a run stopped by a pre-flight
 error (exit 1 or 2, before any work). Exit codes are honest:
 
 - `0` **ok**;
@@ -606,6 +620,186 @@ counted as an error, while every other document in the batch still commits.
 (exit 2); `--limit N` probes at most N documents. A vault failure (missing
 `DATABASE_URL`, unreachable database) is an `error: fatal:` line and exit 1.
 
+## Correcting dates in Qdrant (sync-metadata)
+
+The vault takes corrected metadata at its next ingestion of the manifests
+(its upsert rewrites `date`, `year`, `title` and `extra`), but a document
+already recorded in `rag_ingestions` is never offered to the engine again, so
+its points keep the payload they were written with. `sync-metadata` brings
+the date metadata of those points in line with the vault **without
+re-embedding**:
+
+1. it reads the documents `rag_ingestions` records for the collection and the
+   corpus (`doc_id` order), each joined with its `documents` row;
+2. it builds the metadata an ingestion would write today **through the
+   ingestion code path**: `sources.vault.row_to_payload` (the vault columns
+   over `extra`, NULL columns dropped, the engine's reserved and derived keys
+   dropped from `extra`), then rag-engine's `build_payload`, which derives
+   `date_start` / `date_end` from `date` and `date_precision`;
+3. it reads the owned keys of **every point** of these documents (a scroll
+   filtered on `doc_id`, `--doc-batch` documents per filter, `--page-size`
+   points per request, payload restricted to the owned keys, never a vector);
+4. where a point differs, with `--write`, it calls rag-engine's
+   `QdrantStore.set_payload(collection, doc_id, fields)` with
+   `date_fields(date, date_precision, year=year)` plus `date_kind` (a `None`
+   removes a key: a `date_kind` the vault no longer has, a withdrawn date and
+   its interval). The fields are checked to be exactly what an ingestion would
+   write before they are sent.
+
+**Owned keys**: `date`, `year`, `date_precision`, `date_kind`, `date_start`,
+`date_end`. Nothing else is compared or written: no vector (not read, not
+sent), no point id, no other payload key, no point created or deleted, no
+`rag_ingestions` or `runs` row. A key absent from the vault (a NULL column, a
+key not in `extra`) must be absent from the points; a stored null counts as
+absent.
+
+**`title` is not owned by default.** The vault may hold corrected titles as
+well (its upsert rewrites them), but this command exists for the dates: a
+title change is shown to every reader of a citation, it is not part of the
+policy-dates correction, and mixing it into the dry run would hide the date
+differences among title ones. `--include-title` adds `title` to the compared
+and written keys, explicitly, for a run whose CSV has been read for titles.
+
+**Every point is read.** rag-engine copies the same metadata into every point
+of one ingestion (`ingest_document` hands one mapping to `build_payload` for
+each chunk), so the points of a document agree unless something else wrote
+them: a stale point left by an earlier ingestion that made more chunks, an
+interrupted correction. The read is the guard: a document whose points do not
+all carry the same values is reported (`points disagreeing`, a `points
+disagree` note in the CSV, its values listed) and `--write` corrects all of
+its points (`set_payload` filters on `doc_id`). The read costs the owned keys
+of each point, about 33,600 small payloads for `central-bank-e5b-v1`.
+
+**Payload indexes.** `--write` first creates the payload indexes of rag-engine
+a collection lacks (`ensure_payload_indexes`: on a collection indexed before
+payload schema v2, `date_start` and `date_end`), then corrects the points: the
+order of the rag-engine README, which states that creating the two indexes
+before the points have their interval is safe (in `auto` mode a search keeps
+the legacy condition on `date` as a second way in, so a half-upgraded
+collection loses no document). `--create-indexes` does only that step and
+exits, for an operator who wants it separate, or for a collection in Qdrant's
+strict mode without an index on `doc_id` (there the reads themselves are
+refused). A dry run never creates anything; it says which indexes are
+missing.
+
+**Dry run by default**, with a read-only Qdrant key: it reads the vault and
+Qdrant and writes the CSV only. `--write` needs a key allowed to write; with
+a read-only key the first write is refused (`QdrantAuthError`, exit 1, nothing
+written). **Idempotent and resumable**: a document is either corrected or not
+(one `set_payload` per document, applied when it returns); the next run
+recomputes everything from the vault and Qdrant and writes only what still
+differs, so a second `--write` writes 0 documents.
+
+**Never alongside an ingestion of the same collection.** `set_payload` counts
+then writes, and a batch of an ingestion that started before the correction
+writes whole payloads with the old metadata. The two now exclude each other
+through a Postgres advisory lock on the collection, taken by the run's vault
+connection and released when it closes (or the process dies): an ingestion
+holds it shared (ingestions do not exclude each other), `sync-metadata` holds
+it exclusive. Whichever comes second stops with `error: fatal:
+CollectionBusyError: … holds collection '<name>' (vault advisory lock 7468);
+wait for it to end, then run again` and exit 1. **The lock only knows runs of
+this version**: an ingestion started by an older checkout (another machine),
+or a disk-source run with `--no-vault`, takes no lock; check that none runs
+before `--write`. To see who holds it:
+`SELECT * FROM pg_locks WHERE locktype = 'advisory' AND classid = 7468;`.
+
+### Options
+
+| flag | meaning |
+|---|---|
+| `--corpus NAME` | the corpus of the ledger rows (`rag_ingestions.corpus`; default `central-bank`) |
+| `--collection NAME` | the collection (default: the routed `{corpus}-{model_tag}-v1`) |
+| `--write` | apply the corrections (creates the missing payload indexes first). Without it, nothing is written to Qdrant |
+| `--csv PATH` | the CSV of differences (default `<state dir>/sync-metadata-<collection>-<UTC time>.csv`, `DATA_ORCHESTRATOR_STATE_DIR` or `<repo>/state`) |
+| `--doc-ids a,b` | only these ledger documents (a trial); an id not in the ledger for that collection and corpus is listed in a warning |
+| `--limit N` | only the first N ledger documents, in `doc_id` order |
+| `--page-size N` | points per Qdrant scroll request (default 256) |
+| `--doc-batch N` | documents per Qdrant read, one `doc_id` match-any filter (default 100) |
+| `--include-title` | also compare and write `title` (off by default, see above) |
+| `--create-indexes` | only create the missing payload indexes, print them, exit; alone (with `--corpus`/`--collection`) |
+| `--progress-every N` | a progress line every N documents (default 25) |
+
+The selection flags of the ingest runs (`--source-codes`, `--doctypes`,
+`--languages`, `--year-min`/`--year-max`, `--banks`, `--groups`, `--ciks`,
+`--root`) and `--count-only`, `--no-vault`, `--no-resume`, `--ledger` are
+refused (exit 2). The Qdrant and vault settings are the ones of an ingest run
+(`DATABASE_URL`, `QDRANT_HOST`, `QDRANT_PORT`, `QDRANT_API_KEY`,
+`QDRANT_HTTPS`); `CB_CORPUS_ROOT` is not needed (no file is read).
+
+### Actions, counts and CSV
+
+Each ledger document gets one action:
+
+| action | meaning | written by `--write` |
+|---|---|---|
+| `unchanged` | dated in the vault, every point already carries the expected owned keys | nothing |
+| `updated` | dated in the vault, at least one point differs | its points |
+| `undated` | no `date` in the vault (`date`, `date_start`, `date_end` must then be absent; a search finds the document only with `include_undated`) | its points, when they differ |
+| `missing-in-qdrant` | recorded in `rag_ingestions`, no point in the collection | nothing |
+| `missing-in-vault` | no `documents` row, or the row has `deleted_at` set | nothing (its points are left as they are) |
+
+The CSV has one row per document and differing key: `doc_id`, `action`,
+`field`, `qdrant_value`, `vault_value`, `note` (a value is empty when the key
+is absent, a string as it is, anything else as JSON; when the points of a
+document disagree, `qdrant_value` is the JSON list of their values). A
+`missing-in-*` document has one row with an empty `field`. An `unchanged`
+document has none.
+
+Example (a dry run on a small collection):
+
+```text
+Config: .env = /path/to/data-orchestrator/.env
+Qdrant: <host>:<port> (api key: set)
+→ sync-metadata: collection 'central-bank-e5b-v1', corpus 'central-bank' (dry run: nothing is written to Qdrant)
+  keys compared: date, year, date_precision, date_kind, date_start, date_end
+  payload indexes missing: date_start, date_end (--write creates them first, or --create-indexes)
+────────────────────────────────────────────────────────────
+Done (dry run: nothing was written to Qdrant).
+  documents          : 6
+  unchanged          : 0
+  updated            : 5
+  undated            : 1
+  missing-in-qdrant  : 0
+  missing-in-vault   : 0
+  documents to write : 5
+  points read        : 22
+  points disagreeing : 0 document(s)
+  keys changing      : date x2, year x1, date_precision x5, date_kind x5, date_start x5, date_end x5
+  time               : 0.0s
+  CSV                : /path/to/data-orchestrator/state/sync-metadata-central-bank-e5b-v1-20261118T091330Z.csv (23 row(s))
+```
+
+and the first rows of its CSV:
+
+```text
+doc_id,action,field,qdrant_value,vault_value,note
+au-e1-2016-08-smp,updated,date_precision,,month,
+au-e1-2016-08-smp,updated,date_kind,,period,
+au-e1-2016-08-smp,updated,date_start,,2016-08-01T00:00:00Z,
+au-e1-2016-08-smp,updated,date_end,,2016-08-31T00:00:00Z,
+gb-a3-2004-minutes,updated,date,2004-01-01,2003-12-10,
+gb-a3-2004-minutes,updated,year,2004,2003,
+```
+
+With `--write` the summary says `Done.`, `documents written` and `points
+written` instead of `documents to write`, and lists the indexes it created.
+`keys changing` counts documents per key. A warning follows the summary for a
+document whose points disagree, and for one whose point count changed between
+the read and the write (an ingestion that did not take the lock).
+
+**Exit codes**: `0` the run reached its end (dry run or write); `1` a fatal
+error, said as `error: fatal: <Type>: <message>` with what to do: the vault
+or Qdrant unreachable, a refused key (`QdrantAuthError`, with which key the
+step needs), the collection lock held (`CollectionBusyError`), a collection
+that does not exist, a strict-mode collection without the `doc_id` index
+(`MissingIndexError`, with the `--create-indexes` command); the CSV of the
+documents done before the error is kept. `2` a usage or configuration error.
+
+The validation procedure for the production collection (a scratch copy
+first, vectors byte-identical before and after, then production) is in
+[SYNC-METADATA.md](SYNC-METADATA.md).
+
 ## Testing
 
 In the virtual environment of the installation, with the test tools
@@ -627,8 +821,18 @@ The check that the rag-engine installed is the pinned commit:
 python tools/check_engine_pin.py
 ```
 
+Without Docker, the integration suite runs against services already started
+on the machine, named by three variables: `DATA_ORCHESTRATOR_IT_DATABASE_URL`
+(an empty throwaway Postgres database: the suite drops and re-creates its
+tables), `DATA_ORCHESTRATOR_IT_QDRANT` (`host:port` of a throwaway Qdrant
+without a key) and `DATA_ORCHESTRATOR_IT_QDRANT_KEYED` (`host:port` of a
+throwaway Qdrant started with `QDRANT__SERVICE__API_KEY=it-key-not-a-secret`
+and `QDRANT__SERVICE__READ_ONLY_API_KEY=it-ro-key-not-a-secret`). The suite
+deletes every collection of both Qdrants: never point them at one that holds
+data.
+
 Integration tests spin up throwaway containers via `docker run` (skipped
-automatically if Docker is unavailable): `postgres:16` and
+automatically if Docker is unavailable and the variables above are unset): `postgres:16` and
 `qdrant/qdrant:v1.20.0`, the Qdrant version production runs, pinned by the
 `QDRANT_IMAGE` constant of `tests/integration/conftest.py` (change it when
 production is upgraded). They use a tiny embedding model
