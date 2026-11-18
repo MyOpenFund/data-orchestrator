@@ -367,3 +367,40 @@ def test_sync_metadata_and_an_ingestion_exclude_each_other(
         holder.close()
     # Released with the session: both run again.
     assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY) == 0
+
+
+def test_a_refusal_names_the_session_that_holds_the_lock(
+        clean_pg, qdrant_keyed_addr, corpus_dir, tmp_path, monkeypatch, capsys):
+    """A stale lock (a dead client whose session the server still keeps) must
+    be traceable: the refusal names the holder's pid and, when the role may
+    read them, its client and start, with the statement that ends it."""
+    pg, addr = clean_pg, qdrant_keyed_addr
+    coll = collection_name("central-bank")
+    holder = psycopg2.connect(pg, application_name="data-orchestrator@sleeping-mac")
+    try:
+        with holder.cursor() as cur:
+            cur.execute("SELECT pg_backend_pid()")
+            (pid,) = cur.fetchone()
+            cur.execute("SELECT pg_advisory_lock_shared(%s, hashtext(%s))",
+                        (COLLECTION_LOCK_CLASS, coll))
+        assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY, "--write") == 1
+        err = capsys.readouterr().err
+        assert f"held by pid {pid} (ShareLock" in err
+        assert "application data-orchestrator@sleeping-mac" in err and "session started" in err
+        assert f"SELECT pg_terminate_backend({pid});" in err
+
+        # A role that may not read another role's session details.
+        _sql(pg, "DROP ROLE IF EXISTS it_limited")
+        _sql(pg, "CREATE ROLE it_limited LOGIN PASSWORD 'it'")
+        limited = psycopg2.extensions.make_dsn(pg, user="it_limited", password="it")
+        try:
+            assert _sync(monkeypatch, limited, addr, corpus_dir, tmp_path, IT_QDRANT_KEY,
+                         "--write") == 1
+            err = capsys.readouterr().err
+            assert f"held by pid {pid} (ShareLock, user " in err
+            assert "its client and start are not visible to this role" in err
+            assert f"SELECT pg_terminate_backend({pid});" in err
+        finally:
+            _sql(pg, "DROP ROLE IF EXISTS it_limited")
+    finally:
+        holder.close()

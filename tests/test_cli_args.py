@@ -343,6 +343,8 @@ class _DispatchCursor:
         self._conn.executed.append((sql, params))
         if "pg_try_advisory_lock" in sql:
             self._rows = [(self._conn.lock_free,)]  # vault.lock_collection
+        elif "pg_stat_activity" in sql:
+            self._rows = []                        # vault.lock_holders: none visible
         elif "FROM pg_locks" in sql:
             self._rows = [(1,)]                    # vault.check_collection_lock: still held
         elif "FROM rag_ingestions WHERE collection" in sql:

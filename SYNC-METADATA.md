@@ -71,6 +71,24 @@ pgrep -fl 'data[-_]orchestrator'
 (no output: none runs here; the pattern matches the console script and
 `python -m data_orchestrator.cli` alike).
 
+If a later step stops with `CollectionBusyError` although nothing runs (a
+machine that went to sleep or lost its network during a run: the server
+keeps its session, and the lock, until its own keepalive ends it), the
+message names the session (`held by pid …`, its application
+`data-orchestrator@<host>`, and, when the role may read them, its client and
+start). Check on that machine that no process is left (the command above),
+then end the session with the vault's admin role, using the pid of the
+message:
+
+```sql
+SELECT pg_terminate_backend(<pid>);
+```
+
+or wait for the server to drop it. Server-side keepalives on the vault's
+Postgres (`tcp_keepalives_idle = 60`, `tcp_keepalives_interval = 10`,
+`tcp_keepalives_count = 6`) make that wait a few minutes (README, "A stale
+lock").
+
 ## 1. A scratch collection made of a few production documents
 
 The scratch ledger: one document of each source, document type, date

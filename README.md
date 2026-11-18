@@ -716,25 +716,55 @@ only reads, so it neither stops an ingestion from starting nor waits for one
 a `--write`. A dry run made while an ingestion writes may report, for the
 documents that ingestion rewrites, a state already gone: run it again
 afterwards if that matters. Whichever comes second stops with `error: fatal:
-CollectionBusyError: … holds collection '<name>' (vault advisory lock 7468);
-wait for it to end, then run again` and exit 1. **The lock only knows runs of
-this version**: an ingestion started by an older checkout (another machine),
-or a disk-source run with `--no-vault`, takes no lock; check that none runs
-before `--write`.
+CollectionBusyError: … holds collection '<name>' (vault advisory lock 7468;
+held by pid 4242 (ShareLock, user …, application data-orchestrator@<host>,
+client …, session started …)); wait for it to end, then run again. …` and
+exit 1. The holder's user, application (`data-orchestrator@<host>`: the
+vault connection names its machine), client address and session start come
+from `pg_stat_activity`; a role without `pg_read_all_stats` sees the user and
+the application of another role's session but not its client nor its start,
+and the message says so. **The lock only knows runs of this version**: an
+ingestion started by an older checkout (another machine), or a disk-source
+run with `--no-vault`, takes no lock; check that none runs before `--write`.
+
+**A stale lock.** A run whose machine went to sleep or lost its network
+stops (see below), but the server does not know: it keeps that session, and
+its lock, until its own TCP keepalive ends it (by default after about two
+hours on Linux), and every run until then is refused although nothing runs.
+Clear it once the refusal's holder is known to be dead (its `application`
+names the machine: check there that no `data-orchestrator` process is left,
+`pgrep -fl 'data[-_]orchestrator'`): with the vault's admin role, the
+statement the refusal prints, `SELECT pg_terminate_backend(<pid>);`. Or wait
+for the server to drop the session. All the holders, with their sessions:
+`SELECT l.pid, l.mode, a.application_name, a.client_addr, a.backend_start FROM
+pg_locks l LEFT JOIN pg_stat_activity a USING (pid) WHERE l.locktype =
+'advisory' AND l.classid = 7468;`. **Recommended on the vault's Postgres**
+(the NAS): server-side keepalives, so that a dead client's session goes
+within minutes, e.g. `tcp_keepalives_idle = 60`, `tcp_keepalives_interval =
+10`, `tcp_keepalives_count = 6` in `postgresql.conf` (or `ALTER SYSTEM SET`,
+then a reload).
 
 **The lock is checked during the run, not only at its start.** It lives in
 the run's vault session, which a server restart, `pg_terminate_backend` or a
 dropped network link (a laptop asleep) ends silently, releasing the lock.
 So `sync-metadata` checks, on its own session, that it still holds the lock
 (`pg_locks` for its backend) before each batch it reads and before each
-document it writes, and an ingestion before each document; the vault
-connection has TCP keepalives on (`DATA_ORCHESTRATOR_PG_KEEPALIVES_*`). A
-lost session ends the run at once: `error: fatal: VaultSessionLost: … the
-run stops here and can be run again`, exit 1, nothing more written (for an
-ingestion, a failure to record a document because the session is gone is
-this same fatal error, not one failed document; its points are written again
-by the next run). Both commands are resumable: run the same command again. To see who holds it:
-`SELECT * FROM pg_locks WHERE locktype = 'advisory' AND classid = 7468;`.
+document it writes, and an ingestion before each document. A lost session
+stops the run at the next check: the document in flight (a `set_payload`
+already sent, a document being ingested) may still be written, then nothing
+more: `error: fatal: VaultSessionLost: … the run stops here and can be run
+again`, exit 1 (for an ingestion, a failure to record a document because the
+session is gone is this same fatal error, not one failed document; its points
+are written again by the next run). Both commands are resumable: run the
+same command again.
+
+How fast a dead link is noticed: while the connection is idle, by the TCP
+keepalives (`DATA_ORCHESTRATOR_PG_KEEPALIVES_*`, about 60 s by default);
+while a check or a ledger write waits for an answer, keepalives do not fire,
+and `DATA_ORCHESTRATOR_PG_TCP_USER_TIMEOUT_MS` (30 s by default) bounds the
+wait instead, on Linux only: on macOS libpq ignores it and the wait is the
+system's retransmission limit. A server-side `statement_timeout` would not
+help: on a dead link the server never receives the statement.
 
 ### Options
 

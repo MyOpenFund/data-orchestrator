@@ -44,6 +44,9 @@ class LedgerCursor:
         if "pg_try_advisory_lock" in sql:
             self._rows = [(self._conn.lock_free,)]
             return
+        if "pg_stat_activity" in sql:
+            self._rows = []
+            return
         if "FROM pg_locks" in sql:
             self._rows = [(int(self._conn.lock_held),)]
             return

@@ -148,3 +148,73 @@ def test_connect_sets_the_tcp_user_timeout(monkeypatch):
     monkeypatch.setattr(vault.psycopg2, "connect", lambda url, **kw: seen.update(kw))
     vault.connect()
     assert seen["tcp_user_timeout"] == 30000
+
+
+class _BusyConn:
+    """The lock is taken; the holder query answers ``holders`` (or fails)."""
+
+    def __init__(self, holders, fail=False):
+        self.holders, self.fail, self.executed = holders, fail, []
+
+    def cursor(self):
+        conn = self
+
+        class C:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql, params=None):
+                conn.executed.append(" ".join(sql.split()))
+                if "pg_stat_activity" in sql and conn.fail:
+                    raise psycopg2.errors.InsufficientPrivilege("permission denied")
+                self.sql = sql
+
+            def fetchone(self):
+                return (False,)
+
+            def fetchall(self):
+                return conn.holders
+
+        return C()
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def test_a_refusal_names_the_holder_and_how_to_clear_a_stale_lock():
+    import datetime as dt
+
+    conn = _BusyConn([(4242, "ShareLock", "vault_orchestrator", "data-orchestrator@mac",
+                       "100.64.0.7", dt.datetime(2026, 11, 18, 22, 1, 2, tzinfo=dt.timezone.utc))])
+    with pytest.raises(vault.CollectionBusyError) as exc:
+        vault.lock_collection(conn, "c", exclusive=True, holder="sync-metadata")
+    msg = str(exc.value)
+    assert "pid 4242" in msg and "client 100.64.0.7" in msg
+    assert "application data-orchestrator@mac" in msg and "2026-11-18" in msg
+    assert "SELECT pg_terminate_backend(4242)" in msg
+    sql = [s for s in conn.executed if "pg_stat_activity" in s][0]
+    assert "current_database()" in sql and "pg_backend_pid()" in sql
+
+
+def test_a_refusal_when_the_role_cannot_see_the_holder_s_details():
+    conn = _BusyConn([(4242, "ShareLock", None, None, None, None)])
+    with pytest.raises(vault.CollectionBusyError, match=r"held by pid 4242 \(ShareLock, its client and start are not visible to this role\)"):
+        vault.lock_collection(conn, "c", exclusive=True, holder="sync-metadata")
+    failing = _BusyConn([], fail=True)
+    with pytest.raises(vault.CollectionBusyError, match="vault advisory lock 7468"):
+        vault.lock_collection(failing, "c", exclusive=True, holder="sync-metadata")
+
+
+def test_connect_names_the_session(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/db")
+    monkeypatch.setattr(vault.psycopg2, "connect", lambda url, **kw: seen.update(kw))
+    vault.connect()
+    assert seen["application_name"].startswith("data-orchestrator@")
+    assert len(seen["application_name"]) <= 63

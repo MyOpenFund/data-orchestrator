@@ -129,7 +129,15 @@ def connect():
             "DATABASE_URL is not set (.env or environment). Set it, or run "
             "with --no-vault to use the local file ledger without vault state."
         )
-    return psycopg2.connect(url, **keepalive_options())
+    return psycopg2.connect(url, application_name=application_name(), **keepalive_options())
+
+
+def application_name() -> str:
+    """``data-orchestrator@<host>``: how this machine's sessions read in
+    ``pg_stat_activity`` (and in a refusal naming the holder of a lock)."""
+    import socket
+
+    return f"data-orchestrator@{socket.gethostname()}"[:63]
 
 
 def insert_run_report(conn, report: dict) -> None:
@@ -289,6 +297,69 @@ def lock_collection(conn, collection: str, *, exclusive: bool, holder: str) -> N
         other = "an ingestion (or another sync-metadata run)"
     else:
         other = "a sync-metadata --write run"
+    holders, pids = _describe_holders(conn, collection)
     raise CollectionBusyError(
         f"{holder}: {other} holds collection {collection!r} (vault advisory lock "
-        f"{COLLECTION_LOCK_CLASS}); wait for it to end, then run again")
+        f"{COLLECTION_LOCK_CLASS}{'; ' + holders if holders else ''}); wait for it to end, then "
+        "run again. If no such run is alive any more (a machine asleep, a lost network: the "
+        "server keeps a dead session, and its lock, until its own TCP keepalive ends it), "
+        "check that its process is gone, then end the session with the vault's admin role: "
+        + (" ".join(f"SELECT pg_terminate_backend({pid});" for pid in pids)
+           or "SELECT pg_terminate_backend(<pid>);"))
+
+
+_HOLDERS_SQL = (
+    "SELECT l.pid, l.mode, a.usename, a.application_name, a.client_addr::text, a.backend_start "
+    "FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
+    "WHERE l.locktype = 'advisory' AND l.granted AND l.classid = %s "
+    "AND l.objid = (hashtext(%s)::bigint & 4294967295)::oid AND l.objsubid = 2 "
+    "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+    "AND l.pid <> pg_backend_pid() ORDER BY l.pid"
+)
+
+
+def lock_holders(conn, collection: str) -> list[tuple]:
+    """The other sessions of this database holding the collection lock:
+    ``(pid, mode, user, application, client address, session start)``. A role
+    that may not read another role's session details gets ``None`` for them
+    (``pg_stat_activity`` hides them); ``[]`` when the query itself fails."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_HOLDERS_SQL, (COLLECTION_LOCK_CLASS, collection))
+            rows = list(cur.fetchall())
+        conn.rollback()
+        return rows
+    except Exception:  # noqa: BLE001 — a description only: never mask the refusal
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return []
+
+
+def _describe_holders(conn, collection: str) -> tuple[str, list]:
+    """The holders of the collection lock, as text for a refusal, and their pids."""
+    rows = lock_holders(conn, collection)
+    try:
+        return _holder_text(rows), [row[0] for row in rows]
+    except Exception:  # noqa: BLE001 — a description only: never mask the refusal
+        return "", []
+
+
+def _holder_text(rows) -> str:
+    """A role without ``pg_read_all_stats`` sees another role's user and
+    application, but not its client address nor its start (NULL)."""
+    parts = []
+    for pid, mode, user, app, client, started in rows:
+        details = [mode]
+        if user is not None:
+            details.append(f"user {user}")
+        if app:
+            details.append(f"application {app}")
+        if started is None:
+            details.append("its client and start are not visible to this role")
+        else:
+            when = started.isoformat(timespec="seconds") if hasattr(started, "isoformat") else started
+            details.append(f"client {client or 'local socket'}, session started {when}")
+        parts.append(f"held by pid {pid} ({', '.join(details)})")
+    return "; ".join(parts)
