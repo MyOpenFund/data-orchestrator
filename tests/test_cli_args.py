@@ -309,6 +309,8 @@ def test_include_html_no_longer_exists():
 @pytest.mark.parametrize("key,value", [
     ("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", "2"),
     ("DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES", "text/html"),
+    ("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "title"),
+    ("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", ","),
 ])
 def test_bad_policy_env_fails_before_any_work(monkeypatch, capsys, argv, key, value):
     monkeypatch.setenv(key, value)

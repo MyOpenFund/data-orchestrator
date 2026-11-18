@@ -49,6 +49,7 @@ from . import config, policy
 from .core import (
     Ledger, SourceItem, run_ingest, IngestStats, engine_settings, interrupted_stats, source_label,
 )
+from .payload import dropped_extra_keys
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
@@ -585,6 +586,9 @@ def main(argv: list[str] | None = None) -> int:
 
         _vault.keepalive_options()  # DATA_ORCHESTRATOR_PG_KEEPALIVES_*: exit 2 here, not mid-run
         args.supported_mimes = supported_mime_types()
+        # DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS: every payload is built
+        # with it, so a bad value is refused here, not once per document.
+        dropped_extra_keys()
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
