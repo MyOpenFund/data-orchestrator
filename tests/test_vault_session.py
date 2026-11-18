@@ -218,3 +218,32 @@ def test_connect_names_the_session(monkeypatch):
     vault.connect()
     assert seen["application_name"].startswith("data-orchestrator@")
     assert len(seen["application_name"]) <= 63
+
+
+@pytest.mark.parametrize("argv", [["vault"], ["cb_corpus"], ["cb_corpus", "--no-resume"]])
+def test_every_vault_mode_ingestion_checks_the_lock_before_each_document(
+        monkeypatch, tmp_path, argv):
+    """The guard handed to run_ingest is the lock check of the run's own
+    session, in shared mode: removing that wiring must fail here."""
+    from data_orchestrator import cli
+    from data_orchestrator.core import IngestStats
+    from tests.test_cli_args import _fake_vault
+
+    conn, _reports = _fake_vault(monkeypatch, tmp_path, [])
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
+    seen = {}
+
+    def fake_run_ingest(items, **kwargs):
+        list(items)
+        seen["guard"] = kwargs.get("guard")
+        return IngestStats()
+
+    monkeypatch.setattr(cli, "run_ingest", fake_run_ingest)
+    assert cli.main(argv) == 0
+    assert callable(seen["guard"])
+    before = len(conn.executed)
+    seen["guard"]()
+    (sql, params), = conn.executed[before:]
+    assert "FROM pg_locks" in sql and params[2] == "ShareLock"

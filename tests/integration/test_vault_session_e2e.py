@@ -168,3 +168,19 @@ def test_a_sync_metadata_write_whose_vault_session_is_terminated_stops(
     assert cli.main(["sync-metadata", "--corpus", "central-bank", "--write"]) == 0
     assert corrected() == {f"doc{i}" for i in range(N_DOCS)}
     assert "  documents written  : 3" in capsys.readouterr().out
+
+
+def test_the_lock_check_compares_the_mode(clean_pg):
+    """A session holding the shared lock does not hold the exclusive one."""
+    from data_orchestrator import vault
+
+    conn = psycopg2.connect(clean_pg)
+    try:
+        vault.lock_collection(conn, "zz-mode", exclusive=False, holder="t")
+        vault.check_collection_lock(conn, "zz-mode", exclusive=False, holder="t")
+        with pytest.raises(vault.VaultSessionLost, match="no longer holds"):
+            vault.check_collection_lock(conn, "zz-mode", exclusive=True, holder="t")
+        with pytest.raises(vault.VaultSessionLost, match="no longer holds"):
+            vault.check_collection_lock(conn, "zz-other", exclusive=False, holder="t")
+    finally:
+        conn.close()
