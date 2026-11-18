@@ -203,7 +203,8 @@ legacy `bank_code`, `doc_type`, `title`, `pdf_url`, `source_url`, `date`,
 `year`, `language`, `provenance`, `mime_type`, `sha256`, `local_path`) are
 columns, every other field is `extra`; then the rules of the vault source
 apply (see [Qdrant payload](#qdrant-payload)): columns win over `extra`, an
-absent or null field is left out, the keys of `extra` dropped by design
+absent or null field is left out (so is an empty or whitespace-only
+`pdf_url`, `source_url` or `mime_type`), the keys of `extra` dropped by design
 (`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`) are left out silently, a key the
 engine writes itself is left out and counted. `corpus` is the row's own, else
 the run's `--corpus` (default `central-bank`, the vault's name for this
@@ -218,7 +219,7 @@ corpus). This source adds one key, `metadata_source`:
 | `year` | manifest | year folder (`2019`; absent for a non-numeric folder) |
 | `date` | manifest | `<year>-01-01` (absent without a year) |
 | `date_precision` | manifest (`extra`) | `year` (absent without a year) |
-| `title`, `pdf_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance` | manifest, each absent when the row has none | absent (never an empty string) |
+| `title`, `pdf_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance` | manifest, each absent when the row has none (a blank `pdf_url`, `source_url` or `mime_type` is none) | absent (never an empty string) |
 | any other field of the row (`date_kind`, `date_source`, `repec_handle`, …) | manifest (`extra`) | — |
 | `metadata_source` | `manifest` | `path` |
 | `filename`, `page`, `chunk_number`, `ingestion_date`, `text` | engine | engine |
@@ -584,7 +585,10 @@ Every chunk's Qdrant point carries:
 | `date_start`, `date_end` | engine, derived from `date` and `date_precision` (absent without a readable `date`): the first and the last day the document is dated to, RFC 3339 at midnight UTC (`2016-07-01T00:00:00Z` / `2016-07-31T00:00:00Z` for a `month` date of July 2016; a precision that is absent or not one of the three is read as a day) |
 
 A NULL column is left out (and removes the same key of `extra`: a column
-always wins). The keys of `extra` named by
+always wins). An empty or whitespace-only `pdf_url`, `source_url` or
+`mime_type` counts as NULL: the vault stores the manifest's value as given,
+and 2,294 central-bank rows hold `source_url: ""`, which is no link. A key of
+`extra` whose value is null is left out (not counted, even a reserved one). The keys of `extra` named by
 `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` (default `html_path`, a path on
 the producer's machine; `alt_urls` and `alt_source_urls`, lists of other
 addresses of the document; `local_path`) are **dropped by design**: never
@@ -701,12 +705,10 @@ sent), no point id, no other payload key, no point created or deleted, no
 `rag_ingestions` or `runs` row. A key absent from the vault (a NULL column, a
 key not in `extra`) must be absent from the points; a stored null counts as
 absent. So does an explicit null in `extra` (`"date_kind": null`): an
-ingestion copies it as a stored null, while `set_payload` cannot store one
-(Qdrant drops a key set to null, and every filter reads a null as a missing
-key). A point holding such a null and one without the key are therefore both
-`unchanged`; the only difference with a fresh ingestion is that a key the
-sync removed is absent where an ingestion would have stored a null, which no
-filter and no search can tell apart.
+ingestion leaves it out, and `set_payload` cannot store one anyway (Qdrant
+drops a key set to null, and every filter reads a null as a missing key). A
+point holding such a null (written before nulls of `extra` were left out) and
+one without the key are therefore both `unchanged`.
 
 **`title` is not owned by default.** The vault may hold corrected titles as
 well (its upsert rewrites them), but this command exists for the dates: a
@@ -717,7 +719,7 @@ and written keys, explicitly, for a run whose CSV has been read for titles.
 
 **The links are not owned by default either.** `--include-links` adds
 `pdf_url`, `source_url` and `mime_type` (set from the vault's columns; a NULL
-column removes the key) and the keys of `extra` dropped by design
+or blank column removes the key) and the keys of `extra` dropped by design
 (`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`, default `html_path`,
 `alt_urls`, `alt_source_urls`, `local_path`): an ingestion never sends these,
 so they are expected absent and removed from the points that still carry

@@ -18,9 +18,12 @@ The payload is the vault's ``extra`` first, without
 - the keys the engine writes or derives itself (``core.split_reserved_keys``):
   left out and counted (``SourceItem.dropped_keys`` -> the run report);
 
+- the keys whose value is null (an absent or null field is left out);
+
 then the vault's columns (:data:`PAYLOAD_COLUMNS`), which always win; a NULL
-column is left out and removes the same key of ``extra``; a date is written as
-its ISO string.
+column is left out and removes the same key of ``extra``, and so does a blank
+link (:data:`BLANK_IS_ABSENT_COLUMNS`: the vault stores ``""`` as given); a
+date is written as its ISO string.
 """
 from __future__ import annotations
 
@@ -40,6 +43,11 @@ PAYLOAD_COLUMNS: tuple[str, ...] = (
     "year", "language", "sha256", "provenance",
     "pdf_url", "source_url", "mime_type",
 )
+
+#: The columns where an empty or whitespace-only string is no value: read as
+#: NULL. The vault stores a manifest's ``source_url`` as given, and committed
+#: central-bank manifests give ``""`` (2,294 rows): a blank link is no link.
+BLANK_IS_ABSENT_COLUMNS: frozenset[str] = frozenset({"pdf_url", "source_url", "mime_type"})
 
 #: The fields of a manifest row the vault stores as columns; every other field
 #: goes to ``extra``. A copy of the vault's ``ingestion/ingest.py``
@@ -103,15 +111,19 @@ def row_to_payload(row: Mapping, drop_keys: tuple[str, ...] | None = None
     ``drop_keys`` None -> :func:`dropped_extra_keys`. The keys dropped by
     design are not in the returned tuple: it names the keys the engine would
     refuse, the ones a run counts. ``doc_id`` always comes from its column and
-    is never reported.
+    is never reported. A null key of ``extra`` is left out, not reported; a
+    blank link column (:data:`BLANK_IS_ABSENT_COLUMNS`) is a NULL one.
     """
     if drop_keys is None:
         drop_keys = dropped_extra_keys()
-    extra = {k: v for k, v in (row.get("extra") or {}).items() if k not in drop_keys}
+    extra = {k: v for k, v in (row.get("extra") or {}).items()
+             if k not in drop_keys and v is not None}
     payload, dropped = split_reserved_keys(extra)
     dropped = tuple(key for key in dropped if key != "doc_id")
     for col in PAYLOAD_COLUMNS:
         value = row.get(col)
+        if col in BLANK_IS_ABSENT_COLUMNS and isinstance(value, str) and not value.strip():
+            value = None
         if value is None:
             payload.pop(col, None)
             continue

@@ -321,7 +321,8 @@ PARITY_ROWS = [
      "chunk_number": 1, "repec_handle": "RePEc:b", "nested": {"k": [1, 2]}},
     {"doc_id": "c", "source_code": "", "bank_code": "us", "doc_type": "C1",
      "date": "2015-03-01T09:00:00Z", "year": 2015, "date_precision": "month",
-     "local_path": "data/raw/us/C1/2015/c.pdf", "provenance": None, "flag": False},
+     "local_path": "data/raw/us/C1/2015/c.pdf", "provenance": None, "flag": False,
+     "source_url": "", "mime_type": "  ", "date_kind": None},
 ]
 
 
@@ -366,3 +367,5 @@ def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypa
         assert payload.pop("metadata_source") == "manifest"
         assert payload == vault.payload, rec["doc_id"]
         assert disk[rec["doc_id"]].dropped_keys == vault.dropped_keys
+    # A blank link and a null field are left out, whichever the source.
+    assert not {"source_url", "mime_type", "date_kind"} & set(disk["c"].payload)

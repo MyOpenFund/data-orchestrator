@@ -86,3 +86,37 @@ def test_a_manifest_payload_applies_the_vault_rules():
     assert payload == {"series": "S", "doc_id": "a", "corpus": "central-bank",
                        "source_code": "us", "date": "2015-06-30"}
     assert dropped == ("page",)
+
+
+# ---------------------------------------------------------------------------
+# Blank links and null keys of extra
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_a_blank_link_is_absent_like_a_null_one(blank):
+    """The vault stores ``source_url`` as the manifest gives it, and committed
+    central-bank manifests give ``""``: an empty or whitespace-only
+    ``pdf_url``, ``source_url`` or ``mime_type`` is no link, so it is left
+    out (and removes the same key of ``extra``, as a NULL column does)."""
+    row = {"doc_id": "a", "corpus": "central-bank", "pdf_url": blank, "source_url": blank,
+           "mime_type": blank, "extra": {"source_url": "https://stale"}}
+    payload, dropped = pl.row_to_payload(row)
+    assert payload == {"doc_id": "a", "corpus": "central-bank"} and dropped == ()
+
+
+def test_a_manifest_row_with_an_empty_source_url_has_no_source_url():
+    rec = {"doc_id": "a", "source_code": "us", "pdf_url": "https://x/a.pdf", "source_url": ""}
+    payload, _ = pl.manifest_row_to_payload(rec, "central-bank")
+    assert payload["pdf_url"] == "https://x/a.pdf" and "source_url" not in payload
+
+
+def test_a_real_link_is_kept_as_given():
+    payload, _ = pl.row_to_payload({"doc_id": "a", "source_url": " https://x/a "})
+    assert payload["source_url"] == " https://x/a "
+
+
+def test_a_null_key_of_extra_is_left_out_and_not_counted():
+    """README: an absent or null field is left out. A null reserved key is
+    left out like any null, not counted as a reserved key refused."""
+    row = {"doc_id": "a", "extra": {"date_kind": None, "series": "S", "page": None}}
+    payload, dropped = pl.row_to_payload(row)
+    assert payload == {"series": "S", "doc_id": "a"} and dropped == ()
