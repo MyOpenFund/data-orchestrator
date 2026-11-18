@@ -468,6 +468,53 @@ database password and a Qdrant key.
 rm -f ~/data-orchestrator-readonly.env
 ```
 
+## Aligning the links (`--include-links`)
+
+Points ingested before the vault source sent `pdf_url`, `source_url` and
+`mime_type` have none of them, and may carry keys of `extra` that are now
+dropped by design (`html_path`, a path on the producer's machine;
+`alt_urls`, `alt_source_urls`; README, "Qdrant payload"). `--include-links`
+sets the three links from the vault and removes those keys; nothing else
+changes (the vectors and every other key are untouched, as for the dates).
+Same procedure and same guarantees as above: dry run first, then `--write`,
+then a second `--write` that finds nothing. It can run on its own once the
+dates are aligned (the date keys then show no difference), on a machine that
+reaches the vault and the production Qdrant:
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --csv ~/sync-links-dry.csv
+```
+
+What to read in the CSV: `pdf_url` / `source_url` / `mime_type` rows with an
+empty `qdrant_value` (the links the points lack), `html_path` / `alt_urls` /
+`alt_source_urls` rows with an empty `vault_value` (the keys to remove), and
+no date row. A row of another field means the dates are not aligned yet: run
+the date correction first.
+
+```bash
+python -c "
+import csv, collections, sys
+rows = list(csv.DictReader(open(sys.argv[1], encoding='utf-8')))
+print(collections.Counter(r['field'] for r in rows))
+" ~/sync-links-dry.csv
+```
+
+Then, with a key allowed to write, and no ingestion running:
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --write --csv ~/sync-links-write.csv
+```
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --write --csv ~/sync-links-again.csv
+```
+
+Expected of the last one: `documents written  : 0`. Then remove the CSVs:
+
+```bash
+rm -f ~/sync-links-dry.csv ~/sync-links-write.csv ~/sync-links-again.csv
+```
+
 ## Checked before this note was written
 
 On PostgreSQL 16 and Qdrant 1.20.0 (`tests/integration/test_sync_metadata_e2e.py`,

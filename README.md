@@ -193,19 +193,48 @@ while a document not yet indexed is ingested with path-derived metadata
 (`<year>-01-01`) and counted — the run summary warns and the run report
 carries `totals.docs_path_metadata`.
 
-`bank`, `doctype` and `year` are parsed from the path and attached to **every
-chunk's payload**, so the vector DB can be filtered and cited per bank /
-document-type / year.
+The payload is in the **vault's vocabulary**: a document gets the same
+payload keys and values from this source as from the `vault` source
+(`payload.manifest_row_to_payload`, checked by
+`tests/test_cb_corpus.py::test_the_disk_and_the_vault_sources_give_the_same_payload`).
+A manifest row is split the way the vault splits it on ingestion: its known
+fields (the vault's `KNOWN_FIELDS`: `doc_id`, `corpus`, `source_code` or the
+legacy `bank_code`, `doc_type`, `title`, `pdf_url`, `source_url`, `date`,
+`year`, `language`, `provenance`, `mime_type`, `sha256`, `local_path`) are
+columns, every other field is `extra`; then the rules of the vault source
+apply (see [Qdrant payload](#qdrant-payload)): columns win over `extra`, an
+absent or null field is left out, the keys of `extra` dropped by design
+(`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`) are left out silently, a key the
+engine writes itself is left out and counted. `corpus` is the row's own, else
+the run's `--corpus` (default `central-bank`, the vault's name for this
+corpus). This source adds one key, `metadata_source`:
 
-| field | example | source |
-|-------|---------|--------|
-| `source` | `cb_corpus` | connector |
-| `bank_code` | `ecb` | path |
-| `doc_type` | `C1` | path |
-| `doc_group` | `C` | path |
-| `year` | `2019` | path |
-| `doc_id` | `ecb/C1/2019/3c03….pdf` | path |
-| `filename`, `page`, `chunk_number`, `ingestion_date`, `text` | — | engine |
+| field | indexed document (`metadata_source: manifest`) | path-only document (`metadata_source: path`) |
+|-------|-------|-------|
+| `doc_id` | manifest | filename stem |
+| `corpus` | manifest, else `--corpus` | `--corpus` (default `central-bank`) |
+| `source_code` | manifest (`source_code`, else `bank_code`) | bank folder (`ecb`) |
+| `doc_type` | manifest | doc-type folder, upper-cased (`C1`) |
+| `year` | manifest | year folder (`2019`; absent for a non-numeric folder) |
+| `date` | manifest | `<year>-01-01` (absent without a year) |
+| `date_precision` | manifest (`extra`) | `year` (absent without a year) |
+| `title`, `pdf_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance` | manifest, each absent when the row has none | absent (never an empty string) |
+| any other field of the row (`date_kind`, `date_source`, `repec_handle`, …) | manifest (`extra`) | — |
+| `metadata_source` | `manifest` | `path` |
+| `filename`, `page`, `chunk_number`, `ingestion_date`, `text` | engine | engine |
+
+A path-only date follows the central-bank corpus convention: a coarse date
+is the first day of its period, and `date_precision` says so (the engine
+derives the interval of the whole year).
+
+**Migration note.** Before this vocabulary, this source wrote `source`,
+`bank_code`, `publication_date`, `url`, `doc_type_label`, `doc_group`, `ext`,
+`rel_path` and `date_granularity` (and empty strings for a path-only
+document's title, URL and checksum). Points written that way keep these keys
+until the document is ingested again (`--no-resume`, or a fresh
+`--collection`); `sync-metadata` does not rename them. The run report and the
+vault ledger no longer read `bank_code`: a payload without `source_code` is
+counted under its corpus.
 
 ### `company` — the company (SEC EDGAR) corpus
 
@@ -359,7 +388,8 @@ data-orchestrator vault --corpus central-bank --ocr always
 | `--count-only` | just count matching documents, do not ingest (cb_corpus, company, vault; **rejected for `probe`**, exit 2); for `vault`, also the unsupported documents and their per-source split. A NULL `source_code` is counted under the corpus name — the label the run report's `sources[]` uses (`core.source_label`) — and a NULL `doc_type` as `unknown`. No run report, no `Qdrant:` line |
 
 The flags of `sync-metadata` (`--write`, `--doc-ids`, `--csv`,
-`--page-size`, `--doc-batch`, `--include-title`, `--create-indexes`) are
+`--page-size`, `--doc-batch`, `--include-title`, `--include-links`,
+`--create-indexes`) are
 listed in [its section](#correcting-dates-in-qdrant-sync-metadata); any of
 them on another command is an error (exit 2).
 
@@ -547,10 +577,21 @@ Every chunk's Qdrant point carries:
 | field | source |
 |---|---|
 | `doc_id`, `corpus`, `source_code`, `doc_type`, `title`, `date`, `year`, `language`, `sha256`, `provenance` | vault (`documents`, merged with corpus-specific `extra`) |
-| `date_precision`, `date_kind`, `date_source`, any other key of `extra` | vault `extra`, copied as given (`date_precision`: `day`/`month`/`year`; `date_kind`: `meeting`/`publication`/`period`) |
+| `pdf_url`, `source_url`, `mime_type` | vault (`documents`): the addresses a citation links back to, and the document's type |
+| `date_precision`, `date_kind`, `date_source`, any other key of `extra` | vault `extra`, copied as given (`date_precision`: `day`/`month`/`year`; `date_kind`: `meeting`/`publication`/`period`), except the keys dropped by design (below) |
 | `filename`, `page`, `chunk_number`, `text` | engine (chunking output; `page` only for formats with pages) |
 | `ingestion_date` | engine — one ISO timestamp per document, shared by all of its points |
 | `date_start`, `date_end` | engine, derived from `date` and `date_precision` (absent without a readable `date`): the first and the last day the document is dated to, RFC 3339 at midnight UTC (`2016-07-01T00:00:00Z` / `2016-07-31T00:00:00Z` for a `month` date of July 2016; a precision that is absent or not one of the three is read as a day) |
+
+A NULL column is left out (and removes the same key of `extra`: a column
+always wins). The keys of `extra` named by
+`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` (default `html_path`, a path on
+the producer's machine; `alt_urls` and `alt_source_urls`, lists of other
+addresses of the document; `local_path`) are **dropped by design**: never
+sent, never counted as reserved keys. The `cb_corpus` disk source builds the
+same payload from the manifest (see [its section](#cb_corpus--the-central-bank-corpus)).
+Points ingested before the links were sent (no `pdf_url`, an `html_path`)
+are aligned by `sync-metadata --include-links`.
 
 This is rag-engine's payload schema v2 (`rag_engine.schema`): schema v1, the
 payload this repo assembled itself before 2026-11, plus `date_start` and
@@ -591,7 +632,9 @@ not own enters:
   column);
 - **company source**: such a key in company_corpus's payload is left out (a
   `doc_id` other than the item's included);
-- **cb_corpus source**: builds its payload from fixed keys, none reserved.
+- **cb_corpus source**: such a field in a manifest row (outside the vault's
+  columns, so in what the vault would store as `extra`) is left out, as in the
+  vault source.
 
 Each key left out is counted: the run summary warns (`warning: N metadata
 key(s) reserved for the engine were left out of the payloads (filename x2,
@@ -635,9 +678,9 @@ re-embedding**:
 1. it reads the documents `rag_ingestions` records for the collection and the
    corpus (`doc_id` order), each joined with its `documents` row;
 2. it builds the metadata an ingestion would write today **through the
-   ingestion code path**: `sources.vault.row_to_payload` (the vault columns
-   over `extra`, NULL columns dropped, the engine's reserved and derived keys
-   dropped from `extra`), then rag-engine's `build_payload`, which derives
+   ingestion code path**: `payload.row_to_payload` (the vault columns
+   over `extra`, NULL columns dropped, the keys dropped by design and the
+   engine's reserved and derived keys dropped from `extra`), then rag-engine's `build_payload`, which derives
    `date_start` / `date_end` from `date` and `date_precision`;
 3. it reads the owned keys of **every point** of these documents (a scroll
    filtered on `doc_id`, `--doc-batch` documents per filter, `--page-size`
@@ -671,6 +714,17 @@ title change is shown to every reader of a citation, it is not part of the
 policy-dates correction, and mixing it into the dry run would hide the date
 differences among title ones. `--include-title` adds `title` to the compared
 and written keys, explicitly, for a run whose CSV has been read for titles.
+
+**The links are not owned by default either.** `--include-links` adds
+`pdf_url`, `source_url` and `mime_type` (set from the vault's columns; a NULL
+column removes the key) and the keys of `extra` dropped by design
+(`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`, default `html_path`,
+`alt_urls`, `alt_source_urls`, `local_path`): an ingestion never sends these,
+so they are expected absent and removed from the points that still carry
+them, the way an absent owned key is removed. They appear in the summary and
+the CSV like the other keys (a list as JSON). This is how a collection
+ingested before the links were sent is aligned (see
+[SYNC-METADATA.md](SYNC-METADATA.md#aligning-the-links-include-links)).
 
 **Every point is read.** rag-engine copies the same metadata into every point
 of one ingestion (`ingest_document` hands one mapping to `build_payload` for
@@ -780,6 +834,7 @@ help: on a dead link the server never receives the statement.
 | `--page-size N` | points per Qdrant scroll request (default 256) |
 | `--doc-batch N` | documents per Qdrant read, one `doc_id` match-any filter (default 100) |
 | `--include-title` | also compare and write `title` (off by default, see above) |
+| `--include-links` | also compare and write `pdf_url`, `source_url`, `mime_type`, and remove the keys of `extra` dropped by design (off by default, see above) |
 | `--create-indexes` | only create the missing payload indexes, print them, exit; alone (with `--corpus`/`--collection`) |
 | `--progress-every N` | a progress line every N documents (default 25) |
 
