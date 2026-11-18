@@ -405,3 +405,79 @@ def test_a_refusal_names_the_session_that_holds_the_lock(
             _sql(pg, "DROP ROLE IF EXISTS it_limited")
     finally:
         holder.close()
+
+
+def test_the_links_reach_the_points_and_include_links_aligns_older_points(
+        clean_pg, qdrant_keyed_addr, corpus_dir, tmp_path, monkeypatch, capsys):
+    """An ingestion through PostgreSQL sends pdf_url, source_url and mime_type
+    and leaves html_path out; points ingested before (no links, an html_path)
+    are aligned by --include-links, which changes those keys only, and a second
+    run finds nothing."""
+    pg, addr = clean_pg, qdrant_keyed_addr
+    coll = collection_name("central-bank")
+    client = _client(addr)
+    for c in client.get_collections().collections:  # the keyed Qdrant is shared
+        client.delete_collection(c.name)
+    gb = "data/raw/gb/A3/"
+    insert_documents(pg, [
+        {"doc_id": "linked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
+         "title": "Minutes", "date": "2016-01-01", "year": 2016, "language": "en",
+         "pdf_url": "https://example.org/a.pdf", "source_url": "https://example.org/a",
+         "mime_type": "application/pdf", "local_path": gb + "a.pdf",
+         "extra": json.dumps({"html_path": "/Users/someone/a.html",
+                              "alt_urls": ["https://alt.example.org/a"],
+                              "date_precision": "day", "repec_handle": "RePEc:a"})},
+        {"doc_id": "unlinked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
+         "title": "Minutes", "date": "2016-02-01", "year": 2016, "language": "en",
+         "local_path": gb + "b.pdf", "extra": json.dumps({"pdf_url": "https://stale.org/b"})},
+    ])
+    _env(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY)
+    assert cli.main(["vault", "--corpus", "central-bank"]) == 0
+    fresh = _snapshot(client, coll)
+    for payload, _ in fresh.values():
+        if payload["doc_id"] == "linked":
+            assert payload["pdf_url"] == "https://example.org/a.pdf"
+            assert payload["source_url"] == "https://example.org/a"
+            assert payload["mime_type"] == "application/pdf"
+            assert payload["repec_handle"] == "RePEc:a"
+            assert "html_path" not in payload and "alt_urls" not in payload
+        else:  # NULL columns: absent, even where extra holds the name
+            assert not {"pdf_url", "source_url", "mime_type"} & set(payload)
+
+    # The points as an older ingestion wrote them: no links, the producer's keys.
+    client.delete_payload(coll, keys=["pdf_url", "source_url", "mime_type"],
+                          points=models.Filter(must=[]), wait=True)
+    client.set_payload(coll, payload={"html_path": "/Users/someone/a.html",
+                                      "alt_urls": ["https://alt.example.org/a"]},
+                       points=models.Filter(must=[]), wait=True)
+    before = _snapshot(client, coll)
+    capsys.readouterr()
+
+    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_READ_ONLY_KEY,
+                 "--include-links", "--csv", str(tmp_path / "dry.csv")) == 0
+    assert _snapshot(client, coll) == before
+    by = {(r["doc_id"], r["field"]): r for r in _rows(tmp_path / "dry.csv")}
+    assert by[("linked", "pdf_url")]["vault_value"] == "https://example.org/a.pdf"
+    assert by[("linked", "html_path")]["qdrant_value"] == "/Users/someone/a.html"
+    assert by[("linked", "html_path")]["vault_value"] == ""
+    assert ("unlinked", "pdf_url") not in by and ("unlinked", "html_path") in by
+
+    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY,
+                 "--include-links", "--write", "--csv", str(tmp_path / "w.csv")) == 0
+    after = _snapshot(client, coll)
+    assert _vector_digest(after) == _vector_digest(before)
+    for pid, (payload, _vector) in after.items():
+        old = before[pid][0]
+        changed = {k for k in set(payload) | set(old) if payload.get(k) != old.get(k)}
+        assert changed <= {"pdf_url", "source_url", "mime_type", "html_path", "alt_urls",
+                           "date_start", "date_end"}
+        assert {k: payload.get(k) for k in ("pdf_url", "source_url", "mime_type", "html_path",
+                                            "alt_urls")} == {
+            k: fresh[pid][0].get(k) for k in ("pdf_url", "source_url", "mime_type",
+                                              "html_path", "alt_urls")}
+
+    capsys.readouterr()
+    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY,
+                 "--include-links", "--write", "--csv", str(tmp_path / "again.csv")) == 0
+    assert "  documents written  : 0" in capsys.readouterr().out
+    assert _snapshot(client, coll) == after
