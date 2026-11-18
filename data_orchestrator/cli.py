@@ -968,7 +968,7 @@ def _sync_metadata(args) -> int:
             limit=args.limit,
             page_size=args.page_size or sm.DEFAULT_PAGE_SIZE,
             doc_batch=args.doc_batch or sm.DEFAULT_DOC_BATCH,
-            on_progress=progress, guard=guard,
+            on_progress=progress, guard=guard, schema=schema,
         )
     except Exception as exc:  # noqa: BLE001 — a clean fatal line, never a traceback
         print(f"error: fatal: {type(exc).__name__}: {exc}{_sync_advice(exc, collection)}",

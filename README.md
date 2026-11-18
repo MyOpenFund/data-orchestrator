@@ -655,7 +655,13 @@ the same row would write. Nothing else is compared or written: no vector (not re
 sent), no point id, no other payload key, no point created or deleted, no
 `rag_ingestions` or `runs` row. A key absent from the vault (a NULL column, a
 key not in `extra`) must be absent from the points; a stored null counts as
-absent.
+absent. So does an explicit null in `extra` (`"date_kind": null`): an
+ingestion copies it as a stored null, while `set_payload` cannot store one
+(Qdrant drops a key set to null, and every filter reads a null as a missing
+key). A point holding such a null and one without the key are therefore both
+`unchanged`; the only difference with a fresh ingestion is that a key the
+sync removed is absent where an ingestion would have stored a null, which no
+filter and no search can tell apart.
 
 **`title` is not owned by default.** The vault may hold corrected titles as
 well (its upsert rewrites them), but this command exists for the dates: a
@@ -674,9 +680,11 @@ disagree` note in the CSV, its values listed) and `--write` corrects all of
 its points (`set_payload` filters on `doc_id`). The read costs the owned keys
 of each point, about 33,600 small payloads for `central-bank-e5b-v1`.
 
-**Payload indexes.** `--write` first creates the payload indexes of rag-engine
-a collection lacks (`ensure_payload_indexes`: on a collection indexed before
-payload schema v2, `date_start` and `date_end`), then corrects the points: the
+**Payload indexes.** `--write` first creates **every** payload index of
+rag-engine (`PAYLOAD_INDEXES`: `doc_id`, `source_code`, `doc_type`,
+`language`, `corpus`, `year`, `date`, `date_start`, `date_end`) that the
+collection lacks (`ensure_payload_indexes`; on production, which has the
+seven of schema v1, the two date ones), then corrects the points: the
 order of the rag-engine README, which states that creating the two indexes
 before the points have their interval is safe (in `auto` mode a search keeps
 the legacy condition on `date` as a second way in, so a half-upgraded
@@ -733,7 +741,7 @@ by the next run). Both commands are resumable: run the same command again. To se
 |---|---|
 | `--corpus NAME` | the corpus of the ledger rows (`rag_ingestions.corpus`; default `central-bank`) |
 | `--collection NAME` | the collection (default: the routed `{corpus}-{model_tag}-v1`) |
-| `--write` | apply the corrections (creates the missing payload indexes first). Without it, nothing is written to Qdrant |
+| `--write` | apply the corrections (creates every missing payload index of rag-engine first). Without it, nothing is written to Qdrant |
 | `--csv PATH` | the CSV of differences (default `<state dir>/sync-metadata-<collection>-<UTC time>.csv`, `DATA_ORCHESTRATOR_STATE_DIR` or `<repo>/state`) |
 | `--doc-ids a,b` | only these ledger documents (a trial); an id not in the ledger for that collection and corpus is listed in a warning |
 | `--limit N` | only the first N ledger documents, in `doc_id` order |

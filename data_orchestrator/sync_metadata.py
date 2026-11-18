@@ -325,6 +325,7 @@ def run_sync(
     create_indexes: bool = True,
     on_progress: Callable[[SyncStats], None] | None = None,
     guard: Callable[[], None] | None = None,
+    schema: Mapping | None = None,
 ) -> SyncStats:
     """Compare (and with ``write``, correct) the owned keys of every ledger document.
 
@@ -335,6 +336,9 @@ def run_sync(
     ``create_indexes`` is False; the rag-engine README states that creating
     them before the points have their interval is safe. Without ``write``
     nothing is written anywhere but ``csv_path``.
+
+    ``schema`` is the collection's :func:`payload_schema` when the caller has
+    already read it (it is then not read again).
 
     ``guard()`` is called before each batch is read and before each document
     is written (the CLI checks there that the vault session still holds the
@@ -349,7 +353,8 @@ def run_sync(
 
     from rag_engine.schema import PAYLOAD_INDEXES
 
-    schema = payload_schema(store, collection)
+    if schema is None:
+        schema = payload_schema(store, collection)
     stats.indexes_missing = [f for f, _kind in PAYLOAD_INDEXES if f not in schema]
     if write and create_indexes and stats.indexes_missing:
         stats.indexes_created = store.ensure_payload_indexes(collection)

@@ -608,3 +608,43 @@ def test_a_dry_run_refused_beside_a_write_says_so(cli_env, capsys):
     conn.lock_free = False
     assert cli.main(["sync-metadata", "--collection", COLLECTION]) == 1
     assert "a sync-metadata --write run holds collection" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stored,expected", [(2016.0, 2016), (True, 1), ("2016", 2016)])
+def test_a_value_of_another_type_is_a_difference(stored, expected):
+    """2016.0 == 2016 and True == 1 in Python, but a fresh ingestion writes the
+    vault's type: the comparison is on the value and its type."""
+    diffs, disagree = sm.compare("d", {"year": expected}, [{"year": stored}], ("year",))
+    assert diffs == [("year", stored, expected)] and not disagree
+
+
+def test_an_explicit_null_in_extra_and_a_missing_key_are_the_same(tmp_path):
+    """Ingestion copies ``"date_kind": null`` from ``extra`` as a stored null;
+    set_payload cannot store one (Qdrant drops a key set to null), and every
+    filter reads a null as a missing key: both count as absent, so neither a
+    point holding the null nor one without the key is reported or written."""
+    store = make_store()
+    seed(store, "with-null", n=1, date="2016-07-13", year=2016, date_kind=None)
+    store.client.set_payload(COLLECTION, payload={"date_precision": "day",
+                                                  "date_start": "2016-07-13T00:00:00Z",
+                                                  "date_end": "2016-07-13T00:00:00Z"},
+                             points=[point_id("with-null", 0, 0)], wait=True)
+    store.client.overwrite_payload(  # the null an ingestion writes
+        COLLECTION, payload={**snapshot(store)[point_id("with-null", 0, 0)][0], "date_kind": None},
+        points=[point_id("with-null", 0, 0)], wait=True)
+    assert snapshot(store)[point_id("with-null", 0, 0)][0]["date_kind"] is None
+    row = vault_row("with-null", date=datetime.date(2016, 7, 13), year=2016,
+                    extra={"date_precision": "day", "date_kind": None})
+    stats, rows = run(LedgerConn([row]), store, tmp_path, write=True)
+    assert stats.actions[sm.UNCHANGED] == 1 and stats.written == 0 and rows == []
+
+
+def test_the_payload_schema_is_read_once_per_run(tmp_path, monkeypatch):
+    store = make_store()
+    reads = []
+    real = sm.payload_schema
+    monkeypatch.setattr(sm, "payload_schema", lambda *a: reads.append(1) or real(*a))
+    schema = sm.payload_schema(store, COLLECTION)
+    reads.clear()
+    run(LedgerConn([]), store, tmp_path, schema=schema)
+    assert reads == []
