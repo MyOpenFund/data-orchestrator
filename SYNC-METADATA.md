@@ -65,10 +65,11 @@ an ingestion started by an older checkout, on any machine, takes no lock.
 Check that none runs, on every machine that ingests:
 
 ```bash
-pgrep -fl data-orchestrator
+pgrep -fl 'data[-_]orchestrator'
 ```
 
-(no output: none runs here).
+(no output: none runs here; the pattern matches the console script and
+`python -m data_orchestrator.cli` alike).
 
 ## 1. A scratch collection made of a few production documents
 
@@ -440,6 +441,13 @@ rm /tmp/sync_check.py /tmp/zz-before.json /tmp/zz-after.json /tmp/zz-sync-check-
 
 ```bash
 rm -f /tmp/zz-sync-check-ro.csv ~/sync-metadata-before.json ~/sync-metadata-after.json
+```
+
+The read-only copy of the `.env` of step 2, if you made one: it holds the
+database password and a Qdrant key.
+
+```bash
+rm -f ~/data-orchestrator-readonly.env
 ```
 
 ## Checked before this note was written
