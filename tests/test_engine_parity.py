@@ -71,9 +71,25 @@ def test_v2_adds_exactly_the_two_derived_keys_to_dated_points_only():
     assert sum(1 for keys in added.values() if keys) == 5  # one fixture row is undated
 
 
+#: The columns the selection reads since the fixture was captured: the captured
+#: rows do not carry them.
+LINK_COLUMNS = ("pdf_url", "source_url", "mime_type")
+
+
 def _vault_row(row):
-    """The row as the vault hands it over: ``date`` a date, ``sha256`` of the file."""
+    """The row as the vault hands it over: ``date`` a date, ``sha256`` of the file.
+
+    Since the fixture was captured the selection also reads ``pdf_url``,
+    ``source_url`` and ``mime_type`` (columns win over ``extra``, a NULL one
+    removes the same key of ``extra``). The captured rows have none of these
+    columns, and one of them holds ``pdf_url`` in ``extra``, where the vault
+    never puts it (``pdf_url`` is one of its columns): the row of today's
+    selection carries that value in the column. The expected points are the
+    captured ones, unchanged."""
     out = dict(row)
+    for col in LINK_COLUMNS:
+        assert col not in out  # the captured row: the translation below is the whole change
+        out[col] = (row.get("extra") or {}).get(col)
     if out.get("date"):
         out["date"] = datetime.date.fromisoformat(out["date"])
     path = FIXTURE / "corpus" / row["local_path"].strip()[len("data/"):]

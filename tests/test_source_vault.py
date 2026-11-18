@@ -49,6 +49,8 @@ def _row(**over):
         "doc_id": "d1", "corpus": "central-bank", "source_code": "us",
         "doc_type": "C1", "title": "Speech", "date": date(2015, 1, 13),
         "year": 2015, "language": "en", "sha256": "ff", "provenance": "bis",
+        "pdf_url": "https://example.org/d1.pdf", "source_url": "https://example.org/d1",
+        "mime_type": "application/pdf",
         "local_path": "data/raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
     }
     row.update(over)
@@ -335,3 +337,73 @@ def test_an_undated_vault_row_gets_no_interval(monkeypatch, tmp_path):
     payload = store.client.points[0].payload
     assert "date" not in payload and "date_start" not in payload and "date_end" not in payload
     assert payload["date_precision"] == "garbage"  # copied as given; the engine reads it as a day
+
+
+# ---------------------------------------------------------------------------
+# Links (F7): pdf_url, source_url and mime_type are selected and reach the
+# payload; the keys of ``extra`` dropped by design never do.
+# ---------------------------------------------------------------------------
+def test_the_selection_reads_the_link_columns():
+    sql, _ = build_selection_sql("central-bank", "c")
+    for col in ("pdf_url", "source_url", "mime_type"):
+        assert col in _SELECT_COLUMNS
+        assert f"d.{col}" in sql
+
+
+def test_the_link_columns_reach_the_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(pdf_url="https://x.org/a.pdf", source_url="https://x.org/a",
+                            mime_type="application/pdf"), "central-bank")
+    assert item.payload["pdf_url"] == "https://x.org/a.pdf"
+    assert item.payload["source_url"] == "https://x.org/a"
+    assert item.payload["mime_type"] == "application/pdf"
+
+
+def test_null_link_columns_are_absent_and_remove_the_same_key_of_extra(monkeypatch, tmp_path):
+    """NULL column -> key absent, even when ``extra`` holds that column's name
+    (the column wins, as for every other column)."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(pdf_url=None, source_url=None, mime_type=None,
+                            extra={"pdf_url": "https://stale.org/x.pdf", "source_url": "s"}),
+                       "central-bank")
+    for col in ("pdf_url", "source_url", "mime_type"):
+        assert col not in item.payload
+    assert item.dropped_keys == ()
+
+
+def test_a_link_column_wins_over_extra(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(pdf_url="https://col.org/a.pdf",
+                            extra={"pdf_url": "https://extra.org/a.pdf"}), "central-bank")
+    assert item.payload["pdf_url"] == "https://col.org/a.pdf"
+
+
+def test_the_keys_dropped_by_design_never_reach_the_payload_and_are_not_counted(
+        monkeypatch, tmp_path):
+    """``html_path`` (a producer-machine path), ``alt_urls``, ``alt_source_urls``,
+    ``local_path`` are left out silently; a reserved key next to them is still
+    left out AND counted; the useful keys of ``extra`` stay."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    extra = {"html_path": "/Users/someone/cb/x.html", "alt_urls": ["https://a", "https://b"],
+             "alt_source_urls": [], "local_path": "data/raw/x.pdf", "text": "stale",
+             "date_precision": "month", "date_kind": "meeting", "date_source": "title",
+             "repec_handle": "RePEc:x:y:z"}
+    item = row_to_item(_row(extra=extra), "central-bank")
+    for key in ("html_path", "alt_urls", "alt_source_urls", "local_path", "text"):
+        assert key not in item.payload
+    assert item.dropped_keys == ("text",)
+    assert {k: item.payload[k] for k in ("date_precision", "date_kind", "date_source",
+                                         "repec_handle")} == {
+        "date_precision": "month", "date_kind": "meeting", "date_source": "title",
+        "repec_handle": "RePEc:x:y:z"}
+
+
+def test_the_dropped_keys_follow_the_setting(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    extra = {"html_path": "/x.html", "repec_handle": "h"}
+    monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "repec_handle")
+    item = row_to_item(_row(extra=extra), "central-bank")
+    assert item.payload["html_path"] == "/x.html" and "repec_handle" not in item.payload
+    monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "none")
+    item = row_to_item(_row(extra=extra), "central-bank")
+    assert item.payload["html_path"] == "/x.html" and item.payload["repec_handle"] == "h"
