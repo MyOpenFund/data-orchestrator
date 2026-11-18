@@ -348,9 +348,12 @@ def test_sync_metadata_and_an_ingestion_exclude_each_other(
         with holder.cursor() as cur:  # an ingestion running: the shared lock
             cur.execute("SELECT pg_advisory_lock_shared(%s, hashtext(%s))",
                         (COLLECTION_LOCK_CLASS, coll))
-        assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY) == 1
+        assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY, "--write") == 1
         assert "an ingestion (or another sync-metadata run) holds collection" in \
             capsys.readouterr().err
+        # A dry run only reads: it runs beside an ingestion.
+        assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY) == 0
+        capsys.readouterr()
         with holder.cursor() as cur:
             cur.execute("SELECT pg_advisory_unlock_shared(%s, hashtext(%s))",
                         (COLLECTION_LOCK_CLASS, coll))
@@ -358,7 +361,8 @@ def test_sync_metadata_and_an_ingestion_exclude_each_other(
                         (COLLECTION_LOCK_CLASS, coll))
         _env(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY)
         assert cli.main(["vault", "--corpus", "central-bank"]) == 1
-        assert "a sync-metadata run holds collection" in capsys.readouterr().err
+        assert "a sync-metadata --write run holds collection" in capsys.readouterr().err
+        assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY) == 1
     finally:
         holder.close()
     # Released with the session: both run again.

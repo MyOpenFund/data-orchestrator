@@ -701,7 +701,12 @@ through a Postgres advisory lock on the collection, taken by the run's vault
 connection and released when it closes (or the process dies): an ingestion
 holds it shared (ingestions do not exclude each other: the `vault` source,
 and `cb_corpus` / `company` in vault mode, with or without `--no-resume`),
-`sync-metadata` holds it exclusive. Whichever comes second stops with `error: fatal:
+`sync-metadata --write` holds it exclusive. A dry run holds it shared: it
+only reads, so it neither stops an ingestion from starting nor waits for one
+(a nightly ingestion is never lost to a dry run), but it does not run beside
+a `--write`. A dry run made while an ingestion writes may report, for the
+documents that ingestion rewrites, a state already gone: run it again
+afterwards if that matters. Whichever comes second stops with `error: fatal:
 CollectionBusyError: … holds collection '<name>' (vault advisory lock 7468);
 wait for it to end, then run again` and exit 1. **The lock only knows runs of
 this version**: an ingestion started by an older checkout (another machine),

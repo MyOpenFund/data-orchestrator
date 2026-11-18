@@ -456,7 +456,7 @@ def test_an_ingestion_is_refused_while_sync_metadata_runs(monkeypatch, tmp_path,
     conn.lock_free = False
     rc = cli.main(["vault"])
     assert rc == 1
-    assert "a sync-metadata run holds collection" in capsys.readouterr().err
+    assert "a sync-metadata --write run holds collection" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("argv", [
@@ -528,7 +528,7 @@ def test_a_disk_source_ingestion_in_vault_mode_takes_the_lock(monkeypatch, tmp_p
     conn.lock_free = False
     rc = cli.main(["cb_corpus", *extra])
     assert rc == 1
-    assert "a sync-metadata run holds collection" in capsys.readouterr().err
+    assert "a sync-metadata --write run holds collection" in capsys.readouterr().err
     locks = [p for sql, p in conn.executed if "pg_try_advisory_lock_shared" in sql]
     assert locks and locks[0][1] == "central-bank-e5b-v1"
 
@@ -586,3 +586,25 @@ def test_date_source_is_owned_so_a_synced_point_equals_a_fresh_ingestion(tmp_pat
                      extra={"date_precision": "day", "date_kind": "meeting"})
     run(LedgerConn([row2]), store, tmp_path, write=True, csv_name="b.csv")
     assert all("date_source" not in p for p, _ in snapshot(store).values())
+
+
+@pytest.mark.parametrize("write,expected", [(False, "pg_try_advisory_lock_shared"),
+                                            (True, "pg_try_advisory_lock(")])
+def test_a_dry_run_takes_the_shared_lock_a_write_the_exclusive_one(cli_env, write, expected):
+    """A dry run only reads: it must not stop an ingestion from starting (the
+    shared lock is compatible with an ingestion's), but it does not run beside
+    a --write (which holds the exclusive one)."""
+    _store, conn = cli_env
+    assert cli.main(["sync-metadata", "--collection", COLLECTION,
+                     *(["--write"] if write else [])]) == 0
+    (lock_sql,) = [sql for sql, _ in conn.executed if "pg_try_advisory_lock" in sql]
+    assert expected in lock_sql
+    modes = {p[2] for sql, p in conn.executed if "FROM pg_locks" in sql}
+    assert modes <= {"ExclusiveLock" if write else "ShareLock"}
+
+
+def test_a_dry_run_refused_beside_a_write_says_so(cli_env, capsys):
+    _store, conn = cli_env
+    conn.lock_free = False
+    assert cli.main(["sync-metadata", "--collection", COLLECTION]) == 1
+    assert "a sync-metadata --write run holds collection" in capsys.readouterr().err

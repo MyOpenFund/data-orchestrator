@@ -58,8 +58,9 @@ python tools/check_engine_pin.py
 ```
 
 No ingestion of `central-bank-e5b-v1` may run while `sync-metadata` writes. An
-ingestion of this version and `sync-metadata` exclude each other (a vault
-advisory lock: whichever comes second stops with `CollectionBusyError`), but
+ingestion of this version and `sync-metadata --write` exclude each other (a
+vault advisory lock: whichever comes second stops with `CollectionBusyError`;
+a dry run takes the lock shared and runs beside an ingestion), but
 an ingestion started by an older checkout, on any machine, takes no lock.
 Check that none runs, on every machine that ingests:
 

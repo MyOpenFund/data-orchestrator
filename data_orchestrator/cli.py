@@ -937,7 +937,11 @@ def _sync_metadata(args) -> int:
     conn = None
     try:
         conn = vault_mod.connect()
-        vault_mod.lock_collection(conn, collection, exclusive=True, holder="sync-metadata")
+        # --write: exclusive (no ingestion, no other sync-metadata). A dry run
+        # only reads: shared, so an ingestion may start or go on beside it
+        # (its report may then be stale for the documents that ingestion
+        # writes), but it never runs beside a --write.
+        vault_mod.lock_collection(conn, collection, exclusive=args.write, holder="sync-metadata")
         schema = sm.payload_schema(store, collection)
         from rag_engine.schema import PAYLOAD_INDEXES
 
@@ -955,7 +959,7 @@ def _sync_metadata(args) -> int:
                       + f"{stats.written if args.write else stats.to_write}", flush=True)
 
         def guard(conn=conn):
-            vault_mod.check_collection_lock(conn, collection, exclusive=True,
+            vault_mod.check_collection_lock(conn, collection, exclusive=args.write,
                                             holder="sync-metadata")
 
         stats = sm.run_sync(

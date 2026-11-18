@@ -195,8 +195,9 @@ class VaultLedger:
 # same document: a batch written after the correction puts the old metadata
 # back). A Postgres session-level advisory lock on (COLLECTION_LOCK_CLASS,
 # hashtext(collection)), held by the vault connection of the run and released
-# when it closes (or when the process dies). Ingestion runs take it SHARED, so
-# they never exclude each other; sync-metadata takes it EXCLUSIVE.
+# when it closes (or when the process dies). Ingestion runs and sync-metadata
+# dry runs take it SHARED, so they never exclude each other; sync-metadata
+# --write takes it EXCLUSIVE.
 # Diagnosis: SELECT * FROM pg_locks WHERE locktype = 'advisory' AND classid = 7468;
 # ---------------------------------------------------------------------------
 COLLECTION_LOCK_CLASS = 7468
@@ -262,7 +263,7 @@ def lock_collection(conn, collection: str, *, exclusive: bool, holder: str) -> N
     if exclusive:
         other = "an ingestion (or another sync-metadata run)"
     else:
-        other = "a sync-metadata run"
+        other = "a sync-metadata --write run"
     raise CollectionBusyError(
         f"{holder}: {other} holds collection {collection!r} (vault advisory lock "
         f"{COLLECTION_LOCK_CLASS}); wait for it to end, then run again")
