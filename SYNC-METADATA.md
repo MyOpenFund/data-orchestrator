@@ -2,8 +2,8 @@
 
 `sync-metadata` (README, ["Correcting dates in Qdrant"](README.md#correcting-dates-in-qdrant-sync-metadata))
 brings the date metadata of the points of `central-bank-e5b-v1` in line with
-the vault, without re-embedding: `date`, `year`, `date_precision`, `date_kind`
-and the interval rag-engine derives from them, `date_start` / `date_end`
+the vault, without re-embedding: `date`, `year`, `date_precision`, `date_kind`,
+`date_source` and the interval rag-engine derives from them, `date_start` / `date_end`
 (payload schema v2). This note is the procedure for a first run on a
 collection written before schema v2.
 
@@ -273,7 +273,7 @@ other keys changed   : none
 ```
 
 and under `keys changed (points)` only `date`, `year`, `date_precision`,
-`date_kind`, `date_start`, `date_end`. Any other line means stop: do not go to
+`date_kind`, `date_source`, `date_start`, `date_end`. Any other line means stop: do not go to
 step 7.
 
 ## 4. A second write finds nothing
@@ -309,7 +309,8 @@ for r in rows:
 **What to expect** (the collection: 33,601 points of 2,566 documents written
 with payload v1, the seven indexes of v1; the vault: the 2,567 policy-core rows
 corrected by the policy-dates backfill, whose `--write` changed `date_kind` on
-2,554 rows, `date_precision` on 2,433, `date` on 339 and `year` on 13):
+2,554 rows, `date_precision` on 2,433, `date_source` on 2,421, `date` on 339
+and `year` on 13):
 
 | line | expected | why |
 |---|---|---|
@@ -324,6 +325,7 @@ corrected by the policy-dates backfill, whose `--write` changed `date_kind` on
 | `date_kind` | at most 2,554 | the rows the backfill gave a kind, among the ingested ones (the misfiled, lastmod-dated and undated rows have none) |
 | `date` | at most 339, including the six Bank of Japan 2026 minutes that were undated | the corrected placeholders among the ingested documents (gb A3, gb E1, ca E1, jp A3) |
 | `year` | at most 13 | dates moved to another year |
+| `date_source` | at most 2,421 | the rows the backfill gave a source, among the ingested ones |
 
 Read the `date` and `year` lines printed above: each pair must be a
 placeholder (`YYYY-01-01`, or a first of the month) becoming the date the

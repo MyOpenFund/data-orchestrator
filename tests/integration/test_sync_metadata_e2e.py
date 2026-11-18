@@ -234,7 +234,7 @@ def test_sync_metadata_changes_the_owned_keys_only(
         assert (p["date"], p["year"], p["date_precision"], p["date_kind"]) == (
             "2015-12-17", 2015, "day", "meeting")
         assert p["date_start"] == p["date_end"] == "2015-12-17T00:00:00Z"
-        assert p["date_source"] == "title" if "date_source" in p else True
+        assert p["date_source"] == "title"  # owned: as a fresh ingestion writes it
     for p in payloads("b-month"):
         assert (p["date_start"], p["date_end"]) == ("2016-07-01T00:00:00Z", "2016-07-31T00:00:00Z")
     for p in payloads("c-undated"):

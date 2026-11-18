@@ -154,6 +154,7 @@ def test_expected_values_are_what_ingestion_writes():
                            "date_start": "1999-01-01T00:00:00Z", "date_source": "title"})
     assert sm.expected_values("d", row, KEYS) == {
         "date": "2016-07-01", "year": 2016, "date_precision": "month", "date_kind": "meeting",
+        "date_source": "title",
         "date_start": "2016-07-01T00:00:00Z", "date_end": "2016-07-31T00:00:00Z"}
 
 
@@ -170,7 +171,8 @@ def test_expected_values_are_what_ingestion_writes():
 def test_the_write_is_exactly_the_expected_values(date, year, extra):
     row = vault_row("d", date=date, year=year, extra=extra)
     fields = sm.write_fields("d", row)
-    assert set(fields) == {"date", "date_precision", "date_start", "date_end", "year", "date_kind"}
+    assert set(fields) == {"date", "date_precision", "date_start", "date_end", "year", "date_kind",
+                           "date_source"}
     assert {k: v for k, v in fields.items() if v is not None} == sm.expected_values("d", row, KEYS)
 
 
@@ -562,3 +564,25 @@ def test_run_sync_checks_the_guard_before_each_batch_and_each_write(tmp_path):
     calls = []
     run(conn, store, tmp_path, write=True, doc_batch=2, guard=lambda: calls.append(1))
     assert len(calls) == 2 + 3  # two batches, three writes
+
+
+def test_date_source_is_owned_so_a_synced_point_equals_a_fresh_ingestion(tmp_path):
+    """A fresh ingestion copies ``date_source`` from ``extra``: after a sync the
+    date keys of a point are exactly those a new ingestion of the row writes."""
+    store = make_store()
+    seed(store, "d", n=2, date="2016-01-01", year=2016, date_source="placeholder")
+    extra = {"date_precision": "day", "date_kind": "meeting", "date_source": "title"}
+    row = vault_row("d", date=datetime.date(2016, 7, 13), year=2016, extra=extra)
+    stats, rows = run(LedgerConn([row]), store, tmp_path, write=True)
+    assert ("date_source", "placeholder", "title") in {
+        (r["field"], r["qdrant_value"], r["vault_value"]) for r in rows}
+    fresh = build_payload("d", sm.row_to_payload(row)[0], filename="x", chunk_number=0,
+                          ingestion_date="t", text="t", page=0)
+    for payload, _ in snapshot(store).values():
+        assert {k: payload.get(k) for k in sm.OWNED_KEYS} == {k: fresh.get(k) for k in sm.OWNED_KEYS}
+        assert payload["date_source"] == "title"
+    # A vault row that drops date_source removes it from the points.
+    row2 = vault_row("d", date=datetime.date(2016, 7, 13), year=2016,
+                     extra={"date_precision": "day", "date_kind": "meeting"})
+    run(LedgerConn([row2]), store, tmp_path, write=True, csv_name="b.csv")
+    assert all("date_source" not in p for p, _ in snapshot(store).values())

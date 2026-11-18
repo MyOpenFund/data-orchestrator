@@ -642,13 +642,16 @@ re-embedding**:
    points per request, payload restricted to the owned keys, never a vector);
 4. where a point differs, with `--write`, it calls rag-engine's
    `QdrantStore.set_payload(collection, doc_id, fields)` with
-   `date_fields(date, date_precision, year=year)` plus `date_kind` (a `None`
-   removes a key: a `date_kind` the vault no longer has, a withdrawn date and
-   its interval). The fields are checked to be exactly what an ingestion would
+   `date_fields(date, date_precision, year=year)` plus `date_kind` and
+   `date_source` (a `None` removes a key: a `date_kind` the vault no longer
+   has, a withdrawn date and its interval). The fields are checked to be exactly what an ingestion would
    write before they are sent.
 
-**Owned keys**: `date`, `year`, `date_precision`, `date_kind`, `date_start`,
-`date_end`. Nothing else is compared or written: no vector (not read, not
+**Owned keys**: `date`, `year`, `date_precision`, `date_kind`, `date_source`,
+`date_start`, `date_end`. `date_source` (where the producer read the date:
+`title`, `url`, …) is in `extra`, so a fresh ingestion copies it: it is owned
+so that a corrected point carries exactly the date keys a new ingestion of
+the same row would write. Nothing else is compared or written: no vector (not read, not
 sent), no point id, no other payload key, no point created or deleted, no
 `rag_ingestions` or `runs` row. A key absent from the vault (a NULL column, a
 key not in `extra`) must be absent from the points; a stored null counts as
@@ -767,7 +770,7 @@ Example (a dry run on a small collection):
 Config: .env = /path/to/data-orchestrator/.env
 Qdrant: <host>:<port> (api key: set)
 → sync-metadata: collection 'central-bank-e5b-v1', corpus 'central-bank' (dry run: nothing is written to Qdrant)
-  keys compared: date, year, date_precision, date_kind, date_start, date_end
+  keys compared: date, year, date_precision, date_kind, date_source, date_start, date_end
   payload indexes missing: date_start, date_end (--write creates them first, or --create-indexes)
 ────────────────────────────────────────────────────────────
 Done (dry run: nothing was written to Qdrant).

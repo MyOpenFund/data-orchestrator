@@ -11,7 +11,8 @@ the points with rag-engine's ``QdrantStore.set_payload``: no vector is read,
 sent or rewritten, no point is created, ``rag_ingestions`` is not written.
 
 The keys it owns (:data:`OWNED_KEYS`): ``date``, ``year``, ``date_precision``,
-``date_kind`` and the interval the engine derives from the first ones,
+``date_kind``, ``date_source`` (where the date was read: a fresh ingestion
+copies it from ``extra``, so a synced point must carry it too) and the interval the engine derives from the first ones,
 ``date_start`` / ``date_end``. ``title`` only on request
 (:data:`TITLE_KEY`, ``--include-title``). Nothing else is compared or written.
 
@@ -24,7 +25,8 @@ the points; a null stored in a point counts as absent (Qdrant drops a key set
 to null, and a filter reads a null as a missing key).
 
 **The write** is ``date_fields(date, date_precision, year=year)`` plus
-``date_kind`` (``None``, which removes the key, when the vault has none) and,
+``date_kind`` and ``date_source`` (``None``, which removes the key, when the
+vault has none) and,
 with ``--include-title``, ``title``; before sending it, it is checked to be
 exactly the expected values (a ``None`` for each absent key).
 
@@ -57,7 +59,9 @@ from rag_engine.store import MissingIndexError, QdrantAuthError
 from .sources.vault import _PAYLOAD_COLUMNS, row_to_payload
 
 #: The payload keys sync-metadata compares and writes, in report order.
-OWNED_KEYS: tuple[str, ...] = ("date", "year", "date_precision", "date_kind", "date_start", "date_end")
+OWNED_KEYS: tuple[str, ...] = (
+    "date", "year", "date_precision", "date_kind", "date_source", "date_start", "date_end",
+)
 
 #: Compared and written only with ``include_title`` (``--include-title``).
 TITLE_KEY = "title"
@@ -138,7 +142,8 @@ def expected_values(doc_id: str, row: Mapping, keys: Sequence[str]) -> dict:
 
 def write_fields(doc_id: str, row: Mapping, include_title: bool = False) -> dict:
     """What ``set_payload`` is given for ``row``: ``date_fields`` with ``year``,
-    ``date_kind`` (``None`` removes it) and, on request, ``title``.
+    ``date_kind`` and ``date_source`` (``None`` removes them) and, on request,
+    ``title``.
 
     Raises :class:`SyncError` if, once the ``None`` values are left out, it is
     not exactly :func:`expected_values`: the write must give the points the
@@ -148,6 +153,7 @@ def write_fields(doc_id: str, row: Mapping, include_title: bool = False) -> dict
     fields = date_fields(metadata.get("date"), metadata.get("date_precision"),
                          year=metadata.get("year"))
     fields["date_kind"] = metadata.get("date_kind")
+    fields["date_source"] = metadata.get("date_source")
     if include_title:
         fields[TITLE_KEY] = metadata.get(TITLE_KEY)
     written = {k: v for k, v in fields.items() if v is not None}
