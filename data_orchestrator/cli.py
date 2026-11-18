@@ -551,6 +551,10 @@ def main(argv: list[str] | None = None) -> int:
                       help="documents per Qdrant read, one doc_id filter (default: 100)")
     sync.add_argument("--include-title", action="store_true",
                       help="also compare and write title (off by default)")
+    sync.add_argument("--include-links", action="store_true",
+                      help="also compare and write pdf_url, source_url, mime_type, and remove "
+                           "the extra keys dropped by design (DATA_ORCHESTRATOR_PAYLOAD_DROP_"
+                           "EXTRA_KEYS) from the points (off by default)")
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "
                            "(date_start, date_end) and exit; needs a key allowed to write")
@@ -597,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
         ("--write", args.write), ("--doc-ids", args.doc_ids is not None),
         ("--csv", args.csv is not None), ("--page-size", args.page_size is not None),
         ("--doc-batch", args.doc_batch is not None), ("--include-title", args.include_title),
-        ("--create-indexes", args.create_indexes),
+        ("--include-links", args.include_links), ("--create-indexes", args.create_indexes),
     ) if given]
     if args.source != SYNC_METADATA and sync_flags:
         print(f"error: {', '.join(sync_flags)} only apply to sync-metadata", file=sys.stderr)
@@ -891,7 +895,7 @@ def _sync_metadata(args) -> int:
             print(f"error: {flag} must be >= 1", file=sys.stderr)
             return 2
     if args.create_indexes and (args.write or args.doc_ids or args.limit or args.csv
-                                or args.include_title):
+                                or args.include_title or args.include_links):
         print("error: --create-indexes only creates the payload indexes; run it alone",
               file=sys.stderr)
         return 2
@@ -932,7 +936,7 @@ def _sync_metadata(args) -> int:
         return 0
 
     csv_path = Path(args.csv).expanduser() if args.csv else sm.default_csv_path(state_dir(), collection)
-    keys = sm.owned_keys(args.include_title)
+    keys = sm.owned_keys(args.include_title, args.include_links)
     mode = "WRITE: corrections are applied" if args.write else "dry run: nothing is written to Qdrant"
     print(f"→ sync-metadata: collection '{collection}', corpus '{args.corpus}' ({mode})")
     print(f"  keys compared: {', '.join(keys)}")
@@ -968,7 +972,8 @@ def _sync_metadata(args) -> int:
 
         stats = sm.run_sync(
             conn, store, corpus=args.corpus, collection=collection, csv_path=csv_path,
-            write=args.write, include_title=args.include_title, doc_ids=doc_ids,
+            write=args.write, include_title=args.include_title,
+            include_links=args.include_links, doc_ids=doc_ids,
             limit=args.limit,
             page_size=args.page_size or sm.DEFAULT_PAGE_SIZE,
             doc_batch=args.doc_batch or sm.DEFAULT_DOC_BATCH,
