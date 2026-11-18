@@ -46,7 +46,8 @@ class _Conn:
 
 def test_keepalives_have_defaults_and_can_be_set():
     assert vault.keepalive_options({}) == {
-        "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3}
+        "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3,
+        "tcp_user_timeout": 30000}
     assert vault.keepalive_options({
         "DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE": "60",
         "DATA_ORCHESTRATOR_PG_KEEPALIVES_INTERVAL": " 5 ",
@@ -127,3 +128,23 @@ def test_a_bad_keepalive_setting_is_a_usage_error_before_any_work(monkeypatch, c
     monkeypatch.setattr(vault, "connect", lambda: pytest.fail("connected"))
     assert cli.main(["sync-metadata"]) == 2
     assert "DATA_ORCHESTRATOR_PG_KEEPALIVES_IDLE" in capsys.readouterr().err
+
+
+def test_the_tcp_user_timeout_bounds_a_request_sent_into_a_dead_link():
+    """Keepalives only probe an idle connection: a request sent into a dead
+    link waits for TCP retransmissions (about 15 min on Linux) unless
+    tcp_user_timeout bounds it. 0 leaves the system default."""
+    assert vault.keepalive_options({"DATA_ORCHESTRATOR_PG_TCP_USER_TIMEOUT_MS": "10000"})[
+        "tcp_user_timeout"] == 10000
+    assert vault.keepalive_options({"DATA_ORCHESTRATOR_PG_TCP_USER_TIMEOUT_MS": "0"})[
+        "tcp_user_timeout"] == 0
+    with pytest.raises(ValueError, match="DATA_ORCHESTRATOR_PG_TCP_USER_TIMEOUT_MS"):
+        vault.keepalive_options({"DATA_ORCHESTRATOR_PG_TCP_USER_TIMEOUT_MS": "-5"})
+
+
+def test_connect_sets_the_tcp_user_timeout(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/db")
+    monkeypatch.setattr(vault.psycopg2, "connect", lambda url, **kw: seen.update(kw))
+    vault.connect()
+    assert seen["tcp_user_timeout"] == 30000

@@ -69,11 +69,27 @@ KEEPALIVE_ENV = {
 }
 
 
-def keepalive_options(environ=None) -> dict:
-    """The keepalive parameters :func:`connect` passes to libpq (always on).
+# Keepalives only probe an IDLE connection. A request sent into a dead link
+# (a partition: data sent and never acknowledged) waits instead for TCP's
+# retransmissions, about 15 minutes on Linux, and a lock check or a ledger
+# write would hang that long. libpq's ``tcp_user_timeout`` bounds it: the
+# connection is closed once data stays unacknowledged that many milliseconds.
+# libpq applies it only where the system has TCP_USER_TIMEOUT (Linux); on
+# macOS it is accepted and has no effect, and the keepalives and the
+# system's own retransmission limit apply. 0 leaves the system default.
+# A server-side statement_timeout cannot help here: on a dead link the
+# server never receives the statement.
+TCP_USER_TIMEOUT_ENV = "DATA_ORCHESTRATOR_PG_TCP_USER_TIMEOUT_MS"
+DEFAULT_TCP_USER_TIMEOUT_MS = 30000
 
-    Each value is a whole number of seconds (or probes) >= 1, else
-    ``ValueError`` naming the variable; unset or blank is the default.
+
+def keepalive_options(environ=None) -> dict:
+    """The connection parameters :func:`connect` passes to libpq for a dead
+    peer: the keepalives (always on) and ``tcp_user_timeout``.
+
+    A keepalive value is a whole number of seconds (or probes) >= 1, the
+    timeout a whole number of milliseconds >= 0, else ``ValueError`` naming
+    the variable; unset is the default.
     """
     environ = os.environ if environ is None else environ
     options = {"keepalives": 1}
@@ -86,6 +102,15 @@ def keepalive_options(environ=None) -> dict:
         if not (text.isascii() and text.isdigit() and int(text) >= 1):
             raise ValueError(f"{env}={raw!r} is not a whole number >= 1")
         options[param] = int(text)
+    raw = environ.get(TCP_USER_TIMEOUT_ENV)
+    if raw is None:
+        options["tcp_user_timeout"] = DEFAULT_TCP_USER_TIMEOUT_MS
+    else:
+        text = raw.strip()
+        if not (text.isascii() and text.isdigit()):
+            raise ValueError(f"{TCP_USER_TIMEOUT_ENV}={raw!r} is not a whole number of "
+                             "milliseconds >= 0")
+        options["tcp_user_timeout"] = int(text)
     return options
 
 
