@@ -20,14 +20,19 @@ pytestmark = pytest.mark.integration
 N_DOCS = 4
 
 
-def _terminate(pg_url, mode):
-    """Terminate the session holding the collection lock in ``mode``; its pid."""
+def _terminate(pg_url, mode, coll):
+    """Terminate the session of THIS database holding the lock of ``coll`` in
+    ``mode`` (never another database's session); its pid."""
     conn = psycopg2.connect(pg_url)
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = %s "
-                        "AND mode = %s AND granted", (COLLECTION_LOCK_CLASS, mode))
+            cur.execute(
+                "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                "AND classid = %s AND objid = (hashtext(%s)::bigint & 4294967295)::oid "
+                "AND objsubid = 2 AND mode = %s",
+                (COLLECTION_LOCK_CLASS, coll, mode))
             (pid,) = cur.fetchone()
             cur.execute("SELECT pg_terminate_backend(%s)", (pid,))
             for _ in range(100):
@@ -103,7 +108,7 @@ def test_an_ingestion_whose_vault_session_is_terminated_stops(
         n = real(*args, **kwargs)
         calls.append(1)
         if len(calls) == 1:
-            _terminate(pg, "ShareLock")
+            _terminate(pg, "ShareLock", coll)
         return n
 
     monkeypatch.setattr(core, "ingest_item", ingest_then_lose_the_session)
@@ -143,7 +148,7 @@ def test_a_sync_metadata_write_whose_vault_session_is_terminated_stops(
     def read_then_lose_the_session(*args, **kwargs):
         calls.append(1)
         if len(calls) == 2:
-            _terminate(pg, "ExclusiveLock")
+            _terminate(pg, "ExclusiveLock", coll)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(sm, "read_points", read_then_lose_the_session)
