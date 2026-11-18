@@ -724,7 +724,10 @@ or blank column removes the key) and the keys of `extra` dropped by design
 `alt_urls`, `alt_source_urls`, `local_path`): an ingestion never sends these,
 so they are expected absent and removed from the points that still carry
 them, the way an absent owned key is removed. They appear in the summary and
-the CSV like the other keys (a list as JSON). This is how a collection
+the CSV like the other keys (a list as JSON). A document written for its
+links gets its full date set (re)written too: the write is always every owned
+key. No point carries `mime_type` before this, so the first run writes every
+ledger document that has one in the vault. This is how a collection
 ingested before the links were sent is aligned (see
 [SYNC-METADATA.md](SYNC-METADATA.md#aligning-the-links-include-links)).
 

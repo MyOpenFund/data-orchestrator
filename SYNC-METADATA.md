@@ -474,8 +474,20 @@ Points ingested before the vault source sent `pdf_url`, `source_url` and
 `mime_type` have none of them, and may carry keys of `extra` that are now
 dropped by design (`html_path`, a path on the producer's machine;
 `alt_urls`, `alt_source_urls`; README, "Qdrant payload"). `--include-links`
-sets the three links from the vault and removes those keys; nothing else
-changes (the vectors and every other key are untouched, as for the dates).
+sets the three links from the vault and removes those keys. **It also
+(re)writes the full date set** of every document it writes: the write of a
+document is always the whole set of owned keys (`date`, `year`,
+`date_precision`, `date_kind`, `date_source`, `date_start`, `date_end`, then
+the links and the dropped keys), with the vault's values, even when only a
+link differs. Once the dates are aligned this rewrites the values the points
+already hold; before, it corrects them too. The vectors and every key outside
+the owned ones are untouched.
+
+**The first run touches every ledger document** that has a link or a
+`mime_type` in the vault: no point carries `mime_type` yet (no ingestion has
+sent it), so on production that is every document of the collection, each
+written with its full date set. Expect `documents to write` close to the
+ledger count in the dry run.
 Same procedure and same guarantees as above: dry run first, then `--write`,
 then a second `--write` that finds nothing. It can run on its own once the
 dates are aligned (the date keys then show no difference), on a machine that
