@@ -1,7 +1,9 @@
 """Throwaway Postgres + Qdrant containers and adversarial corpus fixtures.
 
 The Postgres schema replicates the vault's contract tables (documents +
-rag_ingestions) — the minimal columns this repo's code touches. Schema drift
+rag_ingestions) — the minimal columns this repo's code touches. ``documents``
+has the vault's columns after its 2026-11 rename (``document_url``, formerly
+``pdf_url``); a test of a vault before the rename renames it back. Schema drift
 against the real vault is guarded by the contract documented in the vault
 README, not by importing vault code here.
 
@@ -38,7 +40,7 @@ CREATE TABLE IF NOT EXISTS documents (
     source_code TEXT,
     doc_type TEXT,
     title TEXT,
-    pdf_url TEXT,
+    document_url TEXT,
     source_url TEXT,
     date DATE,
     year INTEGER,
