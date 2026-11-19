@@ -50,6 +50,10 @@ class LedgerCursor:
         if "FROM pg_locks" in sql:
             self._rows = [(int(self._conn.lock_held),)]
             return
+        if "information_schema.columns" in sql:
+            self._rows = [(c,) for c in self._conn.columns
+                          if c in (params["new"], params["old"])]
+            return
         assert "FROM rag_ingestions r" in sql
         assert params["collection"] == COLLECTION and params["corpus"] == CORPUS
         rows = sorted(self._conn.ledger, key=lambda r: r["ledger_doc_id"])
@@ -73,8 +77,11 @@ class LedgerConn:
     """The vault: ``ledger`` holds one dict per rag_ingestions row, joined
     with its documents row (``vault_doc_id`` None when the row is gone)."""
 
-    def __init__(self, ledger=(), lock_free=True):
+    def __init__(self, ledger=(), lock_free=True, columns=("document_url",)):
         self.ledger = list(ledger)
+        #: The columns of ``documents`` that information_schema reports (the
+        #: document's address: ``document_url``, or ``pdf_url`` before the rename).
+        self.columns = tuple(columns)
         self.lock_free = lock_free
         self.lock_held = True
         self.executed = []
@@ -208,8 +215,10 @@ def test_dry_run_reports_and_writes_nothing(tmp_path):
         "date_end": ("", "2015-12-17T00:00:00Z"),
     }
     assert {r["action"] for r in rows} == {sm.UPDATED}
-    # The vault is only read: one query of the ledger (the CLI takes the lock).
-    assert [sql.split()[0] for sql, _ in conn.executed] == ["SELECT"]
+    # The vault is only read: the column of the document's address, then the
+    # ledger (the CLI takes the lock).
+    assert [sql.split()[0] for sql, _ in conn.executed] == ["SELECT", "SELECT"]
+    assert "information_schema.columns" in conn.executed[0][0]
 
 
 def test_write_changes_only_the_owned_keys_and_a_second_run_writes_nothing(tmp_path):
@@ -655,10 +664,11 @@ def test_the_payload_schema_is_read_once_per_run(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# --include-links: pdf_url, source_url, mime_type from the vault, and the keys
-# of extra dropped by design removed from the points that still carry them.
+# --include-links: document_url, source_url, mime_type from the vault, and
+# pdf_url (the former name of document_url) and the keys of extra dropped by
+# design removed from the points that still carry them.
 # ---------------------------------------------------------------------------
-LINKS = {"pdf_url": "https://x.org/d.pdf", "source_url": "https://x.org/d",
+LINKS = {"document_url": "https://x.org/d.pdf", "source_url": "https://x.org/d",
          "mime_type": "application/pdf"}
 
 
@@ -666,8 +676,9 @@ def test_the_links_are_owned_only_on_request():
     assert not set(sm.LINK_KEYS) & set(sm.owned_keys())
     keys = sm.owned_keys(include_links=True)
     assert keys[:len(sm.OWNED_KEYS)] == sm.OWNED_KEYS
-    assert set(keys) == set(sm.OWNED_KEYS) | {"pdf_url", "source_url", "mime_type", "html_path",
-                                              "alt_urls", "alt_source_urls", "local_path"}
+    assert set(keys) == set(sm.OWNED_KEYS) | {"document_url", "source_url", "mime_type",
+                                              "pdf_url", "html_path", "alt_urls",
+                                              "alt_source_urls", "local_path"}
     assert len(keys) == len(set(keys))
 
 
@@ -680,11 +691,13 @@ def test_the_owned_dropped_keys_follow_the_setting(monkeypatch):
 
 def test_the_links_write_is_exactly_the_expected_values():
     row = vault_row("d", extra={"html_path": "/Users/x/d.html", "alt_urls": ["a"],
-                                "date_precision": "day"}, pdf_url=LINKS["pdf_url"],
+                                "date_precision": "day"}, document_url=LINKS["document_url"],
                     source_url=None, mime_type="application/pdf")
     fields = sm.write_fields("d", row, include_links=True)
-    assert fields["pdf_url"] == LINKS["pdf_url"] and fields["mime_type"] == "application/pdf"
+    assert fields["document_url"] == LINKS["document_url"]
+    assert fields["mime_type"] == "application/pdf"
     assert fields["source_url"] is None  # a NULL column removes the key
+    assert "pdf_url" in fields and fields["pdf_url"] is None  # the former name: removed
     assert all(fields[k] is None for k in ("html_path", "alt_urls", "alt_source_urls",
                                            "local_path"))
     keys = sm.owned_keys(include_links=True)
@@ -711,7 +724,7 @@ def test_include_links_sets_the_links_and_removes_html_path_then_finds_nothing(t
     stats, rows = run(conn, store, tmp_path, include_links=True, csv_name="dry.csv")
     assert snapshot(store) == before  # a dry run writes nothing
     assert {r["field"]: (r["qdrant_value"], r["vault_value"]) for r in rows} == {
-        "pdf_url": ("", LINKS["pdf_url"]),
+        "document_url": ("", LINKS["document_url"]),
         "source_url": ("", LINKS["source_url"]),
         "mime_type": ("", "application/pdf"),
         "html_path": ("/Users/someone/cb/d.html", ""),
@@ -728,7 +741,7 @@ def test_include_links_sets_the_links_and_removes_html_path_then_finds_nothing(t
         assert {k: payload[k] for k in LINKS} == LINKS
         old = before[pid][0]
         changed = {k for k in set(payload) | set(old) if payload.get(k) != old.get(k)}
-        assert changed == {"pdf_url", "source_url", "mime_type", "html_path", "alt_urls"}
+        assert changed == {"document_url", "source_url", "mime_type", "html_path", "alt_urls"}
 
     again, rows = run(conn, store, tmp_path, include_links=True, write=True, csv_name="a.csv")
     assert again.to_write == 0 and again.written == 0 and rows == []
@@ -737,10 +750,10 @@ def test_include_links_sets_the_links_and_removes_html_path_then_finds_nothing(t
 
 def test_include_links_removes_a_link_the_vault_no_longer_has(tmp_path):
     store = make_store()
-    seed(store, "d", n=1, pdf_url="https://old.org/d.pdf")
-    row = vault_row("d", date=datetime.date(2016, 1, 1), pdf_url=None)
+    seed(store, "d", n=1, document_url="https://old.org/d.pdf")
+    row = vault_row("d", date=datetime.date(2016, 1, 1), document_url=None)
     run(LedgerConn([row]), store, tmp_path, include_links=True, write=True)
-    assert all("pdf_url" not in p for p, _ in snapshot(store).values())
+    assert all("document_url" not in p for p, _ in snapshot(store).values())
 
 
 def test_cli_include_links(cli_env, tmp_path, capsys):
@@ -752,10 +765,10 @@ def test_cli_include_links(cli_env, tmp_path, capsys):
                    "--csv", str(out_csv)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "pdf_url, source_url, mime_type, html_path" in out
+    assert "document_url, source_url, mime_type, pdf_url, html_path" in out
     with out_csv.open(encoding="utf-8") as fh:
         fields = {r["field"] for r in csv.DictReader(fh)}
-    assert {"pdf_url", "source_url", "mime_type", "html_path"} <= fields
+    assert {"document_url", "source_url", "mime_type", "html_path"} <= fields
 
 
 def test_include_links_is_refused_elsewhere_and_with_create_indexes(cli_env, capsys):
@@ -767,14 +780,100 @@ def test_include_links_is_refused_elsewhere_and_with_create_indexes(cli_env, cap
 def test_include_links_removes_a_blank_link_and_never_writes_one(tmp_path):
     """2,294 central-bank rows of the vault hold ``source_url = ''``: no link,
     so the write removes the key and a point carrying ``""`` is corrected."""
-    row = vault_row("d", date=datetime.date(2016, 1, 1), pdf_url="https://x.org/d.pdf",
+    row = vault_row("d", date=datetime.date(2016, 1, 1), document_url="https://x.org/d.pdf",
                     source_url="", mime_type="  ")
     fields = sm.write_fields("d", row, include_links=True)
     assert fields["source_url"] is None and fields["mime_type"] is None
     keys = sm.owned_keys(include_links=True)
     assert "source_url" not in sm.expected_values("d", row, keys)
     store = make_store()
-    seed(store, "d", n=1, source_url="", pdf_url="https://x.org/d.pdf")
+    seed(store, "d", n=1, source_url="", document_url="https://x.org/d.pdf")
     stats, _ = run(LedgerConn([row]), store, tmp_path, include_links=True, write=True)
     assert stats.written == 1
     assert all("source_url" not in p for p, _ in snapshot(store).values())
+
+
+# ---------------------------------------------------------------------------
+# The pdf_url -> document_url rename (2026-11): one --include-links run renames
+# the key on the points; the ledger reads either column of the vault.
+# ---------------------------------------------------------------------------
+def _aligned_before_the_rename(store, doc_id, n):
+    """Points as production holds them before the rename: the date set of an
+    ingestion, and the links set by an earlier --include-links under ``pdf_url``."""
+    seed(store, doc_id, n=n, date_precision="day", pdf_url=f"https://x.org/{doc_id}.pdf",
+         source_url=f"https://x.org/{doc_id}", mime_type="application/pdf")
+    store.client.set_payload(COLLECTION, payload={"date_start": "2016-01-01T00:00:00Z",
+                                                  "date_end": "2016-01-01T00:00:00Z"},
+                             points=[point_id(doc_id, c, c) for c in range(n)], wait=True)
+
+
+def _renamed_row(doc_id):
+    return vault_row(doc_id, extra={"date_precision": "day"},
+                     document_url=f"https://x.org/{doc_id}.pdf",
+                     source_url=f"https://x.org/{doc_id}", mime_type="application/pdf")
+
+
+def test_include_links_renames_pdf_url_on_every_point_once(tmp_path):
+    store = make_store()
+    for doc_id, n in (("a", 3), ("b", 1), ("c", 2)):
+        _aligned_before_the_rename(store, doc_id, n)
+    conn = LedgerConn([_renamed_row(d) for d in ("a", "b", "c")])
+    before = snapshot(store)
+
+    # Without --include-links the dates already agree: nothing to do.
+    stats, rows = run(conn, store, tmp_path)
+    assert stats.to_write == 0 and rows == []
+
+    # The dry run shows the rename: document_url set, pdf_url removed, per document.
+    stats, rows = run(conn, store, tmp_path, include_links=True, csv_name="dry.csv")
+    assert snapshot(store) == before
+    assert stats.to_write == 3 and stats.fields == {"document_url": 3, "pdf_url": 3}
+    assert {(r["doc_id"], r["field"], r["qdrant_value"], r["vault_value"]) for r in rows} == {
+        (d, k, q, v) for d in ("a", "b", "c") for k, q, v in (
+            ("document_url", "", f"https://x.org/{d}.pdf"),
+            ("pdf_url", f"https://x.org/{d}.pdf", ""))}
+
+    # The write: every ledger document once, every point reached.
+    stats, _ = run(conn, store, tmp_path, include_links=True, write=True, csv_name="w.csv")
+    assert stats.written == 3 and stats.points_written == 6 and not stats.count_mismatch
+    after = snapshot(store)
+    for pid, (payload, vector) in after.items():
+        assert vector == before[pid][1]
+        old = before[pid][0]
+        assert "pdf_url" not in payload and payload["document_url"] == old["pdf_url"]
+        changed = {k for k in set(payload) | set(old) if payload.get(k) != old.get(k)}
+        assert changed == {"document_url", "pdf_url"}
+
+    # Idempotent: a second run finds nothing.
+    again, rows = run(conn, store, tmp_path, include_links=True, write=True, csv_name="a.csv")
+    assert again.to_write == 0 and again.written == 0 and rows == []
+    assert snapshot(store) == after
+
+
+def test_a_vault_before_the_rename_is_read_through_pdf_url(tmp_path):
+    """The orchestrator may run before the vault's DDL renamed the column: the
+    ledger then selects ``pdf_url AS document_url`` and the answer is the same."""
+    store = make_store()
+    _aligned_before_the_rename(store, "a", 2)
+    old_vault = LedgerConn([_renamed_row("a")], columns=("pdf_url",))
+    stats, rows = run(old_vault, store, tmp_path, include_links=True, write=True)
+    assert "d.pdf_url AS document_url" in old_vault.executed[1][0]
+    assert stats.written == 1 and {r["field"] for r in rows} == {"document_url", "pdf_url"}
+    assert all(p["document_url"] == "https://x.org/a.pdf" and "pdf_url" not in p
+               for p, _ in snapshot(store).values())
+
+    new_vault = LedgerConn([_renamed_row("a")], columns=("document_url",))
+    again, _ = run(new_vault, store, tmp_path, include_links=True, csv_name="n.csv")
+    assert "d.document_url," in new_vault.executed[1][0]
+    assert again.to_write == 0
+
+
+def test_the_column_is_read_once_per_connection():
+    conn = LedgerConn([_renamed_row("a")], columns=("pdf_url", "document_url"))
+    sm.ledger_rows(conn, CORPUS, COLLECTION)
+    rows = sm.ledger_rows(conn, CORPUS, COLLECTION)
+    reads = [sql for sql, _ in conn.executed if "information_schema" in sql]
+    assert len(reads) == 1
+    # Both columns (a vault mid-DDL, or a copy of the old one): the new one wins.
+    assert "d.document_url," in conn.executed[-1][0]
+    assert rows[0]["document_url"] == "https://x.org/a.pdf"

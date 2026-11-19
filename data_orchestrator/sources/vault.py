@@ -10,7 +10,7 @@ foreign or missing extension, or a NULL ``local_path``, is unsupported. The
 candidates it leaves out are counted per source by ``count_unsupported``,
 never silently. Payloads
 are built by ``payload.row_to_payload``: the vault's normalized columns
-(``pdf_url``, ``source_url`` and ``mime_type`` included) merged with the
+(``document_url``, ``source_url`` and ``mime_type`` included) merged with the
 corpus-specific ``extra`` fields (columns always win), without the keys of
 ``extra`` dropped by design (``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS``,
 default ``html_path``, ``alt_urls``, ``alt_source_urls``, ``local_path``;
@@ -22,6 +22,12 @@ fail the document. ``date_precision`` and ``date_kind`` are ordinary keys of
 ``extra`` and reach the payload as they are; the engine derives the interval
 from ``date`` and ``date_precision``. File paths join the per-machine corpus root
 (routing) with the vault's relative ``local_path``.
+
+Transition (2026-11 rename): the vault's ``pdf_url`` column became
+``document_url``. :func:`iter_items` reads which of the two the vault has, once
+per connection (``vault.document_url_column``), and selects it as
+``document_url``, so a run against a vault that has not run the rename yet
+still carries the address. To remove once every vault has run it.
 """
 from __future__ import annotations
 
@@ -30,6 +36,7 @@ from typing import Iterator, Sequence
 
 from ..core import SourceItem, source_label
 from ..payload import PAYLOAD_COLUMNS, row_to_payload  # noqa: F401  (row_to_payload: re-exported)
+from ..vault import DOCUMENT_URL_COLUMN, document_url_column, document_url_select
 from ..routing import (
     resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
 )
@@ -112,14 +119,26 @@ _FROM = ("FROM documents d\n"
          "  ON r.doc_id = d.doc_id AND r.collection = %(collection)s\n")
 
 
-def build_selection_sql(corpus, collection, *, supported_mimes=None, **filters):
+def _select_list(document_url_from: str) -> str:
+    """``_SELECT_COLUMNS`` as the select list: every column under its own
+    name, the document's address read from ``document_url_from`` and named
+    ``document_url``."""
+    return ", ".join(document_url_select(document_url_from) if c == DOCUMENT_URL_COLUMN
+                     else f"d.{c}" for c in _SELECT_COLUMNS)
+
+
+def build_selection_sql(corpus, collection, *, supported_mimes=None,
+                        document_url_from: str = DOCUMENT_URL_COLUMN, **filters):
     """The anti-join restricted to supported types. Returns (sql, params).
 
     ``supported_mimes`` None -> ``routing.supported_mime_types()``.
+    ``document_url_from``: the vault column of the document's address
+    (``document_url``, or ``pdf_url`` on a vault before the rename), selected
+    as ``document_url``.
     """
     clauses, params = _where(corpus, collection, supported_mimes=supported_mimes, **filters)
     clauses.append(_SUPPORTED_PREDICATE)
-    sql = (f"SELECT {', '.join('d.' + c for c in _SELECT_COLUMNS)}\n" + _FROM +
+    sql = (f"SELECT {_select_list(document_url_from)}\n" + _FROM +
            f"WHERE {' AND '.join(clauses)}\nORDER BY d.doc_id")
     return sql, params
 
@@ -168,8 +187,13 @@ def row_to_item(row: dict, corpus: str) -> SourceItem | None:
 
 
 def iter_items(conn, corpus: str, collection: str, **filters) -> Iterator[SourceItem]:
-    """Yield SourceItems for every vault doc not yet in ``collection``."""
-    sql, params = build_selection_sql(corpus, collection, **filters)
+    """Yield SourceItems for every vault doc not yet in ``collection``.
+
+    The column of the document's address is read from the vault first
+    (``vault.document_url_column``: ``document_url``, or ``pdf_url`` before
+    the rename)."""
+    sql, params = build_selection_sql(corpus, collection,
+                                      document_url_from=document_url_column(conn), **filters)
     skipped = 0
     with conn.cursor() as cur:
         cur.execute(sql, params)

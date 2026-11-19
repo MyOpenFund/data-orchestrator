@@ -23,7 +23,10 @@ The payload is the vault's ``extra`` first, without
 then the vault's columns (:data:`PAYLOAD_COLUMNS`), which always win; a NULL
 column is left out and removes the same key of ``extra``, and so does a blank
 link (:data:`BLANK_IS_ABSENT_COLUMNS`: the vault stores ``""`` as given); a
-date is written as its ISO string.
+date is written as its ISO string. A key of ``extra`` named by a former name of
+a column (:data:`LEGACY_COLUMN_NAMES`: ``pdf_url``, now ``document_url``) is
+left out too: the column it names always wins, so the payload never carries the
+old name.
 """
 from __future__ import annotations
 
@@ -35,28 +38,39 @@ from rag_engine.schema import DERIVED_KEYS, RESERVED_KEYS
 
 from .core import split_reserved_keys
 
-#: The vault columns copied into the payload, in payload order. ``pdf_url``,
-#: ``source_url`` and ``mime_type`` come last: added after the others, they
-#: leave the position of every earlier key unchanged.
+#: The vault columns copied into the payload, in payload order.
+#: ``document_url``, ``source_url`` and ``mime_type`` come last: added after the
+#: others, they leave the position of every earlier key unchanged.
+#: ``document_url`` is the address of the document itself (a PDF, an HTML page,
+#: any type); its column was ``pdf_url`` until the 2026-11 rename.
 PAYLOAD_COLUMNS: tuple[str, ...] = (
     "doc_id", "corpus", "source_code", "doc_type", "title", "date",
     "year", "language", "sha256", "provenance",
-    "pdf_url", "source_url", "mime_type",
+    "document_url", "source_url", "mime_type",
 )
+
+#: Former names of vault columns: {old name: column}. A manifest row that
+#: still carries the old name gives the column its value when the new name is
+#: absent (:func:`manifest_row_to_vault_row`); a key of ``extra`` with the old
+#: name is left out of the payload (the column always wins). Transition only:
+#: to remove once no manifest row and no point carries ``pdf_url``.
+LEGACY_COLUMN_NAMES: dict[str, str] = {"pdf_url": "document_url"}
 
 #: The columns where an empty or whitespace-only string is no value: read as
 #: NULL. The vault stores a manifest's ``source_url`` as given, and committed
 #: central-bank manifests give ``""`` (2,294 rows): a blank link is no link.
-BLANK_IS_ABSENT_COLUMNS: frozenset[str] = frozenset({"pdf_url", "source_url", "mime_type"})
+BLANK_IS_ABSENT_COLUMNS: frozenset[str] = frozenset({"document_url", "source_url",
+                                                     "mime_type"})
 
 #: The fields of a manifest row the vault stores as columns; every other field
 #: goes to ``extra``. A copy of the vault's ``ingestion/ingest.py``
 #: ``KNOWN_FIELDS`` (kept here so this package does not import the vault):
-#: ``bank_code`` is a legacy name of ``source_code``; ``local_path`` is a
-#: column the payload does not carry.
+#: ``bank_code`` is a legacy name of ``source_code`` and ``pdf_url`` a legacy
+#: name of ``document_url``; ``local_path`` is a column the payload does not
+#: carry.
 VAULT_KNOWN_FIELDS: frozenset[str] = frozenset({
     "doc_id", "corpus", "source_code", "bank_code", "doc_type", "title",
-    "pdf_url", "source_url", "date", "year", "language", "provenance",
+    "document_url", "pdf_url", "source_url", "date", "year", "language", "provenance",
     "mime_type", "sha256", "local_path",
 })
 
@@ -64,7 +78,7 @@ VAULT_KNOWN_FIELDS: frozenset[str] = frozenset({
 DROP_EXTRA_KEYS_ENV = "DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS"
 #: Its default: ``html_path`` (a path on the producer's machine),
 #: ``alt_urls`` / ``alt_source_urls`` (lists of other addresses of the
-#: document; ``pdf_url`` and ``source_url`` are the ones a citation links to),
+#: document; ``document_url`` and ``source_url`` are the ones a citation links to),
 #: ``local_path`` (a path in the corpus, never a reader's concern).
 DEFAULT_DROP_EXTRA_KEYS: tuple[str, ...] = ("html_path", "alt_urls", "alt_source_urls",
                                             "local_path")
@@ -81,7 +95,8 @@ def dropped_extra_keys() -> tuple[str, ...]:
     entries trimmed, de-duplicated (order kept). Raises ``ValueError`` (the
     CLI: exit 2) on a list with no entry, or naming a vault column (columns
     always win: dropping one from ``extra`` changes nothing) or a key the
-    engine writes or derives itself (already left out, and counted).
+    engine writes or derives itself (already left out, and counted), or a
+    former name of a column (:data:`LEGACY_COLUMN_NAMES`: already left out).
     """
     raw = os.environ.get(DROP_EXTRA_KEYS_ENV)
     if raw is None or not raw.strip():
@@ -96,11 +111,13 @@ def dropped_extra_keys() -> tuple[str, ...]:
     if not keys:
         raise ValueError(f"{DROP_EXTRA_KEYS_ENV}={raw!r} lists no key "
                          f"(leave it unset for the default, '{DROP_NONE}' to drop none)")
-    refused = [k for k in keys if k in PAYLOAD_COLUMNS or k in RESERVED_KEYS or k in DERIVED_KEYS]
+    refused = [k for k in keys if k in PAYLOAD_COLUMNS or k in LEGACY_COLUMN_NAMES
+               or k in RESERVED_KEYS or k in DERIVED_KEYS]
     if refused:
         raise ValueError(
-            f"{DROP_EXTRA_KEYS_ENV}: {', '.join(refused)} cannot be dropped (a vault column "
-            "always wins over extra; a key the engine writes itself is already left out)")
+            f"{DROP_EXTRA_KEYS_ENV}: {', '.join(refused)} cannot be dropped (a vault column, "
+            "or a former name of one, always wins over extra; a key the engine writes itself "
+            "is already left out)")
     return tuple(keys)
 
 
@@ -112,12 +129,14 @@ def row_to_payload(row: Mapping, drop_keys: tuple[str, ...] | None = None
     design are not in the returned tuple: it names the keys the engine would
     refuse, the ones a run counts. ``doc_id`` always comes from its column and
     is never reported. A null key of ``extra`` is left out, not reported; a
-    blank link column (:data:`BLANK_IS_ABSENT_COLUMNS`) is a NULL one.
+    blank link column (:data:`BLANK_IS_ABSENT_COLUMNS`) is a NULL one. A key
+    of ``extra`` named by a former column name (:data:`LEGACY_COLUMN_NAMES`) is
+    left out, not reported.
     """
     if drop_keys is None:
         drop_keys = dropped_extra_keys()
     extra = {k: v for k, v in (row.get("extra") or {}).items()
-             if k not in drop_keys and v is not None}
+             if k not in drop_keys and k not in LEGACY_COLUMN_NAMES and v is not None}
     payload, dropped = split_reserved_keys(extra)
     dropped = tuple(key for key in dropped if key != "doc_id")
     for col in PAYLOAD_COLUMNS:
@@ -162,7 +181,8 @@ def manifest_row_to_vault_row(rec: Mapping, default_corpus: str) -> dict:
 
     The vault's split (``ingestion/ingest.py`` ``parse_line``): the fields of
     :data:`VAULT_KNOWN_FIELDS` are columns (``source_code`` else the legacy
-    ``bank_code``; an empty ``date`` is NULL; an absent ``corpus`` is
+    ``bank_code``; ``document_url`` else the legacy ``pdf_url``, a blank or
+    null one being absent; an empty ``date`` is NULL; an absent ``corpus`` is
     ``default_corpus``), every other field goes to ``extra``. The vault
     refuses a row whose ``corpus`` is not its own; here the row's own
     ``corpus`` is kept.
@@ -174,7 +194,7 @@ def manifest_row_to_vault_row(rec: Mapping, default_corpus: str) -> dict:
         "source_code": rec.get("source_code") or rec.get("bank_code"),
         "doc_type": rec.get("doc_type"),
         "title": rec.get("title"),
-        "pdf_url": rec.get("pdf_url"),
+        "document_url": rec.get("document_url") or rec.get("pdf_url"),
         "source_url": rec.get("source_url"),
         "date": _as_date_column(rec.get("date")),
         "year": _as_year_column(rec.get("year")),

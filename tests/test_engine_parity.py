@@ -14,9 +14,17 @@ of the engine (no row of the fixture states a precision: a day), and nothing
 else. Every other key, value, position, id and vector must still be the
 captured one.
 
+Since the 2026-11 rename the vault column ``pdf_url`` is ``document_url``, and
+the payload carries the address under that name. :func:`_renamed` renames the
+captured key and nothing else: the value is the captured one; the key sits
+where the column puts it (after the other columns, before the keys the engine
+writes), because the captured value came from ``extra`` (see below), where the
+old name is now left out (the column wins). :func:`_expected` is the captured
+payload through both translations.
+
 Never adapt the fixture to make this pass. The one translation of the
 captured rows, :func:`_vault_row` (``pdf_url`` moved from ``extra`` to its
-column), is not an adaptation of the expected points: the captured row with
+column, today ``document_url``), is not an adaptation of the expected points: the captured row with
 ``pdf_url`` in ``extra`` is synthetic, the vault cannot produce it
 (``pdf_url`` is one of its columns, ``ingestion/ingest.py`` ``KNOWN_FIELDS``),
 so today's selection of the same document carries the value in the column.
@@ -77,25 +85,66 @@ def test_v2_adds_exactly_the_two_derived_keys_to_dated_points_only():
     assert sum(1 for keys in added.values() if keys) == 5  # one fixture row is undated
 
 
+#: The captured payload key renamed in 2026-11: {captured name: name today}.
+RENAMED_KEYS = {"pdf_url": "document_url"}
+#: The first key the engine writes after the metadata (``build_payload``): a
+#: renamed key goes right before it, the place of its column.
+FIRST_ENGINE_KEY = "filename"
+
+
+def _renamed(payload):
+    """The captured payload with ``pdf_url`` named ``document_url``: same value,
+    at its column's place (the last metadata key); nothing else changes."""
+    moved = {RENAMED_KEYS[k]: v for k, v in payload.items() if k in RENAMED_KEYS}
+    out = {}
+    for key, value in payload.items():
+        if key == FIRST_ENGINE_KEY:
+            out.update(moved)
+        if key not in RENAMED_KEYS:
+            out[key] = value
+    return out
+
+
+def _expected(payload):
+    """A captured point's payload as today's pipeline writes it: renamed, then v2."""
+    return _v2(_renamed(payload))
+
+
+def test_renamed_changes_only_the_name_of_pdf_url():
+    for doc in DOCUMENTS:
+        for point in doc["points"]:
+            captured, today = point["payload"], _renamed(point["payload"])
+            assert len(today) == len(captured)
+            assert {RENAMED_KEYS.get(k, k): v for k, v in captured.items()} == today
+            if "pdf_url" in captured:
+                keys = list(today)
+                assert keys[keys.index("document_url") + 1] == FIRST_ENGINE_KEY
+    assert sum(1 for d in DOCUMENTS if "pdf_url" in d["points"][0]["payload"]) == 1
+
+
 #: The columns the selection reads since the fixture was captured: the captured
-#: rows do not carry them.
-LINK_COLUMNS = ("pdf_url", "source_url", "mime_type")
+#: rows do not carry them (``document_url`` was ``pdf_url`` until 2026-11).
+LINK_COLUMNS = ("document_url", "source_url", "mime_type")
 
 
 def _vault_row(row):
     """The row as the vault hands it over: ``date`` a date, ``sha256`` of the file.
 
-    Since the fixture was captured the selection also reads ``pdf_url``,
-    ``source_url`` and ``mime_type`` (columns win over ``extra``, a NULL one
-    removes the same key of ``extra``). The captured rows have none of these
-    columns, and one of them holds ``pdf_url`` in ``extra``, where the vault
-    never puts it (``pdf_url`` is one of its columns): the row of today's
-    selection carries that value in the column. The expected points are the
-    captured ones, unchanged."""
+    Since the fixture was captured the selection also reads ``document_url``
+    (``pdf_url`` until 2026-11), ``source_url`` and ``mime_type`` (columns win
+    over ``extra``, a NULL one removes the same key of ``extra``). The captured
+    rows have none of these columns, and one of them holds ``pdf_url`` in
+    ``extra``, where the vault never puts it (it is a name of the column): the
+    row of today's selection carries that value in the ``document_url``
+    column. The expected points are the captured ones, renamed only
+    (:func:`_expected`)."""
     out = dict(row)
-    for col in LINK_COLUMNS:
+    extra = row.get("extra") or {}
+    for col in LINK_COLUMNS + tuple(RENAMED_KEYS):
         assert col not in out  # the captured row: the translation below is the whole change
-        out[col] = (row.get("extra") or {}).get(col)
+    for col in LINK_COLUMNS:
+        old = {v: k for k, v in RENAMED_KEYS.items()}.get(col, col)
+        out[col] = extra.get(old)
     if out.get("date"):
         out["date"] = datetime.date.fromisoformat(out["date"])
     path = FIXTURE / "corpus" / row["local_path"].strip()[len("data/"):]
@@ -134,13 +183,13 @@ def test_ingest_item_writes_the_points_of_the_previous_pipeline(document, monkey
     assert written == document["written"] == len(expected)
     assert [p.id for p in client.written] == [p["id"] for p in expected]
     for got, want in zip(client.written, expected):
-        payload, want_payload = dict(got.payload), _v2(want["payload"])
+        payload, want_payload = dict(got.payload), _expected(want["payload"])
         # The one value that is the time of the run.
         date, want_date = payload.pop("ingestion_date"), want_payload.pop("ingestion_date")
         datetime.datetime.fromisoformat(date)
         datetime.datetime.fromisoformat(want_date)
         assert payload == want_payload
-        assert set(got.payload) == set(_v2(want["payload"]))
+        assert set(got.payload) == set(_expected(want["payload"]))
         assert got.vector == want["vector"]
     assert len({p.payload["ingestion_date"] for p in client.written}) == 1
 
@@ -152,7 +201,7 @@ def test_ingest_item_writes_the_points_of_the_previous_pipeline(document, monkey
     for want in expected:
         got = by_id[want["id"]]
         assert {k: v for k, v in got.payload.items() if k != "ingestion_date"} == {
-            k: v for k, v in _v2(want["payload"]).items() if k != "ingestion_date"}
+            k: v for k, v in _expected(want["payload"]).items() if k != "ingestion_date"}
         assert got.vector == pytest.approx(want["vector"], abs=1e-6)
 
 
@@ -163,7 +212,7 @@ def test_payload_keys_keep_their_order_unless_a_reserved_key_was_dropped(documen
     itself is the exception: the previous pipeline overwrote them in place, the
     source now leaves them out (same keys, same values, another position)."""
     item, _written, client = _ingest(document, monkeypatch)
-    same_order = all(list(got.payload) == list(_v2(want["payload"]))
+    same_order = all(list(got.payload) == list(_expected(want["payload"]))
                      for got, want in zip(client.written, document["points"]))
     assert same_order == (not item.dropped_keys)
 
@@ -189,7 +238,7 @@ def test_a_precision_and_a_kind_from_the_extra_add_only_themselves_and_their_int
     assert [p.id for p in client.written] == [p["id"] for p in document["points"]]
     for got, want in zip(client.written, document["points"]):
         assert got.vector == want["vector"]
-        want_payload = dict(want["payload"])
+        want_payload = _renamed(want["payload"])
         payload = dict(got.payload)
         payload.pop("ingestion_date"), want_payload.pop("ingestion_date")
         assert payload.pop("date_precision") == "month"

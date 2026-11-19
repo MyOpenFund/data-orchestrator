@@ -49,7 +49,7 @@ def _row(**over):
         "doc_id": "d1", "corpus": "central-bank", "source_code": "us",
         "doc_type": "C1", "title": "Speech", "date": date(2015, 1, 13),
         "year": 2015, "language": "en", "sha256": "ff", "provenance": "bis",
-        "pdf_url": "https://example.org/d1.pdf", "source_url": "https://example.org/d1",
+        "document_url": "https://example.org/d1.pdf", "source_url": "https://example.org/d1",
         "mime_type": "application/pdf",
         "local_path": "data/raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
     }
@@ -340,21 +340,23 @@ def test_an_undated_vault_row_gets_no_interval(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Links (F7): pdf_url, source_url and mime_type are selected and reach the
+# Links (F7): document_url, source_url and mime_type are selected and reach the
 # payload; the keys of ``extra`` dropped by design never do.
 # ---------------------------------------------------------------------------
 def test_the_selection_reads_the_link_columns():
     sql, _ = build_selection_sql("central-bank", "c")
-    for col in ("pdf_url", "source_url", "mime_type"):
+    for col in ("document_url", "source_url", "mime_type"):
         assert col in _SELECT_COLUMNS
         assert f"d.{col}" in sql
+    assert "pdf_url" not in sql
 
 
 def test_the_link_columns_reach_the_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    item = row_to_item(_row(pdf_url="https://x.org/a.pdf", source_url="https://x.org/a",
+    item = row_to_item(_row(document_url="https://x.org/a.pdf", source_url="https://x.org/a",
                             mime_type="application/pdf"), "central-bank")
-    assert item.payload["pdf_url"] == "https://x.org/a.pdf"
+    assert item.payload["document_url"] == "https://x.org/a.pdf"
+    assert "pdf_url" not in item.payload
     assert item.payload["source_url"] == "https://x.org/a"
     assert item.payload["mime_type"] == "application/pdf"
 
@@ -363,19 +365,75 @@ def test_null_link_columns_are_absent_and_remove_the_same_key_of_extra(monkeypat
     """NULL column -> key absent, even when ``extra`` holds that column's name
     (the column wins, as for every other column)."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    item = row_to_item(_row(pdf_url=None, source_url=None, mime_type=None,
-                            extra={"pdf_url": "https://stale.org/x.pdf", "source_url": "s"}),
+    item = row_to_item(_row(document_url=None, source_url=None, mime_type=None,
+                            extra={"document_url": "https://stale.org/x.pdf",
+                                   "pdf_url": "https://stale.org/x.pdf", "source_url": "s"}),
                        "central-bank")
-    for col in ("pdf_url", "source_url", "mime_type"):
+    for col in ("document_url", "pdf_url", "source_url", "mime_type"):
         assert col not in item.payload
     assert item.dropped_keys == ()
 
 
 def test_a_link_column_wins_over_extra(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    item = row_to_item(_row(pdf_url="https://col.org/a.pdf",
-                            extra={"pdf_url": "https://extra.org/a.pdf"}), "central-bank")
-    assert item.payload["pdf_url"] == "https://col.org/a.pdf"
+    item = row_to_item(_row(document_url="https://col.org/a.pdf",
+                            extra={"document_url": "https://extra.org/a.pdf"}), "central-bank")
+    assert item.payload["document_url"] == "https://col.org/a.pdf"
+
+
+def test_a_pdf_url_of_extra_never_reaches_the_payload(monkeypatch, tmp_path):
+    """``pdf_url`` is the former name of the ``document_url`` column: the column
+    wins, so the old name is left out of the payload (silently, not counted),
+    whatever ``extra`` holds."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(document_url="https://col.org/a.pdf",
+                            extra={"pdf_url": "https://extra.org/a.pdf", "cik": "1"}),
+                       "central-bank")
+    assert "pdf_url" not in item.payload and item.dropped_keys == ()
+    assert item.payload["document_url"] == "https://col.org/a.pdf"
+    assert item.payload["cik"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Transition (2026-11 rename): the selection reads whichever of document_url
+# and pdf_url the vault has, as document_url.
+# ---------------------------------------------------------------------------
+def test_a_vault_before_the_rename_is_selected_through_pdf_url():
+    sql, _ = build_selection_sql("central-bank", "c", document_url_from="pdf_url")
+    assert "d.pdf_url AS document_url" in sql and "d.document_url" not in sql
+
+
+def test_build_selection_sql_refuses_another_address_column():
+    with pytest.raises(ValueError, match="address"):
+        build_selection_sql("central-bank", "c", document_url_from="html_path")
+
+
+@pytest.mark.parametrize("schema_columns, selected", [
+    (("document_url",), "d.document_url,"),
+    (("pdf_url",), "d.pdf_url AS document_url"),
+    (("pdf_url", "document_url"), "d.document_url,"),
+    ((), "d.document_url,"),  # no documents table found: Postgres names the missing column
+])
+def test_iter_items_reads_the_column_of_the_vault_first(monkeypatch, tmp_path, schema_columns,
+                                                        selected):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS,
+                             schema_columns=schema_columns)
+    (item,) = iter_items(conn, "central-bank", "c")
+    assert "information_schema.columns" in conn.executed[0][0]
+    assert selected in conn.executed[1][0]
+    assert item.payload["document_url"] == "https://example.org/d1.pdf"
+
+
+def test_the_column_is_read_once_per_connection(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS,
+                             schema_columns=("pdf_url",))
+    list(iter_items(conn, "central-bank", "c"))
+    list(iter_items(conn, "central-bank", "c"))
+    reads = [sql for sql, _ in conn.executed if "information_schema" in sql]
+    assert len(reads) == 1
+    assert "d.pdf_url AS document_url" in conn.executed[-1][0]
 
 
 def test_the_keys_dropped_by_design_never_reach_the_payload_and_are_not_counted(
