@@ -33,7 +33,19 @@ jobs:
         run: python tools/check_engine_pin.py
       - name: Versions of the libraries that decide text and vectors
         run: pip freeze | grep -i -E "^(chunknorris|pymupdf|sentence-transformers|torch|transformers|rag-engine|qdrant-client)\b"
+      # The vault's field list is copied in payload.VAULT_KNOWN_FIELDS: check it against
+      # the vault's default branch (tests/test_payload.py, skipped without a checkout). It
+      # tracks that branch on purpose: a vault change to KNOWN_FIELDS turns this CI red until
+      # the copy here follows it, even on an unrelated PR.
+      - name: Vault checkout for the contract test
+        uses: actions/checkout@v4
+        with:
+          repository: MyOpenFund/vault
+          path: _vault
+          persist-credentials: false
       - name: Unit tests
+        env:
+          DATA_ORCHESTRATOR_VAULT_CHECKOUT: ${{ github.workspace }}/_vault
         run: pytest -q
 
   integration:
