@@ -49,6 +49,7 @@ from . import config, policy
 from .core import (
     Ledger, SourceItem, run_ingest, IngestStats, engine_settings, interrupted_stats, source_label,
 )
+from .payload import dropped_extra_keys
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
 from .sources import company_corpus as company_corpus_source
@@ -74,9 +75,9 @@ SYNC_METADATA = "sync-metadata"
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
-# _count_vault_source).
+# _count_vault_source; cb_corpus payloads use the vault's keys).
 COUNT_KEYS = {
-    "cb_corpus": ("bank_code", "doc_type"),
+    "cb_corpus": ("source_code", "doc_type"),
     "company": ("cik", "doc_type"),
 }
 
@@ -103,6 +104,7 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         groups=_csv(args.groups),
         year_min=args.year_min,
         year_max=args.year_max,
+        corpus=args.corpus,
     )
 
 
@@ -550,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
                       help="documents per Qdrant read, one doc_id filter (default: 100)")
     sync.add_argument("--include-title", action="store_true",
                       help="also compare and write title (off by default)")
+    sync.add_argument("--include-links", action="store_true",
+                      help="also compare and write pdf_url, source_url, mime_type, and remove "
+                           "the extra keys dropped by design (DATA_ORCHESTRATOR_PAYLOAD_DROP_"
+                           "EXTRA_KEYS) from the points (off by default)")
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "
                            "(date_start, date_end) and exit; needs a key allowed to write")
@@ -585,6 +591,9 @@ def main(argv: list[str] | None = None) -> int:
 
         _vault.keepalive_options()  # DATA_ORCHESTRATOR_PG_KEEPALIVES_*: exit 2 here, not mid-run
         args.supported_mimes = supported_mime_types()
+        # DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS: every payload is built
+        # with it, so a bad value is refused here, not once per document.
+        dropped_extra_keys()
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -593,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
         ("--write", args.write), ("--doc-ids", args.doc_ids is not None),
         ("--csv", args.csv is not None), ("--page-size", args.page_size is not None),
         ("--doc-batch", args.doc_batch is not None), ("--include-title", args.include_title),
-        ("--create-indexes", args.create_indexes),
+        ("--include-links", args.include_links), ("--create-indexes", args.create_indexes),
     ) if given]
     if args.source != SYNC_METADATA and sync_flags:
         print(f"error: {', '.join(sync_flags)} only apply to sync-metadata", file=sys.stderr)
@@ -887,7 +896,7 @@ def _sync_metadata(args) -> int:
             print(f"error: {flag} must be >= 1", file=sys.stderr)
             return 2
     if args.create_indexes and (args.write or args.doc_ids or args.limit or args.csv
-                                or args.include_title):
+                                or args.include_title or args.include_links):
         print("error: --create-indexes only creates the payload indexes; run it alone",
               file=sys.stderr)
         return 2
@@ -928,7 +937,7 @@ def _sync_metadata(args) -> int:
         return 0
 
     csv_path = Path(args.csv).expanduser() if args.csv else sm.default_csv_path(state_dir(), collection)
-    keys = sm.owned_keys(args.include_title)
+    keys = sm.owned_keys(args.include_title, args.include_links)
     mode = "WRITE: corrections are applied" if args.write else "dry run: nothing is written to Qdrant"
     print(f"→ sync-metadata: collection '{collection}', corpus '{args.corpus}' ({mode})")
     print(f"  keys compared: {', '.join(keys)}")
@@ -964,7 +973,8 @@ def _sync_metadata(args) -> int:
 
         stats = sm.run_sync(
             conn, store, corpus=args.corpus, collection=collection, csv_path=csv_path,
-            write=args.write, include_title=args.include_title, doc_ids=doc_ids,
+            write=args.write, include_title=args.include_title,
+            include_links=args.include_links, doc_ids=doc_ids,
             limit=args.limit,
             page_size=args.page_size or sm.DEFAULT_PAGE_SIZE,
             doc_batch=args.doc_batch or sm.DEFAULT_DOC_BATCH,
@@ -1083,8 +1093,8 @@ def _count_vault_source(args, collection: str) -> int:
     """Count vault-selected documents without any engine work or ledger writes.
 
     Mirrors the cb_corpus ``--count-only`` output format (total + breakdowns),
-    using ``source_code``/``doc_type`` — the vault source's payload columns —
-    in place of cb_corpus's ``bank_code``/``doc_type``. Both source breakdowns
+    by ``source_code``/``doc_type`` — the vault source's payload columns,
+    which cb_corpus payloads use too. Both source breakdowns
     use ``core.source_label`` (a NULL source_code reads as the corpus), the
     label the run report's ``sources[]`` uses; a NULL doc_type reads
     ``unknown``. No Qdrant line: a count never touches Qdrant.

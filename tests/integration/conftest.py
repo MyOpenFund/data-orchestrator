@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS documents (
     source_code TEXT,
     doc_type TEXT,
     title TEXT,
+    pdf_url TEXT,
+    source_url TEXT,
     date DATE,
     year INTEGER,
     language TEXT,

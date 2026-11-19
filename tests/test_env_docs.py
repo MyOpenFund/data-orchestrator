@@ -14,12 +14,13 @@ from tests.conftest import DOTENV_KEYS
 ROOT = Path(__file__).resolve().parents[1]
 
 # Refused by the CLI's own checks (cli.main): the .env file, the log level,
-# the run policy, the supported types, forced OCR without language data.
+# the run policy, the supported types, the extra keys dropped from payloads, forced OCR without language data.
 CLI_REFUSED = (
     "DATA_ORCHESTRATOR_DOTENV",
     "DATA_ORCHESTRATOR_LOG_LEVEL",
     "DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO",
     "DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES",
+    "DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS",
     "QDRANT_PORT",
     "TESSDATA_PREFIX",
 )

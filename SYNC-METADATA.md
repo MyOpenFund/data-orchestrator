@@ -468,6 +468,80 @@ database password and a Qdrant key.
 rm -f ~/data-orchestrator-readonly.env
 ```
 
+## Aligning the links (`--include-links`)
+
+Points ingested before the vault source sent `pdf_url`, `source_url` and
+`mime_type` have none of them, and may carry keys of `extra` that are now
+dropped by design (`html_path`, a path on the producer's machine;
+`alt_urls`, `alt_source_urls`; README, "Qdrant payload"). `--include-links`
+sets the three links from the vault and removes those keys. **It also
+(re)writes the full date set** of every document it writes: the write of a
+document is always the whole set of owned keys (`date`, `year`,
+`date_precision`, `date_kind`, `date_source`, `date_start`, `date_end`, then
+the links and the dropped keys), with the vault's values, even when only a
+link differs. Once the dates are aligned this rewrites the values the points
+already hold; before, it corrects them too. The vectors and every key outside
+the owned ones are untouched.
+
+**The first run touches every ledger document** that has a link or a
+`mime_type` in the vault: no point carries `mime_type` yet (no ingestion has
+sent it), so on production that is every document of the collection, each
+written with its full date set. Expect `documents to write` close to the
+ledger count in the dry run.
+Same procedure and same guarantees as above: dry run first, then `--write`,
+then a second `--write` that finds nothing. It can run on its own once the
+dates are aligned (the date keys then show no difference), on a machine that
+reaches the vault and the production Qdrant.
+
+**Pre-flight, before the production write.** The vault keeps `pdf_url`,
+`source_url` and `mime_type` in their columns, never in `extra`; the write
+sets each of them from the column, so a value found only in `extra` would be
+**removed** from the points (a NULL column removes the key). Check that no
+row holds one, with `psql` on the vault (it reads only):
+
+```sql
+SELECT count(*) FROM documents WHERE extra ?| array['pdf_url','source_url','mime_type'];
+```
+
+Expected: `0`. If it is not 0, **stop**: those keys would be removed from the
+points; bring the rows back to the vault's split first.
+
+The dry run:
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --csv ~/sync-links-dry.csv
+```
+
+What to read in the CSV: `pdf_url` / `source_url` / `mime_type` rows with an
+empty `qdrant_value` (the links the points lack), `html_path` / `alt_urls` /
+`alt_source_urls` rows with an empty `vault_value` (the keys to remove), and
+no date row. A row of another field means the dates are not aligned yet: run
+the date correction first.
+
+```bash
+python -c "
+import csv, collections, sys
+rows = list(csv.DictReader(open(sys.argv[1], encoding='utf-8')))
+print(collections.Counter(r['field'] for r in rows))
+" ~/sync-links-dry.csv
+```
+
+Then, with a key allowed to write, and no ingestion running:
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --write --csv ~/sync-links-write.csv
+```
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --write --csv ~/sync-links-again.csv
+```
+
+Expected of the last one: `documents written  : 0`. Then remove the CSVs:
+
+```bash
+rm -f ~/sync-links-dry.csv ~/sync-links-write.csv ~/sync-links-again.csv
+```
+
 ## Checked before this note was written
 
 On PostgreSQL 16 and Qdrant 1.20.0 (`tests/integration/test_sync_metadata_e2e.py`,

@@ -9,8 +9,12 @@ is either unusable (NULL/blank) or itself supported; a supported mime with a
 foreign or missing extension, or a NULL ``local_path``, is unsupported. The
 candidates it leaves out are counted per source by ``count_unsupported``,
 never silently. Payloads
-are built from the vault's normalized columns merged with the
-corpus-specific ``extra`` fields (columns always win). A key of ``extra`` that
+are built by ``payload.row_to_payload``: the vault's normalized columns
+(``pdf_url``, ``source_url`` and ``mime_type`` included) merged with the
+corpus-specific ``extra`` fields (columns always win), without the keys of
+``extra`` dropped by design (``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS``,
+default ``html_path``, ``alt_urls``, ``alt_source_urls``, ``local_path``;
+left out silently, not counted). A key of ``extra`` that
 the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
 ``text``, ``page``, and the derived ``date_start`` / ``date_end``) is left
 out and counted, never sent: the engine refuses it, and one stray key must not
@@ -24,17 +28,15 @@ from __future__ import annotations
 import logging
 from typing import Iterator, Sequence
 
-from ..core import SourceItem, source_label, split_reserved_keys
+from ..core import SourceItem, source_label
+from ..payload import PAYLOAD_COLUMNS, row_to_payload  # noqa: F401  (row_to_payload: re-exported)
 from ..routing import (
     resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
 )
 
 logger = logging.getLogger(__name__)
 
-_PAYLOAD_COLUMNS = (
-    "doc_id", "corpus", "source_code", "doc_type", "title", "date",
-    "year", "language", "sha256", "provenance",
-)
+_PAYLOAD_COLUMNS = PAYLOAD_COLUMNS
 
 _SELECT_COLUMNS = _PAYLOAD_COLUMNS + ("local_path", "extra")
 
@@ -147,31 +149,6 @@ def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
             key = source_label(code, corpus)
             out[key] = out.get(key, 0) + int(n)
     return out
-
-
-def row_to_payload(row: dict) -> tuple[dict, tuple[str, ...]]:
-    """The metadata a vault row is ingested with, and the keys of ``extra`` left out.
-
-    The one rule for both ingestion (:func:`row_to_item`) and
-    ``sync-metadata``, which compares this metadata with what Qdrant holds:
-    ``extra`` first, without the keys the engine writes or derives itself
-    (``core.split_reserved_keys``), then the vault's columns, which always
-    win; a NULL column is left out (and removes the same key of ``extra``);
-    a date is written as its ISO string. ``doc_id`` always comes from its
-    column and is never reported as dropped.
-    """
-    # ``extra`` is free-form: the keys the engine writes itself are dropped
-    # (and reported on the item). The columns below are the vault's own and
-    # are never dropped; ``doc_id`` always comes from its column.
-    payload, dropped = split_reserved_keys(row.get("extra") or {})
-    dropped = tuple(key for key in dropped if key != "doc_id")
-    for col in _PAYLOAD_COLUMNS:
-        value = row.get(col)
-        if value is None:
-            payload.pop(col, None)
-            continue
-        payload[col] = value.isoformat() if hasattr(value, "isoformat") else value
-    return payload, dropped
 
 
 def row_to_item(row: dict, corpus: str) -> SourceItem | None:

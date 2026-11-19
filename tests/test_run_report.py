@@ -76,7 +76,7 @@ def test_run_ingest_populates_by_source(tmp_path):
     from data_orchestrator.core import run_ingest
 
     log = []
-    items = [_md_item(tmp_path, doc_id="d1", payload={"bank_code": "us"}),
+    items = [_md_item(tmp_path, doc_id="d1", payload={"source_code": "us"}),
              _md_item(tmp_path, doc_id="d2", payload={"source_code": "ecb"})]
     stats = run_ingest(items, collection="c", ledger=RecordingLedger(log),
                        store=FakeStore(log), embedder=FakeEmbedder())

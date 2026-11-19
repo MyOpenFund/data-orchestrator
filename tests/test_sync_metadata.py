@@ -622,10 +622,11 @@ def test_a_value_of_another_type_is_a_difference(stored, expected):
 
 
 def test_an_explicit_null_in_extra_and_a_missing_key_are_the_same(tmp_path):
-    """Ingestion copies ``"date_kind": null`` from ``extra`` as a stored null;
-    set_payload cannot store one (Qdrant drops a key set to null), and every
-    filter reads a null as a missing key: both count as absent, so neither a
-    point holding the null nor one without the key is reported or written."""
+    """Ingestion leaves ``"date_kind": null`` of ``extra`` out; a point
+    written before it did holds a stored null. set_payload cannot store one
+    (Qdrant drops a key set to null), and every filter reads a null as a
+    missing key: both count as absent, so neither a point holding the null nor
+    one without the key is reported or written."""
     store = make_store()
     seed(store, "with-null", n=1, date="2016-07-13", year=2016, date_kind=None)
     store.client.set_payload(COLLECTION, payload={"date_precision": "day",
@@ -651,3 +652,129 @@ def test_the_payload_schema_is_read_once_per_run(tmp_path, monkeypatch):
     reads.clear()
     run(LedgerConn([]), store, tmp_path, schema=schema)
     assert reads == []
+
+
+# ---------------------------------------------------------------------------
+# --include-links: pdf_url, source_url, mime_type from the vault, and the keys
+# of extra dropped by design removed from the points that still carry them.
+# ---------------------------------------------------------------------------
+LINKS = {"pdf_url": "https://x.org/d.pdf", "source_url": "https://x.org/d",
+         "mime_type": "application/pdf"}
+
+
+def test_the_links_are_owned_only_on_request():
+    assert not set(sm.LINK_KEYS) & set(sm.owned_keys())
+    keys = sm.owned_keys(include_links=True)
+    assert keys[:len(sm.OWNED_KEYS)] == sm.OWNED_KEYS
+    assert set(keys) == set(sm.OWNED_KEYS) | {"pdf_url", "source_url", "mime_type", "html_path",
+                                              "alt_urls", "alt_source_urls", "local_path"}
+    assert len(keys) == len(set(keys))
+
+
+def test_the_owned_dropped_keys_follow_the_setting(monkeypatch):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "html_path,date_kind")
+    keys = sm.owned_keys(include_links=True)
+    assert "html_path" in keys and "alt_urls" not in keys
+    assert keys.count("date_kind") == 1  # an owned date key named again is owned once
+
+
+def test_the_links_write_is_exactly_the_expected_values():
+    row = vault_row("d", extra={"html_path": "/Users/x/d.html", "alt_urls": ["a"],
+                                "date_precision": "day"}, pdf_url=LINKS["pdf_url"],
+                    source_url=None, mime_type="application/pdf")
+    fields = sm.write_fields("d", row, include_links=True)
+    assert fields["pdf_url"] == LINKS["pdf_url"] and fields["mime_type"] == "application/pdf"
+    assert fields["source_url"] is None  # a NULL column removes the key
+    assert all(fields[k] is None for k in ("html_path", "alt_urls", "alt_source_urls",
+                                           "local_path"))
+    keys = sm.owned_keys(include_links=True)
+    assert {k: v for k, v in fields.items() if v is not None} == sm.expected_values("d", row, keys)
+
+
+def test_include_links_sets_the_links_and_removes_html_path_then_finds_nothing(tmp_path):
+    store = make_store()
+    # A point ingested before the links were sent, carrying the producer's path.
+    seed(store, "d", n=2, html_path="/Users/someone/cb/d.html", alt_urls=["https://alt"],
+         date_precision="day")
+    store.client.set_payload(COLLECTION, payload={"date_start": "2016-01-01T00:00:00Z",
+                                                  "date_end": "2016-01-01T00:00:00Z"},
+                             points=[point_id("d", c, c) for c in range(2)], wait=True)
+    row = vault_row("d", extra={"date_precision": "day", "html_path": "/Users/someone/cb/d.html",
+                                "alt_urls": ["https://alt"]}, **LINKS)
+    conn = LedgerConn([row])
+    before = snapshot(store)
+
+    # Without the flag: nothing to do (the date keys already agree).
+    stats, rows = run(conn, store, tmp_path)
+    assert stats.to_write == 0 and rows == []
+
+    stats, rows = run(conn, store, tmp_path, include_links=True, csv_name="dry.csv")
+    assert snapshot(store) == before  # a dry run writes nothing
+    assert {r["field"]: (r["qdrant_value"], r["vault_value"]) for r in rows} == {
+        "pdf_url": ("", LINKS["pdf_url"]),
+        "source_url": ("", LINKS["source_url"]),
+        "mime_type": ("", "application/pdf"),
+        "html_path": ("/Users/someone/cb/d.html", ""),
+        "alt_urls": ('["https://alt"]', ""),
+    }
+    assert stats.fields["html_path"] == 1
+
+    stats, _ = run(conn, store, tmp_path, include_links=True, write=True, csv_name="w.csv")
+    assert stats.written == 1 and stats.points_written == 2
+    after = snapshot(store)
+    for pid, (payload, vector) in after.items():
+        assert vector == before[pid][1]
+        assert "html_path" not in payload and "alt_urls" not in payload
+        assert {k: payload[k] for k in LINKS} == LINKS
+        old = before[pid][0]
+        changed = {k for k in set(payload) | set(old) if payload.get(k) != old.get(k)}
+        assert changed == {"pdf_url", "source_url", "mime_type", "html_path", "alt_urls"}
+
+    again, rows = run(conn, store, tmp_path, include_links=True, write=True, csv_name="a.csv")
+    assert again.to_write == 0 and again.written == 0 and rows == []
+    assert snapshot(store) == after
+
+
+def test_include_links_removes_a_link_the_vault_no_longer_has(tmp_path):
+    store = make_store()
+    seed(store, "d", n=1, pdf_url="https://old.org/d.pdf")
+    row = vault_row("d", date=datetime.date(2016, 1, 1), pdf_url=None)
+    run(LedgerConn([row]), store, tmp_path, include_links=True, write=True)
+    assert all("pdf_url" not in p for p, _ in snapshot(store).values())
+
+
+def test_cli_include_links(cli_env, tmp_path, capsys):
+    store, conn = cli_env
+    seed(store, "gb-1", html_path="/x.html")
+    conn.ledger = [vault_row("gb-1", extra={"html_path": "/x.html"}, **LINKS)]
+    out_csv = tmp_path / "l.csv"
+    rc = cli.main(["sync-metadata", "--collection", COLLECTION, "--include-links",
+                   "--csv", str(out_csv)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "pdf_url, source_url, mime_type, html_path" in out
+    with out_csv.open(encoding="utf-8") as fh:
+        fields = {r["field"] for r in csv.DictReader(fh)}
+    assert {"pdf_url", "source_url", "mime_type", "html_path"} <= fields
+
+
+def test_include_links_is_refused_elsewhere_and_with_create_indexes(cli_env, capsys):
+    assert cli.main(["vault", "--include-links"]) == 2
+    assert "only apply to sync-metadata" in capsys.readouterr().err
+    assert cli.main(["sync-metadata", "--create-indexes", "--include-links"]) == 2
+
+
+def test_include_links_removes_a_blank_link_and_never_writes_one(tmp_path):
+    """2,294 central-bank rows of the vault hold ``source_url = ''``: no link,
+    so the write removes the key and a point carrying ``""`` is corrected."""
+    row = vault_row("d", date=datetime.date(2016, 1, 1), pdf_url="https://x.org/d.pdf",
+                    source_url="", mime_type="  ")
+    fields = sm.write_fields("d", row, include_links=True)
+    assert fields["source_url"] is None and fields["mime_type"] is None
+    keys = sm.owned_keys(include_links=True)
+    assert "source_url" not in sm.expected_values("d", row, keys)
+    store = make_store()
+    seed(store, "d", n=1, source_url="", pdf_url="https://x.org/d.pdf")
+    stats, _ = run(LedgerConn([row]), store, tmp_path, include_links=True, write=True)
+    assert stats.written == 1
+    assert all("source_url" not in p for p, _ in snapshot(store).values())

@@ -14,11 +14,16 @@ The keys it owns (:data:`OWNED_KEYS`): ``date``, ``year``, ``date_precision``,
 ``date_kind``, ``date_source`` (where the date was read: a fresh ingestion
 copies it from ``extra``, so a synced point must carry it too) and the interval the engine derives from the first ones,
 ``date_start`` / ``date_end``. ``title`` only on request
-(:data:`TITLE_KEY`, ``--include-title``). Nothing else is compared or written.
+(:data:`TITLE_KEY`, ``--include-title``). The links only on request
+(``--include-links``): :data:`LINK_KEYS` (``pdf_url``, ``source_url``,
+``mime_type``, set from the vault) and the keys of ``extra`` dropped by
+design (``payload.dropped_extra_keys``, ``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS``:
+an ingestion never sends them, so they must be absent and are removed from the
+points ingested before they were dropped). Nothing else is compared or written.
 
 **The expected values come from the ingestion code path.** The vault row goes
-through ``sources.vault.row_to_payload`` (the metadata ``row_to_item`` hands
-the engine) and then through ``rag_engine.schema.build_payload`` (what the
+through ``payload.row_to_payload`` (the metadata ``sources.vault.row_to_item``
+hands the engine) and then through ``rag_engine.schema.build_payload`` (what the
 engine writes on every point); the owned keys are read from that payload. A
 key absent there (a NULL column, a key not in ``extra``) must be absent from
 the points; a null stored in a point counts as absent (Qdrant drops a key set
@@ -27,7 +32,8 @@ to null, and a filter reads a null as a missing key).
 **The write** is ``date_fields(date, date_precision, year=year)`` plus
 ``date_kind`` and ``date_source`` (``None``, which removes the key, when the
 vault has none) and,
-with ``--include-title``, ``title``; before sending it, it is checked to be
+with ``--include-title``, ``title``, with ``--include-links`` the links and a
+``None`` (a removal) for each key dropped by design; before sending it, it is checked to be
 exactly the expected values (a ``None`` for each absent key).
 
 **Every point is read**, not one per document. rag-engine copies the same
@@ -56,7 +62,8 @@ from qdrant_client import models
 from rag_engine.schema import build_payload, date_fields
 from rag_engine.store import MissingIndexError, QdrantAuthError
 
-from .sources.vault import _PAYLOAD_COLUMNS, row_to_payload
+from .payload import PAYLOAD_COLUMNS as _PAYLOAD_COLUMNS
+from .payload import dropped_extra_keys, row_to_payload
 
 #: The payload keys sync-metadata compares and writes, in report order.
 OWNED_KEYS: tuple[str, ...] = (
@@ -65,6 +72,11 @@ OWNED_KEYS: tuple[str, ...] = (
 
 #: Compared and written only with ``include_title`` (``--include-title``).
 TITLE_KEY = "title"
+
+#: Compared and written only with ``include_links`` (``--include-links``), with
+#: the keys of ``extra`` dropped by design (``payload.dropped_extra_keys``),
+#: which must be absent.
+LINK_KEYS: tuple[str, ...] = ("pdf_url", "source_url", "mime_type")
 
 #: Points read per scroll request (``--page-size``).
 DEFAULT_PAGE_SIZE = 256
@@ -127,8 +139,18 @@ class SyncStats:
 # ---------------------------------------------------------------------------
 # Expected values: the ingestion code path
 # ---------------------------------------------------------------------------
-def owned_keys(include_title: bool = False) -> tuple[str, ...]:
-    return OWNED_KEYS + ((TITLE_KEY,) if include_title else ())
+def owned_keys(include_title: bool = False, include_links: bool = False,
+               drop_keys: Sequence[str] | None = None) -> tuple[str, ...]:
+    """The keys compared and written: :data:`OWNED_KEYS`, then ``title`` on
+    request, then on request :data:`LINK_KEYS` and the keys of ``extra``
+    dropped by design (``drop_keys``; None -> ``payload.dropped_extra_keys``).
+    A key named twice is owned once, at its first place."""
+    keys = OWNED_KEYS + ((TITLE_KEY,) if include_title else ())
+    if include_links:
+        if drop_keys is None:
+            drop_keys = dropped_extra_keys()
+        keys = keys + LINK_KEYS + tuple(drop_keys)
+    return tuple(dict.fromkeys(keys))
 
 
 def expected_values(doc_id: str, row: Mapping, keys: Sequence[str]) -> dict:
@@ -140,10 +162,13 @@ def expected_values(doc_id: str, row: Mapping, keys: Sequence[str]) -> dict:
     return {k: payload[k] for k in keys if payload.get(k) is not None}
 
 
-def write_fields(doc_id: str, row: Mapping, include_title: bool = False) -> dict:
+def write_fields(doc_id: str, row: Mapping, include_title: bool = False,
+                 include_links: bool = False) -> dict:
     """What ``set_payload`` is given for ``row``: ``date_fields`` with ``year``,
     ``date_kind`` and ``date_source`` (``None`` removes them) and, on request,
-    ``title``.
+    ``title``; with ``include_links``, ``pdf_url``, ``source_url``,
+    ``mime_type`` (``None`` removes them) and ``None`` for each key of
+    ``extra`` dropped by design (which removes it).
 
     Raises :class:`SyncError` if, once the ``None`` values are left out, it is
     not exactly :func:`expected_values`: the write must give the points the
@@ -156,8 +181,12 @@ def write_fields(doc_id: str, row: Mapping, include_title: bool = False) -> dict
     fields["date_source"] = metadata.get("date_source")
     if include_title:
         fields[TITLE_KEY] = metadata.get(TITLE_KEY)
+    if include_links:
+        for key in owned_keys(include_title, include_links):
+            if key not in fields:  # LINK_KEYS, then the dropped keys (absent: None)
+                fields[key] = metadata.get(key)
     written = {k: v for k, v in fields.items() if v is not None}
-    expected = expected_values(doc_id, row, owned_keys(include_title))
+    expected = expected_values(doc_id, row, owned_keys(include_title, include_links))
     if written != expected:
         raise SyncError(
             f"document {doc_id!r}: the write {written!r} is not what an ingestion writes "
@@ -318,6 +347,7 @@ def run_sync(
     csv_path: Path,
     write: bool = False,
     include_title: bool = False,
+    include_links: bool = False,
     doc_ids: Sequence[str] | None = None,
     limit: int | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
@@ -348,7 +378,7 @@ def run_sync(
     for name, value in (("page_size", page_size), ("doc_batch", doc_batch)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{name} must be an integer >= 1, got {value!r}")
-    keys = owned_keys(include_title)
+    keys = owned_keys(include_title, include_links)
     stats = SyncStats()
 
     from rag_engine.schema import PAYLOAD_INDEXES
@@ -371,7 +401,8 @@ def run_sync(
             points = read_points(store, collection, ids, keys, page_size=page_size)
             for row in batch:
                 out = _one(row, points.get(row["ledger_doc_id"], []), keys, stats, store,
-                           collection, write=write, include_title=include_title, guard=guard)
+                           collection, write=write, include_title=include_title,
+                           include_links=include_links, guard=guard)
                 for rec in out:
                     writer.writerow(rec)
                 stats.csv_rows += len(out)
@@ -382,7 +413,7 @@ def run_sync(
 
 
 def _one(row, points, keys, stats: SyncStats, store, collection, *, write, include_title,
-         guard=None):
+         include_links=False, guard=None):
     doc_id = row["ledger_doc_id"]
     stats.documents += 1
     stats.seen_ids.add(doc_id)
@@ -408,7 +439,7 @@ def _one(row, points, keys, stats: SyncStats, store, collection, *, write, inclu
         stats.disagreeing.append(doc_id)
     if not diffs:
         return []
-    fields = write_fields(doc_id, vault_row, include_title)  # checked before any write
+    fields = write_fields(doc_id, vault_row, include_title, include_links)  # checked first
     stats.to_write += 1
     for key, _got, _want in diffs:
         stats.fields[key] = stats.fields.get(key, 0) + 1
