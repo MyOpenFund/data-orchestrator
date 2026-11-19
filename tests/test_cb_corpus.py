@@ -109,15 +109,25 @@ def test_manifest_hit_carries_the_exact_date(tmp_path):
     manifest so the point-in-time layer can trust the date."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
     _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "A speech",'
-                          ' "pdf_url": "https://example.org/a.pdf", "sha256": "ab12",'
+                          ' "document_url": "https://example.org/a.pdf", "sha256": "ab12",'
                           ' "provenance": "bis"}')
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
     assert item.payload["date"] == "2015-06-30"
     assert item.payload["title"] == "A speech"
-    assert item.payload["pdf_url"] == "https://example.org/a.pdf"
+    assert item.payload["document_url"] == "https://example.org/a.pdf"
     assert item.payload["sha256"] == "ab12"
     assert item.payload["provenance"] == "bis"
+
+
+def test_a_manifest_row_not_migrated_yet_gives_document_url(tmp_path):
+    """A manifest row written before the rename names the address ``pdf_url``:
+    the payload carries it as ``document_url``, never under the old name."""
+    root = _corpus(tmp_path, "us/C1/2015/a.pdf")
+    _manifest(root, "us", '{"doc_id": "a", "pdf_url": "https://example.org/a.pdf"}')
+    (item,) = iter_items(root)
+    assert item.payload["document_url"] == "https://example.org/a.pdf"
+    assert "pdf_url" not in item.payload
 
 
 def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
@@ -305,13 +315,14 @@ def test_a_manifest_row_with_unknown_dropped_and_reserved_keys(tmp_path):
     assert item.dropped_keys == ("text",)
 
 
-# Manifest rows, adversarial on purpose: a legacy bank_code, NULL columns, an
+# Manifest rows, adversarial on purpose: a legacy bank_code, a legacy pdf_url
+# (a row not migrated to document_url yet, one with both names), NULL columns, an
 # extra-bound key named like a payload key that the vault keeps as a column,
 # keys dropped by design next to a reserved key, unknown keys, a date with a
 # time, a year as a string.
 PARITY_ROWS = [
     {"doc_id": "a", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
-     "title": "A speech", "pdf_url": "https://x.org/a.pdf", "source_url": "https://x.org/a",
+     "title": "A speech", "document_url": "https://x.org/a.pdf", "source_url": "https://x.org/a",
      "date": "2015-06-30", "year": 2015, "language": "en", "provenance": "bis",
      "mime_type": "application/pdf", "sha256": "ab12", "local_path": "data/raw/us/C1/2015/a.pdf",
      "date_precision": "day", "date_kind": "publication", "date_source": "title"},
@@ -322,7 +333,9 @@ PARITY_ROWS = [
     {"doc_id": "c", "source_code": "", "bank_code": "us", "doc_type": "C1",
      "date": "2015-03-01T09:00:00Z", "year": 2015, "date_precision": "month",
      "local_path": "data/raw/us/C1/2015/c.pdf", "provenance": None, "flag": False,
-     "source_url": "", "mime_type": "  ", "date_kind": None},
+     "source_url": "", "mime_type": "  ", "date_kind": None, "pdf_url": "https://x.org/c.pdf"},
+    {"doc_id": "d", "source_code": "us", "doc_type": "C1", "date": "2015-04-01",
+     "document_url": "", "pdf_url": "https://x.org/d.pdf"},
 ]
 
 
@@ -331,16 +344,17 @@ def _vault_row_by_hand(rec):
     independently of ``payload.manifest_row_to_vault_row``: the columns of the
     vault's KNOWN_FIELDS, ``date`` a ``datetime.date``, ``year`` an integer, the
     other fields in ``extra`` after a JSON round trip (JSONB)."""
-    known = {"doc_id", "corpus", "source_code", "bank_code", "doc_type", "title", "pdf_url",
-             "source_url", "date", "year", "language", "provenance", "mime_type", "sha256",
-             "local_path"}
+    known = {"doc_id", "corpus", "source_code", "bank_code", "doc_type", "title",
+             "document_url", "pdf_url", "source_url", "date", "year", "language", "provenance",
+             "mime_type", "sha256", "local_path"}
     date = rec.get("date") or None
     extra = {k: v for k, v in rec.items() if k not in known}
     return {
         "doc_id": rec["doc_id"], "corpus": rec.get("corpus") or "central-bank",
         "source_code": rec.get("source_code") or rec.get("bank_code"),
         "doc_type": rec.get("doc_type"), "title": rec.get("title"),
-        "pdf_url": rec.get("pdf_url"), "source_url": rec.get("source_url"),
+        "document_url": rec.get("document_url") or rec.get("pdf_url"),
+        "source_url": rec.get("source_url"),
         "date": datetime.date.fromisoformat(date[:10]) if date else None,
         "year": int(rec["year"]) if rec.get("year") is not None else None,
         "language": rec.get("language"), "provenance": rec.get("provenance"),
@@ -369,3 +383,7 @@ def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypa
         assert disk[rec["doc_id"]].dropped_keys == vault.dropped_keys
     # A blank link and a null field are left out, whichever the source.
     assert not {"source_url", "mime_type", "date_kind"} & set(disk["c"].payload)
+    # The legacy pdf_url of a row not migrated yet is carried as document_url.
+    assert disk["c"].payload["document_url"] == "https://x.org/c.pdf"
+    assert disk["d"].payload["document_url"] == "https://x.org/d.pdf"
+    assert not any("pdf_url" in i.payload for i in disk.values())

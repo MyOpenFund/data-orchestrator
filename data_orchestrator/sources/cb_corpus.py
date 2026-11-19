@@ -28,7 +28,8 @@ source's rules (columns win over ``extra``, absent/null fields left out, the
 keys of ``extra`` dropped by design left out silently, the keys the engine
 writes itself left out and counted). The keys are the vault's: ``corpus``,
 ``source_code``, ``doc_type``, ``title``, ``date``, ``year``, ``language``,
-``sha256``, ``provenance``, ``pdf_url``, ``source_url``, ``mime_type`` and the
+``sha256``, ``provenance``, ``document_url`` (from the row's ``document_url``, or
+``pdf_url``, its former name), ``source_url``, ``mime_type`` and the
 other fields of the row (``date_precision``, ``date_kind``, ...), plus
 ``metadata_source="manifest"``.
 

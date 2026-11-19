@@ -15,11 +15,19 @@ The keys it owns (:data:`OWNED_KEYS`): ``date``, ``year``, ``date_precision``,
 copies it from ``extra``, so a synced point must carry it too) and the interval the engine derives from the first ones,
 ``date_start`` / ``date_end``. ``title`` only on request
 (:data:`TITLE_KEY`, ``--include-title``). The links only on request
-(``--include-links``): :data:`LINK_KEYS` (``pdf_url``, ``source_url``,
-``mime_type``, set from the vault) and the keys of ``extra`` dropped by
+(``--include-links``): :data:`LINK_KEYS` (``document_url``, ``source_url``,
+``mime_type``, set from the vault), :data:`LEGACY_LINK_KEYS` (``pdf_url``, the
+former name of ``document_url``: an ingestion never sends it, so it must be
+absent and is removed from the points ingested before the rename; one run
+renames the key on every point) and the keys of ``extra`` dropped by
 design (``payload.dropped_extra_keys``, ``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS``:
 an ingestion never sends them, so they must be absent and are removed from the
 points ingested before they were dropped). Nothing else is compared or written.
+
+The vault's column of the document's address is ``document_url``, or
+``pdf_url`` on a vault that has not run the 2026-11 rename yet: it is read once
+per connection (``vault.document_url_column``) and selected as
+``document_url`` (transition only).
 
 **The expected values come from the ingestion code path.** The vault row goes
 through ``payload.row_to_payload`` (the metadata ``sources.vault.row_to_item``
@@ -64,6 +72,7 @@ from rag_engine.store import MissingIndexError, QdrantAuthError
 
 from .payload import PAYLOAD_COLUMNS as _PAYLOAD_COLUMNS
 from .payload import dropped_extra_keys, row_to_payload
+from .vault import document_url_column, document_url_select
 
 #: The payload keys sync-metadata compares and writes, in report order.
 OWNED_KEYS: tuple[str, ...] = (
@@ -74,9 +83,15 @@ OWNED_KEYS: tuple[str, ...] = (
 TITLE_KEY = "title"
 
 #: Compared and written only with ``include_links`` (``--include-links``), with
-#: the keys of ``extra`` dropped by design (``payload.dropped_extra_keys``),
-#: which must be absent.
-LINK_KEYS: tuple[str, ...] = ("pdf_url", "source_url", "mime_type")
+#: :data:`LEGACY_LINK_KEYS` and the keys of ``extra`` dropped by design
+#: (``payload.dropped_extra_keys``), which must be absent.
+LINK_KEYS: tuple[str, ...] = ("document_url", "source_url", "mime_type")
+
+#: Former names of :data:`LINK_KEYS` (``pdf_url``, now ``document_url``):
+#: owned with ``include_links`` and expected absent (``payload.row_to_payload``
+#: never carries them), so a ``--write`` removes them from the points while it
+#: sets the new name. Transition only: to remove once no point carries one.
+LEGACY_LINK_KEYS: tuple[str, ...] = ("pdf_url",)
 
 #: Points read per scroll request (``--page-size``).
 DEFAULT_PAGE_SIZE = 256
@@ -97,9 +112,12 @@ ACTIONS = (UNCHANGED, UPDATED, UNDATED, MISSING_IN_QDRANT, MISSING_IN_VAULT)
 #: document disagree, ``qdrant_value`` is the JSON list of their values.
 CSV_COLUMNS = ("doc_id", "action", "field", "qdrant_value", "vault_value", "note")
 
+#: ``{document_url}``: the select-list entry of the document's address
+#: (``vault.document_url_select``), ``{doc_ids}`` / ``{limit}``: the filters.
 LEDGER_SQL = (
     "SELECT r.doc_id AS ledger_doc_id, d.doc_id AS vault_doc_id, d.deleted_at, "
-    + ", ".join(f"d.{c}" for c in _PAYLOAD_COLUMNS if c != "doc_id")
+    + ", ".join("{document_url}" if c == "document_url" else f"d.{c}"
+                for c in _PAYLOAD_COLUMNS if c != "doc_id")
     + ", d.extra\n"
     "FROM rag_ingestions r\n"
     "LEFT JOIN documents d ON d.doc_id = r.doc_id\n"
@@ -142,14 +160,15 @@ class SyncStats:
 def owned_keys(include_title: bool = False, include_links: bool = False,
                drop_keys: Sequence[str] | None = None) -> tuple[str, ...]:
     """The keys compared and written: :data:`OWNED_KEYS`, then ``title`` on
-    request, then on request :data:`LINK_KEYS` and the keys of ``extra``
-    dropped by design (``drop_keys``; None -> ``payload.dropped_extra_keys``).
+    request, then on request :data:`LINK_KEYS`, :data:`LEGACY_LINK_KEYS` and
+    the keys of ``extra`` dropped by design (``drop_keys``; None ->
+    ``payload.dropped_extra_keys``).
     A key named twice is owned once, at its first place."""
     keys = OWNED_KEYS + ((TITLE_KEY,) if include_title else ())
     if include_links:
         if drop_keys is None:
             drop_keys = dropped_extra_keys()
-        keys = keys + LINK_KEYS + tuple(drop_keys)
+        keys = keys + LINK_KEYS + LEGACY_LINK_KEYS + tuple(drop_keys)
     return tuple(dict.fromkeys(keys))
 
 
@@ -166,9 +185,10 @@ def write_fields(doc_id: str, row: Mapping, include_title: bool = False,
                  include_links: bool = False) -> dict:
     """What ``set_payload`` is given for ``row``: ``date_fields`` with ``year``,
     ``date_kind`` and ``date_source`` (``None`` removes them) and, on request,
-    ``title``; with ``include_links``, ``pdf_url``, ``source_url``,
-    ``mime_type`` (``None`` removes them) and ``None`` for each key of
-    ``extra`` dropped by design (which removes it).
+    ``title``; with ``include_links``, ``document_url``, ``source_url``,
+    ``mime_type`` (``None`` removes them) and ``None`` for ``pdf_url`` (the
+    former name of ``document_url``) and for each key of ``extra`` dropped by
+    design (which removes it).
 
     Raises :class:`SyncError` if, once the ``None`` values are left out, it is
     not exactly :func:`expected_values`: the write must give the points the
@@ -183,7 +203,7 @@ def write_fields(doc_id: str, row: Mapping, include_title: bool = False,
         fields[TITLE_KEY] = metadata.get(TITLE_KEY)
     if include_links:
         for key in owned_keys(include_title, include_links):
-            if key not in fields:  # LINK_KEYS, then the dropped keys (absent: None)
+            if key not in fields:  # LINK_KEYS, LEGACY_LINK_KEYS, the dropped keys (absent: None)
                 fields[key] = metadata.get(key)
     written = {k: v for k, v in fields.items() if v is not None}
     expected = expected_values(doc_id, row, owned_keys(include_title, include_links))
@@ -206,7 +226,9 @@ def point_values(payload: Mapping | None, keys: Sequence[str]) -> dict:
 def ledger_rows(conn, corpus: str, collection: str, *, doc_ids: Sequence[str] | None = None,
                 limit: int | None = None) -> list[dict]:
     """The documents ``rag_ingestions`` records for ``collection`` and ``corpus``,
-    with their vault row (all ``None`` when the row is gone), in ``doc_id`` order."""
+    with their vault row (all ``None`` when the row is gone), in ``doc_id`` order.
+    The document's address is read from ``vault.document_url_column`` (``pdf_url``
+    on a vault before the rename) and always named ``document_url``."""
     params: dict = {"collection": collection, "corpus": corpus}
     doc_filter = ""
     if doc_ids:
@@ -216,7 +238,8 @@ def ledger_rows(conn, corpus: str, collection: str, *, doc_ids: Sequence[str] | 
     if limit is not None:
         limit_sql = "\nLIMIT %(limit)s"
         params["limit"] = int(limit)
-    sql = LEDGER_SQL.format(doc_ids=doc_filter, limit=limit_sql)
+    sql = LEDGER_SQL.format(document_url=document_url_select(document_url_column(conn)),
+                            doc_ids=doc_filter, limit=limit_sql)
     with conn.cursor() as cur:
         cur.execute(sql, params)
         columns = [d[0] for d in cur.description]

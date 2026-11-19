@@ -31,7 +31,8 @@ def test_the_setting_is_read_from_the_environment(monkeypatch, raw, expected):
     (",", "lists no key"),
     (" , ,", "lists no key"),
     ("html_path,title", "title cannot be dropped"),
-    ("pdf_url", "pdf_url cannot be dropped"),
+    ("document_url", "document_url cannot be dropped"),
+    ("pdf_url", "pdf_url cannot be dropped"),  # the former name: already left out
     ("text,page", "text, page cannot be dropped"),
     ("date_start", "date_start cannot be dropped"),
 ])
@@ -46,16 +47,44 @@ def test_the_setting_refuses_what_it_cannot_drop(monkeypatch, raw, match):
 # ---------------------------------------------------------------------------
 def test_a_manifest_row_is_split_into_the_vault_s_columns_and_extra():
     rec = {"doc_id": "a", "bank_code": "us", "doc_type": "C1", "title": "T",
-           "pdf_url": "https://x/a.pdf", "date": "2015-06-30", "year": "2015",
+           "document_url": "https://x/a.pdf", "date": "2015-06-30", "year": "2015",
            "local_path": "data/raw/us/C1/2015/a.pdf", "date_precision": "day",
            "html_path": "/Users/x/a.html", "unknown_key": {"nested": [1, 2]}}
     row = pl.manifest_row_to_vault_row(rec, "central-bank")
     assert row["corpus"] == "central-bank" and row["source_code"] == "us"
     assert row["year"] == 2015 and row["date"] == "2015-06-30"
     assert row["local_path"] == "data/raw/us/C1/2015/a.pdf"
+    assert row["document_url"] == "https://x/a.pdf"
     assert row["source_url"] is None and row["mime_type"] is None
     assert row["extra"] == {"date_precision": "day", "html_path": "/Users/x/a.html",
                             "unknown_key": {"nested": [1, 2]}}
+
+
+@pytest.mark.parametrize("rec,expected", [
+    ({"document_url": "https://new"}, "https://new"),
+    ({"pdf_url": "https://old"}, "https://old"),  # a manifest row not migrated yet
+    ({"document_url": "https://new", "pdf_url": "https://old"}, "https://new"),
+    ({"document_url": "", "pdf_url": "https://old"}, "https://old"),
+    ({"document_url": None, "pdf_url": "https://old"}, "https://old"),
+    ({}, None),
+])
+def test_document_url_wins_over_the_legacy_pdf_url_and_an_empty_one_does_not(rec, expected):
+    row = pl.manifest_row_to_vault_row(rec, "c")
+    assert row["document_url"] == expected
+    assert "pdf_url" not in row and row["extra"] is None  # the old name is no extra field
+
+
+def test_a_legacy_manifest_row_gives_the_payload_document_url():
+    payload, _ = pl.manifest_row_to_payload({"doc_id": "a", "pdf_url": "https://x/a.pdf"},
+                                            "central-bank")
+    assert payload["document_url"] == "https://x/a.pdf" and "pdf_url" not in payload
+
+
+def test_a_pdf_url_of_extra_is_left_out_of_the_payload_and_not_counted():
+    """``pdf_url`` names the ``document_url`` column (its former name): the
+    column always wins, so the payload never carries the old name."""
+    row = {"doc_id": "a", "document_url": None, "extra": {"pdf_url": "https://stale", "s": 1}}
+    assert pl.row_to_payload(row) == ({"s": 1, "doc_id": "a"}, ())
 
 
 def test_source_code_wins_over_the_legacy_bank_code_and_an_empty_one_does_not():
@@ -95,18 +124,19 @@ def test_a_manifest_payload_applies_the_vault_rules():
 def test_a_blank_link_is_absent_like_a_null_one(blank):
     """The vault stores ``source_url`` as the manifest gives it, and committed
     central-bank manifests give ``""``: an empty or whitespace-only
-    ``pdf_url``, ``source_url`` or ``mime_type`` is no link, so it is left
+    ``document_url``, ``source_url`` or ``mime_type`` is no link, so it is left
     out (and removes the same key of ``extra``, as a NULL column does)."""
-    row = {"doc_id": "a", "corpus": "central-bank", "pdf_url": blank, "source_url": blank,
+    row = {"doc_id": "a", "corpus": "central-bank", "document_url": blank, "source_url": blank,
            "mime_type": blank, "extra": {"source_url": "https://stale"}}
     payload, dropped = pl.row_to_payload(row)
     assert payload == {"doc_id": "a", "corpus": "central-bank"} and dropped == ()
 
 
 def test_a_manifest_row_with_an_empty_source_url_has_no_source_url():
-    rec = {"doc_id": "a", "source_code": "us", "pdf_url": "https://x/a.pdf", "source_url": ""}
+    rec = {"doc_id": "a", "source_code": "us", "document_url": "https://x/a.pdf",
+           "source_url": ""}
     payload, _ = pl.manifest_row_to_payload(rec, "central-bank")
-    assert payload["pdf_url"] == "https://x/a.pdf" and "source_url" not in payload
+    assert payload["document_url"] == "https://x/a.pdf" and "source_url" not in payload
 
 
 def test_a_real_link_is_kept_as_given():
@@ -167,7 +197,9 @@ def test_the_vault_split_copies_the_vault_s_known_fields():
     assert pl.VAULT_KNOWN_FIELDS == known
 
 
-def test_the_vault_row_has_a_column_for_every_known_field_but_the_legacy_one():
+def test_the_vault_row_has_a_column_for_every_known_field_but_the_legacy_ones():
     row = pl.manifest_row_to_vault_row({}, "c")
-    assert set(row) == (pl.VAULT_KNOWN_FIELDS - {"bank_code"}) | {"extra"}
+    assert set(row) == (pl.VAULT_KNOWN_FIELDS - {"bank_code", "pdf_url"}) | {"extra"}
+    assert set(pl.LEGACY_COLUMN_NAMES) <= pl.VAULT_KNOWN_FIELDS
+    assert set(pl.LEGACY_COLUMN_NAMES.values()) <= set(pl.PAYLOAD_COLUMNS)
     assert set(pl.PAYLOAD_COLUMNS) <= pl.VAULT_KNOWN_FIELDS
