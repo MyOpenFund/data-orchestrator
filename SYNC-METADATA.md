@@ -560,7 +560,7 @@ vault's DDL renamed the column therefore gives the same answer as a run after
 it. To remove once every vault has run the rename.
 
 **Production step** (Mac session, after the vault stack runs its DDL train,
-deploy step 4 of the cross-repo spec): the same procedure as above (pre-flight,
+deploy step 6 of the cross-repo spec): the same procedure as above (pre-flight,
 dry run, `--write`, second `--write`), with the CSV names of your choice.
 
 Expected on `central-bank-e5b-v1` as it stood on 2026-11-19 (2,566 ledger

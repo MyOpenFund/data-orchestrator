@@ -62,6 +62,8 @@ ROWS = (
         "title": "Décision de politique monétaire", "date": "2025-10-30", "year": 2025,
         "language": "fr", "provenance": "manifest",
         "local_path": "data/raw/ecb/A1/2025/ecb-a1-2025-10-30-statement.md",
+        # Frozen: reproduces the captured fixture as it was (pdf_url in extra, before the
+        # document_url rename); the parity test maps it, do not "fix" it here.
         "extra": {"doc_group": "A", "pdf_url": "https://example.org/ecb/2025-10-30.html"},
     },
     {
