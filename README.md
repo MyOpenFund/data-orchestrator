@@ -203,7 +203,7 @@ compares it with a split written out by hand in the test;
 `tests/test_payload.py::test_the_vault_split_copies_the_vault_s_known_fields`
 compares `payload.VAULT_KNOWN_FIELDS` with the vault's own `KNOWN_FIELDS`, only
 when a vault checkout is named by `DATA_ORCHESTRATOR_VAULT_CHECKOUT` (skipped
-otherwise, and in CI). The rest of the vault's ingestion (its casts, its
+otherwise; the CI unit job checks out the vault's default branch for it). The rest of the vault's ingestion (its casts, its
 refusals) is not checked against the vault's code.
 A manifest row is split the way the vault splits it on ingestion: its known
 fields (the vault's `KNOWN_FIELDS`: `doc_id`, `corpus`, `source_code` or the

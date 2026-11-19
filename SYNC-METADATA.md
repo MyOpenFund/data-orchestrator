@@ -42,8 +42,8 @@ the number of ingested documents, `undated` 3 (the three Bank of Canada index
 pages). `with_kind` at 0 means the vault has not taken the corrected
 manifests yet: stop here.
 
-Update the checkout and install; the second command brings rag-engine at the
-pinned commit, the third checks it:
+Update the checkout and install, then check that rag-engine is at the pinned
+commit (the third command):
 
 ```bash
 git pull
@@ -55,6 +55,15 @@ pip install -e .
 
 ```bash
 python tools/check_engine_pin.py
+```
+
+`pip install -e .` does **not** move rag-engine to a new pinned commit when its
+version string is unchanged (seen 2026-11-19: it stayed at `fbbe09b` with the pin
+at `6be21ac`). If the check fails, reinstall the engine alone from the pin of
+`pyproject.toml`, then run the check again:
+
+```bash
+pip install --force-reinstall --no-deps "$(grep -o '"rag-engine[^"]*"' pyproject.toml | head -1 | tr -d '"')"
 ```
 
 No ingestion of `central-bank-e5b-v1` may run while `sync-metadata` writes. An
