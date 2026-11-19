@@ -470,11 +470,12 @@ rm -f ~/data-orchestrator-readonly.env
 
 ## Aligning the links (`--include-links`)
 
-Points ingested before the vault source sent `pdf_url`, `source_url` and
-`mime_type` have none of them, and may carry keys of `extra` that are now
+Points ingested before the vault source sent `document_url`, `source_url`
+and `mime_type` have none of them, and may carry keys of `extra` that are now
 dropped by design (`html_path`, a path on the producer's machine;
-`alt_urls`, `alt_source_urls`; README, "Qdrant payload"). `--include-links`
-sets the three links from the vault and removes those keys. **It also
+`alt_urls`, `alt_source_urls`; README, "Qdrant payload"), or the address
+under its former name `pdf_url` (see "The `document_url` rename" below).
+`--include-links` sets the three links from the vault and removes those keys. **It also
 (re)writes the full date set** of every document it writes: the write of a
 document is always the whole set of owned keys (`date`, `year`,
 `date_precision`, `date_kind`, `date_source`, `date_start`, `date_end`, then
@@ -493,14 +494,15 @@ then a second `--write` that finds nothing. It can run on its own once the
 dates are aligned (the date keys then show no difference), on a machine that
 reaches the vault and the production Qdrant.
 
-**Pre-flight, before the production write.** The vault keeps `pdf_url`,
-`source_url` and `mime_type` in their columns, never in `extra`; the write
-sets each of them from the column, so a value found only in `extra` would be
-**removed** from the points (a NULL column removes the key). Check that no
-row holds one, with `psql` on the vault (it reads only):
+**Pre-flight, before the production write.** The vault keeps `document_url`
+(formerly `pdf_url`), `source_url` and `mime_type` in their columns, never in
+`extra`; the write sets each of them from the column, so a value found only in
+`extra` would be **removed** from the points (a NULL column removes the key;
+a `pdf_url` of `extra` is never sent). Check that no row holds one, with
+`psql` on the vault (it reads only):
 
 ```sql
-SELECT count(*) FROM documents WHERE extra ?| array['pdf_url','source_url','mime_type'];
+SELECT count(*) FROM documents WHERE extra ?| array['document_url','pdf_url','source_url','mime_type'];
 ```
 
 Expected: `0`. If it is not 0, **stop**: those keys would be removed from the
@@ -512,10 +514,10 @@ The dry run:
 data-orchestrator sync-metadata --collection central-bank-e5b-v1 --include-links --csv ~/sync-links-dry.csv
 ```
 
-What to read in the CSV: `pdf_url` / `source_url` / `mime_type` rows with an
-empty `qdrant_value` (the links the points lack), `html_path` / `alt_urls` /
-`alt_source_urls` rows with an empty `vault_value` (the keys to remove), and
-no date row. A row of another field means the dates are not aligned yet: run
+What to read in the CSV: `document_url` / `source_url` / `mime_type` rows
+with an empty `qdrant_value` (the links the points lack), `pdf_url` /
+`html_path` / `alt_urls` / `alt_source_urls` rows with an empty `vault_value`
+(the keys to remove), and no date row. A row of another field means the dates are not aligned yet: run
 the date correction first.
 
 ```bash
@@ -541,6 +543,42 @@ Expected of the last one: `documents written  : 0`. Then remove the CSVs:
 ```bash
 rm -f ~/sync-links-dry.csv ~/sync-links-write.csv ~/sync-links-again.csv
 ```
+
+### The `document_url` rename (2026-11)
+
+The vault's column `pdf_url` became `document_url` (the address of the
+document itself, whatever its type), and the payload key with it. A fresh
+ingestion writes `document_url` and never `pdf_url`. With `--include-links`,
+`sync-metadata` owns both: `document_url` is set from the vault, `pdf_url` is
+expected absent, so **one `--include-links --write` renames the key** on every
+point that carries it (same value, new name), and a second run finds nothing.
+
+Transition: the vault source and `sync-metadata` read the column under
+whichever name the vault has (`information_schema`, once per connection:
+`document_url`, else `pdf_url`), always as `document_url`. A run before the
+vault's DDL renamed the column therefore gives the same answer as a run after
+it. To remove once every vault has run the rename.
+
+**Production step** (Mac session, after the vault stack runs its DDL train,
+deploy step 4 of the cross-repo spec): the same procedure as above (pre-flight,
+dry run, `--write`, second `--write`), with the CSV names of your choice.
+
+Expected on `central-bank-e5b-v1` as it stood on 2026-11-19 (2,566 ledger
+documents, 33,601 points, dates and links aligned, `pdf_url` on every point):
+
+| | dry run | `--write` | second `--write` |
+|---|---|---|---|
+| documents | 2,566 (2,563 updated, 3 undated, 0 unchanged, 0 missing, 0 disagreeing) | 2,566 | 2,566 (2,563 unchanged, 3 undated) |
+| to write / written | 2,566: every ledger document, once | 2,566 documents, 33,601 points | 0 |
+| keys changing | `document_url` x2566, `pdf_url` x2566, nothing else | | none |
+
+In the CSV: one `document_url` row per document (empty `qdrant_value`, the
+address as `vault_value`) and one `pdf_url` row (the same address as
+`qdrant_value`, empty `vault_value`), no other field. Another field, or a
+`document_url` value that differs from the `pdf_url` value of the same
+document, means the points or the vault changed since: stop and look before
+`--write`. A document ingested after the orchestrator update already carries
+`document_url` and is not written. Vectors and every other key are untouched.
 
 ## Checked before this note was written
 

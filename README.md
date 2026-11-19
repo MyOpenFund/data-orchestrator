@@ -120,7 +120,7 @@ via their own connector (`--no-vault`) in the meantime:
    | `DATA_ORCHESTRATOR_LOG_LEVEL` | optional, level of the log lines the CLI sends to stderr (this package's and the engine's: model loaded, collection created, a text file with invalid bytes, …): `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`; anything else is an error (exit 2) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
    | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (default: every type the pinned engine reads; see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
-   | `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` | optional comma list of the keys of the vault's `extra` (and of a manifest row's fields outside the vault's columns) left out of every payload by design, silently and without being counted (default `html_path,alt_urls,alt_source_urls,local_path`: a path on the producer's machine, other addresses of the document, a corpus path; see [Qdrant payload](#qdrant-payload)). `none` drops no key; unset or blank is the default. A vault column (`title`, `pdf_url`, …: the column always wins) or a key the engine writes or derives itself is refused, as is a list with no entry (exit 2) |
+   | `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` | optional comma list of the keys of the vault's `extra` (and of a manifest row's fields outside the vault's columns) left out of every payload by design, silently and without being counted (default `html_path,alt_urls,alt_source_urls,local_path`: a path on the producer's machine, other addresses of the document, a corpus path; see [Qdrant payload](#qdrant-payload)). `none` drops no key; unset or blank is the default. A vault column (`title`, `document_url`, …: the column always wins), the former column name `pdf_url` (already left out) or a key the engine writes or derives itself is refused, as is a list with no entry (exit 2) |
    | `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO` | optional plain decimal in `[0, 1]`, default `0.10` (see [Run reports](#run-reports-and-exit-codes)); anything else is an error (exit 2) |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
@@ -207,12 +207,14 @@ otherwise, and in CI). The rest of the vault's ingestion (its casts, its
 refusals) is not checked against the vault's code.
 A manifest row is split the way the vault splits it on ingestion: its known
 fields (the vault's `KNOWN_FIELDS`: `doc_id`, `corpus`, `source_code` or the
-legacy `bank_code`, `doc_type`, `title`, `pdf_url`, `source_url`, `date`,
-`year`, `language`, `provenance`, `mime_type`, `sha256`, `local_path`) are
-columns, every other field is `extra`; then the rules of the vault source
+legacy `bank_code`, `doc_type`, `title`, `document_url` or the legacy
+`pdf_url`, `source_url`, `date`, `year`, `language`, `provenance`,
+`mime_type`, `sha256`, `local_path`) are columns, every other field is
+`extra` (a row not yet migrated to `document_url` gives its `pdf_url`, which
+the payload carries as `document_url`); then the rules of the vault source
 apply (see [Qdrant payload](#qdrant-payload)): columns win over `extra`, an
 absent or null field is left out (so is an empty or whitespace-only
-`pdf_url`, `source_url` or `mime_type`), the keys of `extra` dropped by design
+`document_url`, `source_url` or `mime_type`), the keys of `extra` dropped by design
 (`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`) are left out silently, a key the
 engine writes itself is left out and counted. `corpus` is the row's own, else
 the run's `--corpus` (default `central-bank`, the vault's name for this
@@ -227,7 +229,7 @@ corpus). This source adds one key, `metadata_source`:
 | `year` | manifest | year folder (`2019`; absent for a non-numeric folder) |
 | `date` | manifest | `<year>-01-01` (absent without a year) |
 | `date_precision` | manifest (`extra`) | `year` (absent without a year) |
-| `title`, `pdf_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance` | manifest, each absent when the row has none (a blank `pdf_url`, `source_url` or `mime_type` is none) | absent (never an empty string) |
+| `title`, `document_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance` | manifest, each absent when the row has none (a blank `document_url`, `source_url` or `mime_type` is none; `document_url` is the row's `document_url`, else its legacy `pdf_url`) | absent (never an empty string) |
 | any other field of the row (`date_kind`, `date_source`, `repec_handle`, …) | manifest (`extra`) | — |
 | `metadata_source` | `manifest` | `path` |
 | `filename`, `page`, `chunk_number`, `ingestion_date`, `text` | engine | engine |
@@ -593,14 +595,14 @@ Every chunk's Qdrant point carries:
 | field | source |
 |---|---|
 | `doc_id`, `corpus`, `source_code`, `doc_type`, `title`, `date`, `year`, `language`, `sha256`, `provenance` | vault (`documents`, merged with corpus-specific `extra`) |
-| `pdf_url`, `source_url`, `mime_type` | vault (`documents`): the addresses a citation links back to, and the document's type |
+| `document_url`, `source_url`, `mime_type` | vault (`documents`): the addresses a citation links back to (`document_url`: the document itself, whatever its type; `pdf_url` until 2026-11), and the document's type |
 | `date_precision`, `date_kind`, `date_source`, any other key of `extra` | vault `extra`, copied as given (`date_precision`: `day`/`month`/`year`; `date_kind`: `meeting`/`publication`/`period`), except the keys dropped by design (below) |
 | `filename`, `page`, `chunk_number`, `text` | engine (chunking output; `page` only for formats with pages) |
 | `ingestion_date` | engine — one ISO timestamp per document, shared by all of its points |
 | `date_start`, `date_end` | engine, derived from `date` and `date_precision` (absent without a readable `date`): the first and the last day the document is dated to, RFC 3339 at midnight UTC (`2016-07-01T00:00:00Z` / `2016-07-31T00:00:00Z` for a `month` date of July 2016; a precision that is absent or not one of the three is read as a day) |
 
 A NULL column is left out (and removes the same key of `extra`: a column
-always wins). An empty or whitespace-only `pdf_url`, `source_url` or
+always wins). An empty or whitespace-only `document_url`, `source_url` or
 `mime_type` counts as NULL: the vault stores the manifest's value as given,
 and 2,294 central-bank rows hold `source_url: ""`, which is no link. A key of
 `extra` whose value is null is left out (not counted, even a reserved one). The keys of `extra` named by
@@ -609,8 +611,18 @@ the producer's machine; `alt_urls` and `alt_source_urls`, lists of other
 addresses of the document; `local_path`) are **dropped by design**: never
 sent, never counted as reserved keys. The `cb_corpus` disk source builds the
 same payload from the manifest (see [its section](#cb_corpus--the-central-bank-corpus)).
-Points ingested before the links were sent (no `pdf_url`, an `html_path`)
-are aligned by `sync-metadata --include-links`.
+Points ingested before the links were sent (no `document_url`, an
+`html_path`), or before the rename (the address under `pdf_url`), are aligned
+by `sync-metadata --include-links`.
+
+**`pdf_url` became `document_url` (2026-11).** The payload never carries
+`pdf_url`: a key of `extra` with that name is left out (the column wins).
+Transition, to remove once every vault and manifest has migrated: the vault
+source and `sync-metadata` read the vault's column under whichever name it
+has (`information_schema`, once per connection: `document_url`, else
+`pdf_url`, selected as `document_url`), so a run before the vault's DDL still
+carries the address; the `cb_corpus` source reads a manifest row's
+`document_url`, else its `pdf_url`.
 
 This is rag-engine's payload schema v2 (`rag_engine.schema`): schema v1, the
 payload this repo assembled itself before 2026-11, plus `date_start` and
@@ -733,8 +745,10 @@ differences among title ones. `--include-title` adds `title` to the compared
 and written keys, explicitly, for a run whose CSV has been read for titles.
 
 **The links are not owned by default either.** `--include-links` adds
-`pdf_url`, `source_url` and `mime_type` (set from the vault's columns; a NULL
-or blank column removes the key) and the keys of `extra` dropped by design
+`document_url`, `source_url` and `mime_type` (set from the vault's columns; a NULL
+or blank column removes the key), `pdf_url` (the former name of
+`document_url`: expected absent, so one run renames the key on the points
+that carry it) and the keys of `extra` dropped by design
 (`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`, default `html_path`,
 `alt_urls`, `alt_source_urls`, `local_path`): an ingestion never sends these,
 so they are expected absent and removed from the points that still carry
@@ -854,7 +868,7 @@ help: on a dead link the server never receives the statement.
 | `--page-size N` | points per Qdrant scroll request (default 256) |
 | `--doc-batch N` | documents per Qdrant read, one `doc_id` match-any filter (default 100) |
 | `--include-title` | also compare and write `title` (off by default, see above) |
-| `--include-links` | also compare and write `pdf_url`, `source_url`, `mime_type`, and remove the keys of `extra` dropped by design (off by default, see above) |
+| `--include-links` | also compare and write `document_url`, `source_url`, `mime_type`, and remove `pdf_url` (its former name) and the keys of `extra` dropped by design (off by default, see above) |
 | `--create-indexes` | only create the missing payload indexes, print them, exit; alone (with `--corpus`/`--collection`) |
 | `--progress-every N` | a progress line every N documents (default 25) |
 
