@@ -144,7 +144,7 @@ the `vault` source:
    | `DATA_ORCHESTRATOR_LOG_LEVEL` | optional, level of the log lines the CLI sends to stderr (this package's and the engine's: model loaded, collection created, a text file with invalid bytes, …): `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`; anything else is an error (exit 2) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
    | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (default: every type the pinned engine reads; see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
-   | `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` | optional comma list of the keys of the vault's `extra` (and of a manifest row's fields outside the vault's columns) left out of every payload by design, silently and without being counted (default `html_path,alt_urls,alt_source_urls,local_path,pdf_path,text_path,primary_path,submission_path`: a path on the producer's machine, other addresses of the document, paths in the corpus, the last four the company corpus's other artefacts; see [Qdrant payload](#qdrant-payload)). `none` drops no key; unset or blank is the default. A vault column (`title`, `document_url`, …: the column always wins), the former column name `pdf_url` (already left out) or a key the engine writes or derives itself is refused, as is a list with no entry (exit 2) |
+   | `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` | optional comma list of the keys of the vault's `extra` (and of a manifest row's fields outside the vault's columns) left out of every payload by design, silently and without being counted (default `html_path,alt_urls,alt_source_urls,local_path,pdf_path,text_path,primary_path,submission_path`: a path on the producer's machine, other addresses of the document, paths in the corpus, the last four the company corpus's other artefacts; see [Qdrant payload](#qdrant-payload)). `none` drops no key; unset or blank is the default. A vault column (`title`, `document_url`, and since the documents contract `date_precision`, `date_kind`, `entity_scheme`, `entity_value`, which were keys of `extra` before: the column always wins), a former column name `pdf_url` or `bank_code` (already left out) or a key the engine writes or derives itself is refused, as is a list with no entry (exit 2) |
    | `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO` | optional plain decimal in `[0, 1]`, default `0.10` (see [Run reports](#run-reports-and-exit-codes)); anything else is an error (exit 2) |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
@@ -238,7 +238,13 @@ compares it with a vault row written out by hand in the test, and
 `tests/test_payload.py` checks the split against the contract's golden rows.
 A manifest row the contract refuses (`vault_contract.check_row` without
 vocabulary: the vault keeps no row for it) is still used; the run logs a
-warning with their number and the first reasons. Then the rules of the vault
+warning with their number and the first reasons (also when it stops early).
+**Change with the contract:** `date` and `year` are taken as the row gives
+them; this source used to cut a `date` with a time to its day
+(`2015-03-01T09:00:00Z` -> `2015-03-01`) and read a `year` of digits as an
+integer, the way the vault's columns cast them. The contract refuses such
+rows (`bad_date`, `year_mismatch`): the vault has none, and the producers
+check their rows against it in CI. Then the rules of the vault
 source apply (see [Qdrant payload](#qdrant-payload)): columns win over
 `extra`, an absent or null field is left out, the keys of `extra` dropped by
 design (`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`) are left out silently, a
