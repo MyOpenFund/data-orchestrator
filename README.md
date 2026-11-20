@@ -43,7 +43,9 @@ standard library only), a runtime dependency pinned by commit in
 - `local_path` is relative to the corpus data root (the directory holding
   `manifest/` and `raw/`), joined with that corpus's root env key; a path the
   contract refuses (`vault_contract.is_bad_local_path`: absolute, `..`, a
-  drive, a backslash, ...) is never joined nor read.
+  drive, a backslash, ...), or one leaving the root through a symbolic link,
+  is never read: the document is skipped, counted in the run report
+  (`docs_bad_local_path`) and as a failure for the outcome.
 
 This version needs a vault on the contract (vault `12ffd11` or later, after its
 ingestion ran once: that run is the DDL train). Against an older vault every
@@ -321,10 +323,22 @@ local_path)` joins the two.
 Before joining, a `local_path` the contract refuses
 (`vault_contract.is_bad_local_path`: absolute, a `..`, `.` or empty segment, a
 drive or a scheme, a backslash, an invisible character, a leading `~`) raises
-`routing.BadLocalPath`: it is never joined with a root nor read. The vault
-source skips such a row and logs how many there were, with their `doc_id`s;
-the probe skips it. The vault refuses such a row at ingestion, so this is a
-second line of defence.
+`routing.BadLocalPath`: it is never joined with a root nor read. So does a
+plain path that leaves the root all the same through a **symbolic link**: the
+joined path is resolved (every link followed, the root's own included) and
+must stay under the resolved root. The vault source skips such a row, logs it
+with its `doc_id`, counts it in the run report (`docs_bad_local_path`,
+`bad_local_path_doc_ids`; [Run reports](#run-reports-and-exit-codes)) and
+counts it as a failure for the outcome; the probe skips it. The vault refuses
+a bad path at ingestion, so the first check is a second line of defence; the
+link check is this machine's.
+
+**Before the first run on a machine** (the NAS, the Mac), check that nothing
+under `CB_CORPUS_ROOT` or `COMPANY_CORPUS_ROOT` that the vault's paths go
+through (`raw/` and its subfolders) is a symbolic link pointing outside that
+root, e.g. `find "$COMPANY_CORPUS_ROOT/raw" -maxdepth 3 -type l`: every
+document behind such a link would be skipped and the run degraded. A root that
+is itself a link is fine (it is resolved first).
 
 Transition: central-bank manifests gave `local_path` relative to the
 repository (`data/raw/...`). The vault strips that `data/` when it ingests, so
@@ -501,6 +515,9 @@ error (exit 1 or 2, before any work). Exit codes are honest:
   `docs_attempted = ingested + empty + failed` (resume skips excluded). The
   ratio is `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, default `0.10`; `0` =
   any failure degrades, `1` = rule (b) off. `docs_unsupported` never degrades;
+  the documents the `vault` source skipped for a bad `local_path`
+  (`docs_bad_local_path`, below) count as failed in (a) and (b), so a run where
+  they pass the ratio is at least `degraded`;
 - `1` **failed**: a fatal error (e.g. Qdrant unreachable; a refused API key,
   at setup or in the middle of a run; an embedding model whose dimension is
   not the declared one; a collection that is not a single unnamed vector of
@@ -552,7 +569,13 @@ applies to central-bank-corpus's `runs.jsonl`. A `vault` run carries
 a disk source's successful run has a NULL `extra`. A fatal run's reason is
 `extra->>'fatal'` (capped at 500 characters, the key central-bank-corpus
 writes); rows written before 2026-11 carry it as `extra->>'error'`, so a reader
-covering both uses `coalesce(extra->>'fatal', extra->>'error')`.
+covering both uses `coalesce(extra->>'fatal', extra->>'error')`. A `vault` run
+that skipped documents for their `local_path` ([Path resolution
+convention](#path-resolution-convention)) carries `docs_bad_local_path` (how
+many, on success and on a fatal error alike) and `bad_local_path_doc_ids` (the
+first 20 `doc_id`s) in `extra`, and says so on stderr (`warning: N document(s)
+skipped, never read: …`); they are absent from a run without any.
+`totals.docs_failed` stays the engine's count.
 
 ## Collections & embedding model
 
