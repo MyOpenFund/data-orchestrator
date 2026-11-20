@@ -51,6 +51,7 @@ def _row(**over):
         "year": 2015, "language": "en", "sha256": "ff", "provenance": "bis",
         "document_url": "https://example.org/d1.pdf", "source_url": "https://example.org/d1",
         "mime_type": "application/pdf",
+        "date_precision": None, "date_kind": None, "entity_scheme": None, "entity_value": None,
         "local_path": "data/raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
     }
     row.update(over)
@@ -254,7 +255,9 @@ def test_row_to_item_never_drops_a_vault_column(monkeypatch, tmp_path):
     from data_orchestrator.sources.vault import _PAYLOAD_COLUMNS
 
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    item = row_to_item(_row(extra={"doc_id": "someone-else", "year": 1900, "text": "x"}),
+    item = row_to_item(_row(extra={"doc_id": "someone-else", "year": 1900, "text": "x"},
+                            date_precision="day", date_kind="meeting", entity_scheme="cik",
+                            entity_value="0000320193"),
                        "central-bank")
     assert set(_PAYLOAD_COLUMNS) <= set(item.payload)
     assert item.payload["doc_id"] == item.doc_id == "d1" and item.payload["year"] == 2015

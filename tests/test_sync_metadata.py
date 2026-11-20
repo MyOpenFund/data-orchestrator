@@ -683,10 +683,10 @@ def test_the_links_are_owned_only_on_request():
 
 
 def test_the_owned_dropped_keys_follow_the_setting(monkeypatch):
-    monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "html_path,date_kind")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "html_path,date_source")
     keys = sm.owned_keys(include_links=True)
     assert "html_path" in keys and "alt_urls" not in keys
-    assert keys.count("date_kind") == 1  # an owned date key named again is owned once
+    assert keys.count("date_source") == 1  # an owned date key named again is owned once
 
 
 def test_the_links_write_is_exactly_the_expected_values():
@@ -877,3 +877,70 @@ def test_the_column_is_read_once_per_connection():
     # Both columns (a vault mid-DDL, or a copy of the old one): the new one wins.
     assert "d.document_url," in conn.executed[-1][0]
     assert rows[0]["document_url"] == "https://x.org/a.pdf"
+
+
+# ---------------------------------------------------------------------------
+# The documents contract: date_precision and date_kind leave extra for columns
+# ---------------------------------------------------------------------------
+def _ingested_before_the_contract(store, doc_id, row, n=2):
+    """Points as an ingestion wrote them from ``row`` (interval included)."""
+    from data_orchestrator.payload import row_to_payload
+
+    meta, _ = row_to_payload(dict(row, doc_id=doc_id))
+    points = [models.PointStruct(
+        id=point_id(doc_id, c, c), vector=[0.1 * (c + 1), 0.2, -0.3, 0.4],
+        payload=build_payload(doc_id, meta, filename=f"{doc_id}.pdf", chunk_number=c,
+                              ingestion_date="2026-10-01T00:00:00", text=f"t{c}", page=c))
+        for c in range(n)]
+    store.client.upsert(COLLECTION, points=points, wait=True)
+
+
+@pytest.mark.parametrize("include_links", [False, True])
+def test_after_the_vault_moves_the_date_keys_to_columns_a_write_changes_no_point(
+        tmp_path, include_links):
+    """The points were ingested from a vault row with ``date_precision`` and
+    ``date_kind`` in ``extra``; the vault ingestion on the contract moves both
+    to their columns and out of ``extra``. sync-metadata must read them from the
+    columns: nothing differs, and a --write strips no date key from any point
+    (its self-check cannot catch a payload rule that forgets a column, since
+    both sides come from the same ``row_to_payload``: hence this test)."""
+    store = make_store()
+    before = vault_row("d", date=datetime.date(2016, 7, 1),
+                       extra={"date_precision": "month", "date_kind": "meeting",
+                              "date_source": "title"})
+    _ingested_before_the_contract(store, "d", before)
+    seeded = snapshot(store)
+    assert all(p["date_precision"] == "month" and p["date_kind"] == "meeting"
+               and p["date_end"] == "2016-07-31T00:00:00Z" for p, _v in seeded.values())
+    after = vault_row("d", date=datetime.date(2016, 7, 1), extra={"date_source": "title"},
+                      date_precision="month", date_kind="meeting", entity_scheme=None,
+                      entity_value=None)
+    stats, rows = run(LedgerConn([after]), store, tmp_path, write=True,
+                      include_links=include_links)
+    assert stats.actions[sm.UNCHANGED] == 1 and stats.to_write == 0 and rows == []
+    assert snapshot(store) == seeded
+
+
+def test_the_ledger_query_selects_the_contract_columns():
+    conn = LedgerConn([])
+    sm.ledger_rows(conn, CORPUS, COLLECTION)
+    sql = [s for s, _p in conn.executed if "FROM rag_ingestions r" in s][0]
+    for column in ("date_precision", "date_kind", "entity_scheme", "entity_value"):
+        assert f"d.{column}" in sql
+
+
+def test_an_undated_row_that_lost_its_precision_is_one_difference(tmp_path):
+    """One of the 7 undated central-bank rows with a precision: its points carry
+    ``date_precision: month`` (from the vault's extra before the contract); on
+    the contract the vault drops a precision without a date, so the dry run
+    reports that one key, nothing else (SYNC-METADATA.md)."""
+    store = make_store()
+    _ingested_before_the_contract(store, "u", vault_row("u", date=None, year=None,
+                                                        extra={"date_precision": "month",
+                                                               "date_source": "repec"}))
+    after = vault_row("u", date=None, year=None, extra={"date_source": "repec"},
+                      date_precision=None, date_kind=None)
+    stats, rows = run(LedgerConn([after]), store, tmp_path)
+    assert stats.actions[sm.UNDATED] == 1 and stats.to_write == 1
+    assert [(r["field"], r["qdrant_value"], r["vault_value"]) for r in rows] == [
+        ("date_precision", "month", "")]
