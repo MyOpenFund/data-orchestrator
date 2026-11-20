@@ -968,14 +968,18 @@ The integration tests (they need Docker):
 python -m pytest -m integration -q
 ```
 
-The contract test against the vault's `KNOWN_FIELDS` (skipped without a
-checkout of the vault repository):
+The contract test (`tests/test_contract.py`): the `vault-contract` installed
+is the `contract/` directory of a vault checkout file for file, the vault
+ingests with it, and the CI workflow checks out the vault at the commit
+`pyproject.toml` pins. Skipped without a checkout, except under CI (`CI` set),
+where a missing checkout fails:
 
 ```bash
-DATA_ORCHESTRATOR_VAULT_CHECKOUT=~/myopenfund/vault python -m pytest -q tests/test_payload.py
+DATA_ORCHESTRATOR_VAULT_CHECKOUT=~/myopenfund/vault python -m pytest -q tests/test_contract.py
 ```
 
-The check that the rag-engine installed is the pinned commit:
+The check that the rag-engine and the vault-contract installed are the pinned
+commits:
 
 ```bash
 python tools/check_engine_pin.py

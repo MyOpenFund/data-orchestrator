@@ -74,3 +74,34 @@ def test_check_fails_on_another_commit(capsys):
 def test_check_fails_when_the_install_records_no_commit(capsys):
     assert pin.check(_pyproject(), _Dist({"url": "file:///src", "dir_info": {}})) == 1
     assert "not installed from a git commit" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# vault-contract, pinned the same way (a git subdirectory)
+# ---------------------------------------------------------------------------
+def _pyproject_with_contract(sha=SHA, contract=OTHER):
+    return _pyproject(sha).replace(
+        "]\n", f'    "vault-contract @ git+https://github.com/MyOpenFund/vault@{contract}'
+               '#subdirectory=contract",\n]\n')
+
+
+def test_the_contract_pin_of_this_repository_is_a_full_commit_sha():
+    text = pin.PYPROJECT.read_text(encoding="utf-8")
+    assert re.fullmatch(r"[0-9a-f]{40}", pin.pinned_commit(text, pin.CONTRACT_DISTRIBUTION))
+
+
+def test_each_distribution_has_its_own_pin():
+    text = _pyproject_with_contract()
+    assert pin.pinned_commit(text) == SHA
+    assert pin.pinned_commit(text, "vault-contract") == OTHER
+
+
+def test_check_reads_the_contract_pin_with_its_subdirectory(capsys):
+    text = _pyproject_with_contract()
+    assert pin.check(text, _Dist(_git(OTHER)), name="vault-contract") == 0
+    assert pin.check(text, _Dist(_git(SHA)), name="vault-contract") == 1
+    assert "vault-contract installed at" in capsys.readouterr().err
+
+
+def test_check_all_checks_every_pinned_distribution():
+    assert pin.DISTRIBUTIONS == ("rag-engine", "vault-contract")
