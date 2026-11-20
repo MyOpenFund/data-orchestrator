@@ -145,7 +145,7 @@ def application_name() -> str:
 # ---------------------------------------------------------------------------
 # Preflight: the vault is on the documents contract
 # ---------------------------------------------------------------------------
-#: The ``documents`` columns the contract added (vault 12ffd11).
+#: The ``documents`` columns the contract added (vault 12ffd11 or later).
 CONTRACT_DOCUMENT_COLUMNS: tuple[str, ...] = (
     "date_precision", "date_kind", "entity_scheme", "entity_value",
 )
@@ -192,7 +192,7 @@ def require_contract_schema(conn) -> None:
     if problems:
         raise VaultSchemaTooOld(
             f"{'; '.join(problems)}: this vault predates the documents contract (vault "
-            "12ffd11). Deploy the vault and run its ingestion once first (README, "
+            "12ffd11 or later). Deploy the vault and run its ingestion once first (README, "
             "'Deploying with the documents contract'); nothing was written")
 
 
@@ -277,8 +277,8 @@ class VaultLedger:
                 self._conn.rollback()
                 raise VaultSchemaTooOld(
                     "rag_ingestions has no key (corpus, doc_id, collection): this vault "
-                    "predates the documents contract (vault 12ffd11). Deploy the vault and "
-                    f"run its ingestion first; document {doc_id!r} has its points written, "
+                    "predates the documents contract (vault 12ffd11 or later). Deploy the vault "
+                    f"and run its ingestion first; document {doc_id!r} has its points written, "
                     "the next run writes them again") from exc
             # A raising execute (e.g. an FK violation for a doc_id unknown to
             # `documents`) leaves this shared connection in aborted-transaction

@@ -22,7 +22,7 @@ in step 7: four files under `/tmp` (a helper script, two snapshots of the
 scratch collection, the CSVs) and two snapshots of production under `~`
 (about 100 MB together: they hold the payloads). Step 9 removes them.
 
-## After the documents contract (vault 12ffd11)
+## After the documents contract (vault 12ffd11 or later)
 
 The vault's `documents` contract 1.0.0 turns `date_precision` and `date_kind`
 into columns: the vault's first ingestion on the contract moves both out of

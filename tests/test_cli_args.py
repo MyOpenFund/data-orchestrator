@@ -1653,6 +1653,20 @@ def test_the_removed_company_source_is_not_offered_in_the_help(capsys):
     assert "{cb_corpus,vault,probe,sync-metadata}" in usage and "company," not in usage
 
 
+def test_the_include_links_help_names_what_it_compares_and_removes(monkeypatch, capsys):
+    """Compared with its whitespace collapsed at a fixed width: argparse wraps
+    to the terminal width (a narrow one splits long words), and its layout
+    differs between Python 3.12 and 3.13."""
+    monkeypatch.setenv("COLUMNS", "100")
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert ("--include-links also compare and write document_url, source_url, mime_type, "
+            "and remove the extra keys dropped by design "
+            "(DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS) from the points (off by default)"
+            ) in help_text
+
+
 def test_company_as_the_value_of_corpus_is_no_removed_source(monkeypatch, capsys):
     _forbid_any_work(monkeypatch)
     monkeypatch.setenv("QDRANT_PORT", "abc")  # stops the run before any work

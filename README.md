@@ -641,7 +641,7 @@ Every chunk's Qdrant point carries:
 |---|---|
 | `doc_id`, `corpus`, `source_code`, `doc_type`, `title`, `date`, `year`, `language`, `sha256`, `provenance` | vault (`documents`, merged with corpus-specific `extra`) |
 | `document_url`, `source_url`, `mime_type` | vault (`documents`): the addresses a citation links back to (`document_url`: the document itself, whatever its type; `pdf_url` until 2026-11), and the document's type |
-| `date_precision`, `date_kind`, `entity_scheme`, `entity_value` | vault (`documents`), columns of the documents contract, after every earlier column (`date_precision`: `day`/`month`/`year`, absent = not stated; `date_kind`: `meeting`/`publication`/`period`; `entity_*`: the company a document is about, e.g. `cik` / `0000320193`). Central-bank rows carried the first two in `extra` before the contract, under the same names and values: the points ingested then need no rewrite, with two exceptions by the contract: the precision of an undated row is dropped (7 public central-bank rows) and a blank title is absent (110 public rows; `title` is compared only with `sync-metadata --include-title`). See [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11). A NULL one removes the same key of `extra`, like any column |
+| `date_precision`, `date_kind`, `entity_scheme`, `entity_value` | vault (`documents`), columns of the documents contract, after every earlier column (`date_precision`: `day`/`month`/`year`, absent = not stated; `date_kind`: `meeting`/`publication`/`period`; `entity_*`: the company a document is about, e.g. `cik` / `0000320193`). Central-bank rows carried the first two in `extra` before the contract, under the same names and values: the points ingested then need no rewrite, with two exceptions by the contract: the precision of an undated row is dropped (7 public central-bank rows) and a blank title is absent (110 public rows; `title` is compared only with `sync-metadata --include-title`). See [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11-or-later). A NULL one removes the same key of `extra`, like any column |
 | `date_source`, any other key of `extra` | vault `extra`, copied as given, except the keys dropped by design (below) |
 | `filename`, `page`, `chunk_number`, `text` | engine (chunking output; `page` only for formats with pages) |
 | `ingestion_date` | engine — one ISO timestamp per document, shared by all of its points |
@@ -791,7 +791,7 @@ and written keys, explicitly, for a run whose CSV has been read for titles.
 **After the documents contract** `date_precision` and `date_kind` are columns
 of the vault (they were keys of `extra`, same names, same values), read from
 there; the first dry run after the vault deploy is expected to find nothing to
-write but the stated rows ([SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11)).
+write but the stated rows ([SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11-or-later)).
 
 **The links are not owned by default either.** `--include-links` adds
 `document_url`, `source_url` and `mime_type` (set from the vault's columns; a NULL
@@ -1002,10 +1002,10 @@ first, vectors byte-identical before and after, then production) is in
 
 ## Deploying with the documents contract
 
-This version follows the vault's `documents` contract 1.0.0 (vault `12ffd11`).
+This version follows the vault's `documents` contract 1.0.0 (vault `12ffd11` or later).
 Old and new versions of the two do not mix:
 
-| | vault before the contract (`2d0457e`) | vault on the contract (`12ffd11`), after its first ingestion |
+| | vault before the contract (`2d0457e`) | vault on the contract (`12ffd11` or later), after its first ingestion |
 |---|---|---|
 | **this repo before** (`81ead10`) | works | **ingestion works** until the vault's transition cleanup (`2859fa6` drops the transitional unique index on `rag_ingestions (doc_id, collection)` it relies on: after it, its ledger writes fail) but its payloads lose `date_precision` / `date_kind` (moved out of `extra`): **no ingestion and no `sync-metadata` with it** (a `--write` would strip both keys from every point) |
 | **this repo now** | **refused** before any Qdrant write: the vault source (and its `--count-only`), `sync-metadata` and `cb_corpus` with the vault ledger read the catalog first (`vault.require_contract_schema`: the four contract columns, the key `(corpus, doc_id, collection)`) and stop with `VaultSchemaTooOld`, exit 1 | works |
@@ -1025,7 +1025,7 @@ the 39,664 public central-bank rows: `date_precision` lost on 14,659 rows,
    root (the folder holding `manifest/` and `raw/`); `COMPANY_CORPUS_ROOT` was
    optional, it is now required to ingest the company corpus;
 3. `sync-metadata` dry run on `central-bank-e5b-v1`: nothing to write except
-   the rows stated in [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11);
+   the rows stated in [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11-or-later);
 4. a pilot of the company corpus into a scratch collection (it creates the
    collection and its `rag_ingestions` rows; remove both after):
    `data-orchestrator vault --corpus company --collection zz-company-pilot --limit 5`.
