@@ -243,56 +243,60 @@ def iter_items(
     drop_keys = dropped_extra_keys()
     refused: list[tuple[str, str]] = []
 
-    for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
-        bank_code = bank_dir.name
-        if bank_set and bank_code.lower() not in bank_set:
-            continue
-
-        for dt_dir in sorted(p for p in bank_dir.iterdir() if p.is_dir()):
-            doc_type = dt_dir.name.upper()
-            group = doc_type[:1]  # the --groups filter
-            if doctype_set and doc_type not in doctype_set:
-                continue
-            if group_set and group not in group_set:
+    # The warning is given in a finally: a run that stops early (--limit, a
+    # fatal error) still says which rows it used although the vault refuses them.
+    try:
+        for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
+            bank_code = bank_dir.name
+            if bank_set and bank_code.lower() not in bank_set:
                 continue
 
-            for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
-                year = _parse_year(year_dir.name)
-                if year is None:
-                    if bounded:
-                        continue  # an unknown year cannot satisfy a bound
-                else:
-                    if year_min is not None and year < year_min:
-                        continue
-                    if year_max is not None and year > year_max:
-                        continue
+            for dt_dir in sorted(p for p in bank_dir.iterdir() if p.is_dir()):
+                doc_type = dt_dir.name.upper()
+                group = doc_type[:1]  # the --groups filter
+                if doctype_set and doc_type not in doctype_set:
+                    continue
+                if group_set and group not in group_set:
+                    continue
 
-                for f in sorted(year_dir.iterdir()):
-                    if not f.is_file():
-                        continue
-                    ext = f.suffix.lower()
-                    # .pdf only: HTML is converted to .md/PDF before the
-                    # engine; see issue #17. (.DS_Store, .html, etc. skipped.)
-                    if ext != ".pdf":
-                        continue
+                for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
+                    year = _parse_year(year_dir.name)
+                    if year is None:
+                        if bounded:
+                            continue  # an unknown year cannot satisfy a bound
+                    else:
+                        if year_min is not None and year < year_min:
+                            continue
+                        if year_max is not None and year > year_max:
+                            continue
 
-                    doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
-                    rec = index.get(doc_id)
-                    if rec is not None:
-                        reasons = _refusals(rec, corpus)
-                        if reasons:
-                            refused.append((doc_id, reasons))
-                    payload, dropped = _build_payload(
-                        doc_id=doc_id, bank_code=bank_code, doc_type=doc_type, year=year,
-                        rec=rec, corpus=corpus, drop_keys=drop_keys,
-                    )
-                    yield SourceItem(doc_id=doc_id, path=f, payload=payload,
-                                     dropped_keys=dropped)
-    if refused:
-        logger.warning(
-            "%d manifest row(s) the documents contract refuses (the vault keeps no row for "
-            "them) were used as they are: %s", len(refused),
-            "; ".join(f"{doc_id}: {reasons}" for doc_id, reasons in refused[:REFUSED_EXAMPLES]))
+                    for f in sorted(year_dir.iterdir()):
+                        if not f.is_file():
+                            continue
+                        ext = f.suffix.lower()
+                        # .pdf only: HTML is converted to .md/PDF before the
+                        # engine; see issue #17. (.DS_Store, .html, etc. skipped.)
+                        if ext != ".pdf":
+                            continue
+
+                        doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
+                        rec = index.get(doc_id)
+                        if rec is not None:
+                            reasons = _refusals(rec, corpus)
+                            if reasons:
+                                refused.append((doc_id, reasons))
+                        payload, dropped = _build_payload(
+                            doc_id=doc_id, bank_code=bank_code, doc_type=doc_type, year=year,
+                            rec=rec, corpus=corpus, drop_keys=drop_keys,
+                        )
+                        yield SourceItem(doc_id=doc_id, path=f, payload=payload,
+                                         dropped_keys=dropped)
+    finally:
+        if refused:
+            logger.warning(
+                "%d manifest row(s) the documents contract refuses (the vault keeps no row for "
+                "them) were used as they are: %s", len(refused),
+                "; ".join(f"{doc_id}: {reasons}" for doc_id, reasons in refused[:REFUSED_EXAMPLES]))
 
 
 def _refusals(rec: dict, corpus: str) -> str:

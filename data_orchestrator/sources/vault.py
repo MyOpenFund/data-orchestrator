@@ -13,8 +13,8 @@ are built by ``payload.row_to_payload``: the vault's normalized columns
 (``document_url``, ``source_url`` and ``mime_type`` included) merged with the
 corpus-specific ``extra`` fields (columns always win), without the keys of
 ``extra`` dropped by design (``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS``,
-default ``payload.DEFAULT_DROP_EXTRA_KEYS``; left out silently, not counted). A key of ``extra`` that
-the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
+default ``payload.DEFAULT_DROP_EXTRA_KEYS``; left out silently, not counted).
+A key of ``extra`` that the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
 ``text``, ``page``, and the derived ``date_start`` / ``date_end``) is left
 out and counted, never sent: the engine refuses it, and one stray key must not
 fail the document. ``date_precision``, ``date_kind``, ``entity_scheme`` and
@@ -25,8 +25,8 @@ per-machine corpus root (routing) with the vault's ``local_path``, relative to
 that root; a ``local_path`` the contract refuses, or one that leaves the root
 through a symbolic link (``routing.BadLocalPath``), is skipped, never read,
 logged with its ``doc_id`` and counted in the run report
-(``docs_bad_local_path``, ``bad_local_path_doc_ids``; ``iter_items(refused=)``). A document is ``(corpus, doc_id)``: the
-anti-join matches both.
+(``docs_bad_local_path``, ``bad_local_path_doc_ids``; ``iter_items(refused=)``).
+A document is ``(corpus, doc_id)``: the anti-join matches both.
 
 Transition (2026-11 rename): the vault's ``pdf_url`` column became
 ``document_url``. :func:`iter_items` reads which of the two the vault has, once

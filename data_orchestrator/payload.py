@@ -74,7 +74,9 @@ PAYLOAD_COLUMNS: tuple[str, ...] = (
 #: query on the vault returns 0 (the live rows; a soft-deleted row is never
 #: selected for ingestion, but sync-metadata reads it as missing-in-vault)::
 #:
-#:     SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind'))
+#:     SELECT count(*) FROM documents WHERE deleted_at IS NULL
+#:       AND ((date_precision IS NULL AND extra ? 'date_precision')
+#:         OR (date_kind IS NULL AND extra ? 'date_kind'))
 
 CONTRACT_COLUMNS_FROM_EXTRA: tuple[str, ...] = (
     "date_precision", "date_kind", "entity_scheme", "entity_value",

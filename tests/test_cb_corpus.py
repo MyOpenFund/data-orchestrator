@@ -457,3 +457,16 @@ def test_a_path_derived_payload_has_its_precision_as_a_column(tmp_path):
     assert item.payload == {"doc_id": "z", "corpus": "central-bank", "source_code": "au",
                             "doc_type": "A1", "date": "1997-01-01", "year": 1997,
                             "date_precision": "year", "metadata_source": "path"}
+
+
+def test_a_run_stopped_early_still_says_it_used_refused_rows(tmp_path, caplog):
+    import logging
+
+    root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf")
+    bad = dict(LEGACY_ROW, doc_id="a", language="english")
+    _manifest(root, "au", json.dumps(bad), json.dumps(dict(LEGACY_ROW, doc_id="b")))
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
+        items = iter_items(root)
+        assert next(items).doc_id == "a"
+        items.close()  # --limit 1: the run stops here
+    assert "1 manifest row(s) the documents contract refuses" in caplog.text
