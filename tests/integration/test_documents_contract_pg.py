@@ -83,3 +83,48 @@ def test_a_vault_before_the_contract_stops_the_run_with_its_reason(clean_pg):
     with conn.cursor() as cur:  # the connection is healthy again
         cur.execute("SELECT 1")
     conn.close()
+
+
+def test_the_company_corpus_is_ingested_from_the_vault(clean_state, qdrant_addr, tmp_path,
+                                                       monkeypatch):
+    """``vault --corpus company``: a company row in contract form (golden SEC
+    10-K, its rendered file under COMPANY_CORPUS_ROOT), next to a central-bank
+    row with the same doc_id; the points carry the contract's columns."""
+    from qdrant_client import QdrantClient
+    from vault_contract import golden
+
+    from data_orchestrator import cli
+    from data_orchestrator.payload import manifest_row_to_vault_row
+    from data_orchestrator.routing import collection_name
+
+    from .conftest import write_text_pdf
+
+    import json
+
+    case = golden.accepted()["sec_10k"]
+    row = manifest_row_to_vault_row(case["row"], "company")
+    row["extra"] = json.dumps(row["extra"])
+    doc_id = row["doc_id"]
+    insert_documents(clean_state, [row, {"doc_id": doc_id, "corpus": "central-bank",
+                                         "local_path": "raw/x.pdf"}])
+    root = tmp_path / "company-data"
+    write_text_pdf(root / row["local_path"])
+    monkeypatch.setenv("DATABASE_URL", clean_state)
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(root))
+    monkeypatch.setenv("QDRANT_HOST", qdrant_addr[0])
+    monkeypatch.setenv("QDRANT_PORT", str(qdrant_addr[1]))
+    assert cli.main(["vault", "--corpus", "company"]) == 0
+    with psycopg2.connect(clean_state) as conn, conn.cursor() as cur:
+        cur.execute("SELECT corpus, doc_id, collection FROM rag_ingestions")
+        assert cur.fetchall() == [("company", doc_id, collection_name("company"))]
+    points, _ = QdrantClient(host=qdrant_addr[0], port=qdrant_addr[1]).scroll(
+        collection_name("company"), limit=100, with_payload=True)
+    assert points
+    for point in points:
+        payload = point.payload
+        assert payload["corpus"] == "company" and payload["doc_type"] == "A1"
+        assert (payload["entity_scheme"], payload["entity_value"]) == ("cik", "0000320193")
+        assert (payload["date_precision"], payload["date_kind"]) == ("day", "publication")
+        assert payload["date_start"] == "2024-11-01T00:00:00Z"
+        assert payload["accession"] == "0000320193-24-000123"
+        assert not {"local_path", "pdf_path", "text_path", "primary_path"} & set(payload)
