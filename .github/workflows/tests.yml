@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MyOpenFund/vault
-          ref: 12ffd11d15c90c8133dc8c8a38b8e47e3b6a4fce
+          ref: 2859fa60d349518a8ac7ebf6e8d263341d036145
           path: _vault
           persist-credentials: false
       - name: Unit tests

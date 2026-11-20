@@ -81,7 +81,10 @@ def test_the_contract_is_the_version_this_repo_was_written_for():
 
 def test_the_vault_ddl_is_the_schema_the_integration_suite_copies():
     """tests/integration/conftest.py copies the vault's tables by hand: the
-    pinned vault's DDL must still have the key and the columns it copies."""
+    pinned vault's DDL must still have the key and the columns it copies, and
+    neither has the transitional unique index on rag_ingestions (doc_id,
+    collection) any more: the vault drops it (its transition cleanup), so no
+    run may rely on it."""
     from tests.integration.conftest import SCHEMA_SQL
 
     ddl = (_checkout() / "ingestion" / "ingest.py").read_text(encoding="utf-8")
@@ -89,11 +92,14 @@ def test_the_vault_ddl_is_the_schema_the_integration_suite_copies():
     copy = " ".join(SCHEMA_SQL.split())
     for clause in ("PRIMARY KEY (corpus, doc_id, collection)",
                    "FOREIGN KEY (corpus, doc_id) REFERENCES documents (corpus, doc_id)",
-                   "UNIQUE (corpus, doc_id)",
-                   "CREATE UNIQUE INDEX IF NOT EXISTS rag_ingestions_doc_collection_transition "
-                   "ON rag_ingestions (doc_id, collection)"):
+                   "UNIQUE (corpus, doc_id)"):
         assert clause in flat, clause
         assert clause in copy, clause
+    transition_index = "rag_ingestions_doc_collection_transition"
+    assert not re.search(rf"CREATE UNIQUE INDEX[^;]*\b{transition_index}\b", flat)
+    assert f"DROP INDEX IF EXISTS {transition_index};" in flat
+    assert transition_index not in copy
+    assert "ON rag_ingestions (doc_id, collection)" not in copy
     for column in ("date_precision", "date_kind", "entity_scheme", "entity_value"):
         assert re.search(rf"^\s+{column} TEXT,?$", ddl, re.M), column
         assert f"{column} TEXT" in copy, column

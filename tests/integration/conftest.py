@@ -75,10 +75,6 @@ CREATE TABLE IF NOT EXISTS rag_ingestions (
     CONSTRAINT rag_ingestions_corpus_doc_id_fkey FOREIGN KEY (corpus, doc_id)
         REFERENCES documents (corpus, doc_id)
 );
--- The vault's transitional index (kept until the contract's cleanup), here so
--- that a run against this schema meets the same constraints as against the vault.
-CREATE UNIQUE INDEX IF NOT EXISTS rag_ingestions_doc_collection_transition
-    ON rag_ingestions (doc_id, collection);
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     tool TEXT NOT NULL,

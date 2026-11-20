@@ -29,7 +29,7 @@ keywords = ["rag", "ingestion", "qdrant", "embeddings", "central-bank"]
 # .github/workflows/tests.yml (tests/test_contract.py checks they agree).
 dependencies = [
     "psycopg2-binary>=2.9",
-    "vault-contract @ git+https://github.com/MyOpenFund/vault@12ffd11d15c90c8133dc8c8a38b8e47e3b6a4fce#subdirectory=contract",
+    "vault-contract @ git+https://github.com/MyOpenFund/vault@2859fa60d349518a8ac7ebf6e8d263341d036145#subdirectory=contract",
     "rag-engine[ingest,torch] @ git+https://github.com/MyOpenFund/rag-engine@6be21ac393d82d7c5c1a058dcad8204ae15c7289",
 ]
 
