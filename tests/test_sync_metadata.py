@@ -50,10 +50,6 @@ class LedgerCursor:
         if "FROM pg_locks" in sql:
             self._rows = [(int(self._conn.lock_held),)]
             return
-        if "information_schema.columns" in sql:
-            self._rows = [(c,) for c in self._conn.columns
-                          if c in (params["new"], params["old"])]
-            return
         assert "FROM rag_ingestions r" in sql
         assert params["collection"] == COLLECTION and params["corpus"] == CORPUS
         rows = sorted(self._conn.ledger, key=lambda r: r["ledger_doc_id"])
@@ -77,11 +73,8 @@ class LedgerConn:
     """The vault: ``ledger`` holds one dict per rag_ingestions row, joined
     with its documents row (``vault_doc_id`` None when the row is gone)."""
 
-    def __init__(self, ledger=(), lock_free=True, columns=("document_url",)):
+    def __init__(self, ledger=(), lock_free=True):
         self.ledger = list(ledger)
-        #: The columns of ``documents`` that information_schema reports (the
-        #: document's address: ``document_url``, or ``pdf_url`` before the rename).
-        self.columns = tuple(columns)
         self.lock_free = lock_free
         self.lock_held = True
         self.executed = []
@@ -215,10 +208,11 @@ def test_dry_run_reports_and_writes_nothing(tmp_path):
         "date_end": ("", "2015-12-17T00:00:00Z"),
     }
     assert {r["action"] for r in rows} == {sm.UPDATED}
-    # The vault is only read: the column of the document's address, then the
-    # ledger (the CLI takes the lock).
-    assert [sql.split()[0] for sql, _ in conn.executed] == ["SELECT", "SELECT"]
-    assert "information_schema.columns" in conn.executed[0][0]
+    # The vault is only read: the ledger, the document's address from
+    # document_url (the CLI takes the lock).
+    (sql, _), = conn.executed
+    assert sql.startswith("SELECT") and "information_schema" not in sql
+    assert "d.document_url," in sql and "pdf_url" not in sql
 
 
 def test_write_changes_only_the_owned_keys_and_a_second_run_writes_nothing(tmp_path):
@@ -849,35 +843,6 @@ def test_include_links_renames_pdf_url_on_every_point_once(tmp_path):
     again, rows = run(conn, store, tmp_path, include_links=True, write=True, csv_name="a.csv")
     assert again.to_write == 0 and again.written == 0 and rows == []
     assert snapshot(store) == after
-
-
-def test_a_vault_before_the_rename_is_read_through_pdf_url(tmp_path):
-    """The orchestrator may run before the vault's DDL renamed the column: the
-    ledger then selects ``pdf_url AS document_url`` and the answer is the same."""
-    store = make_store()
-    _aligned_before_the_rename(store, "a", 2)
-    old_vault = LedgerConn([_renamed_row("a")], columns=("pdf_url",))
-    stats, rows = run(old_vault, store, tmp_path, include_links=True, write=True)
-    assert "d.pdf_url AS document_url" in old_vault.executed[1][0]
-    assert stats.written == 1 and {r["field"] for r in rows} == {"document_url", "pdf_url"}
-    assert all(p["document_url"] == "https://x.org/a.pdf" and "pdf_url" not in p
-               for p, _ in snapshot(store).values())
-
-    new_vault = LedgerConn([_renamed_row("a")], columns=("document_url",))
-    again, _ = run(new_vault, store, tmp_path, include_links=True, csv_name="n.csv")
-    assert "d.document_url," in new_vault.executed[1][0]
-    assert again.to_write == 0
-
-
-def test_the_column_is_read_once_per_connection():
-    conn = LedgerConn([_renamed_row("a")], columns=("pdf_url", "document_url"))
-    sm.ledger_rows(conn, CORPUS, COLLECTION)
-    rows = sm.ledger_rows(conn, CORPUS, COLLECTION)
-    reads = [sql for sql, _ in conn.executed if "information_schema" in sql]
-    assert len(reads) == 1
-    # Both columns (a vault mid-DDL, or a copy of the old one): the new one wins.
-    assert "d.document_url," in conn.executed[-1][0]
-    assert rows[0]["document_url"] == "https://x.org/a.pdf"
 
 
 # ---------------------------------------------------------------------------

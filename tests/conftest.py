@@ -126,7 +126,6 @@ class DescribedFakeCursor:
 
     def __init__(self, conn):
         self._conn = conn
-        self._schema_read = False
 
     def __enter__(self):
         return self
@@ -136,9 +135,6 @@ class DescribedFakeCursor:
 
     def execute(self, sql, params=None):
         self._conn.executed.append((" ".join(sql.split()), params))
-        # The read of the column of the document's address
-        # (``vault.document_url_column``) answers from ``schema_columns``.
-        self._schema_read = "information_schema.columns" in sql
 
     @property
     def description(self):
@@ -147,8 +143,6 @@ class DescribedFakeCursor:
         return [(name, None, None, None, None, None, None) for name in self._conn.columns]
 
     def fetchall(self):
-        if self._schema_read:
-            return [(c,) for c in self._conn.schema_columns]
         return list(self._conn.rows)
 
     def __iter__(self):
@@ -163,12 +157,9 @@ class DescribedFakeConn:
     how many there were.
     """
 
-    def __init__(self, rows=(), columns=None, schema_columns=("document_url",)):
+    def __init__(self, rows=(), columns=None):
         self.rows = list(rows)
         self.columns = list(columns) if columns is not None else None
-        #: The ``documents`` columns information_schema reports for the
-        #: document's address (``document_url``, or ``pdf_url`` before the rename).
-        self.schema_columns = tuple(schema_columns)
         self.executed = []
         self.commits = 0
 

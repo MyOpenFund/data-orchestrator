@@ -24,11 +24,6 @@ design (``payload.dropped_extra_keys``, ``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_K
 an ingestion never sends them, so they must be absent and are removed from the
 points ingested before they were dropped). Nothing else is compared or written.
 
-The vault's column of the document's address is ``document_url``, or
-``pdf_url`` on a vault that has not run the 2026-11 rename yet: it is read once
-per connection (``vault.document_url_column``) and selected as
-``document_url`` (transition only).
-
 **The expected values come from the ingestion code path.** The vault row goes
 through ``payload.row_to_payload`` (the metadata ``sources.vault.row_to_item``
 hands the engine) and then through ``rag_engine.schema.build_payload`` (what the
@@ -72,7 +67,6 @@ from rag_engine.store import MissingIndexError, QdrantAuthError
 
 from .payload import PAYLOAD_COLUMNS as _PAYLOAD_COLUMNS
 from .payload import dropped_extra_keys, row_to_payload
-from .vault import document_url_column, document_url_select
 
 #: The payload keys sync-metadata compares and writes, in report order.
 OWNED_KEYS: tuple[str, ...] = (
@@ -112,12 +106,10 @@ ACTIONS = (UNCHANGED, UPDATED, UNDATED, MISSING_IN_QDRANT, MISSING_IN_VAULT)
 #: document disagree, ``qdrant_value`` is the JSON list of their values.
 CSV_COLUMNS = ("doc_id", "action", "field", "qdrant_value", "vault_value", "note")
 
-#: ``{document_url}``: the select-list entry of the document's address
-#: (``vault.document_url_select``), ``{doc_ids}`` / ``{limit}``: the filters.
+#: ``{doc_ids}`` / ``{limit}``: the filters.
 LEDGER_SQL = (
     "SELECT r.doc_id AS ledger_doc_id, d.doc_id AS vault_doc_id, d.deleted_at, "
-    + ", ".join("{document_url}" if c == "document_url" else f"d.{c}"
-                for c in _PAYLOAD_COLUMNS if c != "doc_id")
+    + ", ".join(f"d.{c}" for c in _PAYLOAD_COLUMNS if c != "doc_id")
     + ", d.extra\n"
     "FROM rag_ingestions r\n"
     "LEFT JOIN documents d ON d.corpus = r.corpus AND d.doc_id = r.doc_id\n"
@@ -226,9 +218,7 @@ def point_values(payload: Mapping | None, keys: Sequence[str]) -> dict:
 def ledger_rows(conn, corpus: str, collection: str, *, doc_ids: Sequence[str] | None = None,
                 limit: int | None = None) -> list[dict]:
     """The documents ``rag_ingestions`` records for ``collection`` and ``corpus``,
-    with their vault row (all ``None`` when the row is gone), in ``doc_id`` order.
-    The document's address is read from ``vault.document_url_column`` (``pdf_url``
-    on a vault before the rename) and always named ``document_url``."""
+    with their vault row (all ``None`` when the row is gone), in ``doc_id`` order."""
     params: dict = {"collection": collection, "corpus": corpus}
     doc_filter = ""
     if doc_ids:
@@ -238,8 +228,7 @@ def ledger_rows(conn, corpus: str, collection: str, *, doc_ids: Sequence[str] | 
     if limit is not None:
         limit_sql = "\nLIMIT %(limit)s"
         params["limit"] = int(limit)
-    sql = LEDGER_SQL.format(document_url=document_url_select(document_url_column(conn)),
-                            doc_ids=doc_filter, limit=limit_sql)
+    sql = LEDGER_SQL.format(doc_ids=doc_filter, limit=limit_sql)
     with conn.cursor() as cur:
         cur.execute(sql, params)
         columns = [d[0] for d in cur.description]

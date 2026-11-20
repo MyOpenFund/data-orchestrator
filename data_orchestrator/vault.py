@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import weakref
 
 import psycopg2
 
@@ -144,54 +143,6 @@ def application_name() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Transition: the column of the document's address, ``document_url`` or ``pdf_url``
-# ---------------------------------------------------------------------------
-#: The column of the document's own address. The vault renamed ``pdf_url`` to
-#: ``document_url`` (2026-11, its gated DDL train); until every vault this
-#: package talks to has run that DDL, the selection reads whichever exists.
-DOCUMENT_URL_COLUMN = "document_url"
-#: Its former name, read when the vault has not renamed it yet. Transition
-#: only: to remove with :func:`document_url_column` once every vault has run
-#: the rename.
-LEGACY_DOCUMENT_URL_COLUMN = "pdf_url"
-
-DOCUMENT_URL_COLUMN_SQL = (
-    "SELECT column_name FROM information_schema.columns\n"
-    "WHERE table_name = 'documents' AND table_schema = ANY (current_schemas(false))\n"
-    "  AND column_name IN (%(new)s, %(old)s)"
-)
-
-# conn -> the column found on it: the schema is read once per connection.
-_DOCUMENT_URL_COLUMNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-
-
-def document_url_column(conn) -> str:
-    """The name of the ``documents`` column holding the document's address on
-    the vault behind ``conn``: ``document_url``, else (a vault that has not run
-    the rename yet) ``pdf_url``. Neither found (no ``documents`` table in the
-    search path) -> ``document_url``, so the selection fails with Postgres's
-    own error naming it. Read once per connection (``information_schema``),
-    then remembered for that connection.
-    """
-    try:
-        return _DOCUMENT_URL_COLUMNS[conn]
-    except (KeyError, TypeError):
-        pass
-    with conn.cursor() as cur:
-        cur.execute(DOCUMENT_URL_COLUMN_SQL,
-                    {"new": DOCUMENT_URL_COLUMN, "old": LEGACY_DOCUMENT_URL_COLUMN})
-        found = {row[0] for row in cur.fetchall()}
-    column = (LEGACY_DOCUMENT_URL_COLUMN
-              if LEGACY_DOCUMENT_URL_COLUMN in found and DOCUMENT_URL_COLUMN not in found
-              else DOCUMENT_URL_COLUMN)
-    try:
-        _DOCUMENT_URL_COLUMNS[conn] = column
-    except TypeError:  # a connection without weak references: read again next time
-        pass
-    return column
-
-
-# ---------------------------------------------------------------------------
 # Preflight: the vault is on the documents contract
 # ---------------------------------------------------------------------------
 #: The ``documents`` columns the contract added (vault 12ffd11).
@@ -243,16 +194,6 @@ def require_contract_schema(conn) -> None:
             f"{'; '.join(problems)}: this vault predates the documents contract (vault "
             "12ffd11). Deploy the vault and run its ingestion once first (README, "
             "'Deploying with the documents contract'); nothing was written")
-
-
-def document_url_select(column: str, table: str = "d") -> str:
-    """The select-list entry of the document's address, always named
-    ``document_url``: ``d.document_url``, or ``d.pdf_url AS document_url``."""
-    if column == DOCUMENT_URL_COLUMN:
-        return f"{table}.{DOCUMENT_URL_COLUMN}"
-    if column == LEGACY_DOCUMENT_URL_COLUMN:
-        return f"{table}.{LEGACY_DOCUMENT_URL_COLUMN} AS {DOCUMENT_URL_COLUMN}"
-    raise ValueError(f"not a column of the document's address: {column!r}")
 
 
 def insert_run_report(conn, report: dict) -> None:

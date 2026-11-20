@@ -28,11 +28,6 @@ logged with its ``doc_id`` and counted in the run report
 (``docs_bad_local_path``, ``bad_local_path_doc_ids``; ``iter_items(refused=)``).
 A document is ``(corpus, doc_id)``: the anti-join matches both.
 
-Transition (2026-11 rename): the vault's ``pdf_url`` column became
-``document_url``. :func:`iter_items` reads which of the two the vault has, once
-per connection (``vault.document_url_column``), and selects it as
-``document_url``, so a run against a vault that has not run the rename yet
-still carries the address. To remove once every vault has run it.
 """
 from __future__ import annotations
 
@@ -41,7 +36,6 @@ from typing import Iterator, Sequence
 
 from ..core import SourceItem, source_label
 from ..payload import PAYLOAD_COLUMNS, row_to_payload  # noqa: F401  (row_to_payload: re-exported)
-from ..vault import DOCUMENT_URL_COLUMN, document_url_column, document_url_select
 from ..routing import (
     BadLocalPath, resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
 )
@@ -129,26 +123,18 @@ _FROM = ("FROM documents d\n"
          "  ON r.corpus = d.corpus AND r.doc_id = d.doc_id AND r.collection = %(collection)s\n")
 
 
-def _select_list(document_url_from: str) -> str:
-    """``_SELECT_COLUMNS`` as the select list: every column under its own
-    name, the document's address read from ``document_url_from`` and named
-    ``document_url``."""
-    return ", ".join(document_url_select(document_url_from) if c == DOCUMENT_URL_COLUMN
-                     else f"d.{c}" for c in _SELECT_COLUMNS)
+#: ``_SELECT_COLUMNS`` as the select list.
+_SELECT_LIST = ", ".join(f"d.{c}" for c in _SELECT_COLUMNS)
 
 
-def build_selection_sql(corpus, collection, *, supported_mimes=None,
-                        document_url_from: str = DOCUMENT_URL_COLUMN, **filters):
+def build_selection_sql(corpus, collection, *, supported_mimes=None, **filters):
     """The anti-join restricted to supported types. Returns (sql, params).
 
     ``supported_mimes`` None -> ``routing.supported_mime_types()``.
-    ``document_url_from``: the vault column of the document's address
-    (``document_url``, or ``pdf_url`` on a vault before the rename), selected
-    as ``document_url``.
     """
     clauses, params = _where(corpus, collection, supported_mimes=supported_mimes, **filters)
     clauses.append(_SUPPORTED_PREDICATE)
-    sql = (f"SELECT {_select_list(document_url_from)}\n" + _FROM +
+    sql = (f"SELECT {_SELECT_LIST}\n" + _FROM +
            f"WHERE {' AND '.join(clauses)}\nORDER BY d.doc_id")
     return sql, params
 
@@ -202,13 +188,8 @@ def iter_items(conn, corpus: str, collection: str, *, refused: list | None = Non
     """Yield SourceItems for every vault doc not yet in ``collection``.
 
     ``refused``, when given, receives the ``doc_id`` of every row skipped for
-    its ``local_path`` (``routing.BadLocalPath``), as they are met.
-
-    The column of the document's address is read from the vault first
-    (``vault.document_url_column``: ``document_url``, or ``pdf_url`` before
-    the rename)."""
-    sql, params = build_selection_sql(corpus, collection,
-                                      document_url_from=document_url_column(conn), **filters)
+    its ``local_path`` (``routing.BadLocalPath``), as they are met."""
+    sql, params = build_selection_sql(corpus, collection, **filters)
     skipped = 0
     if refused is None:
         refused = []

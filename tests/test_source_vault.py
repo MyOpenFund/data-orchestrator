@@ -398,45 +398,27 @@ def test_a_pdf_url_of_extra_never_reaches_the_payload(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Transition (2026-11 rename): the selection reads whichever of document_url
-# and pdf_url the vault has, as document_url.
+# The document's address is the column document_url: the vault's 2026-11
+# rename is behind every vault, nothing reads pdf_url any more.
 # ---------------------------------------------------------------------------
-def test_a_vault_before_the_rename_is_selected_through_pdf_url():
-    sql, _ = build_selection_sql("central-bank", "c", document_url_from="pdf_url")
-    assert "d.pdf_url AS document_url" in sql and "d.document_url" not in sql
-
-
-def test_build_selection_sql_refuses_another_address_column():
-    with pytest.raises(ValueError, match="address"):
-        build_selection_sql("central-bank", "c", document_url_from="html_path")
-
-
-@pytest.mark.parametrize("schema_columns, selected", [
-    (("document_url",), "d.document_url,"),
-    (("pdf_url",), "d.pdf_url AS document_url"),
-    (("pdf_url", "document_url"), "d.document_url,"),
-    ((), "d.document_url,"),  # no documents table found: Postgres names the missing column
-])
-def test_iter_items_reads_the_column_of_the_vault_first(monkeypatch, tmp_path, schema_columns,
-                                                        selected):
+def test_the_selection_reads_document_url_without_reading_the_schema(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS,
-                             schema_columns=schema_columns)
+    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS)
     (item,) = iter_items(conn, "central-bank", "c")
-    assert "information_schema.columns" in conn.executed[0][0]
-    assert selected in conn.executed[1][0]
+    (sql, _), = conn.executed
+    assert "information_schema" not in sql and "pdf_url" not in sql
+    assert "d.document_url," in sql
     assert item.payload["document_url"] == "https://example.org/d1.pdf"
 
 
-def test_the_column_is_read_once_per_connection(monkeypatch, tmp_path):
-    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS,
-                             schema_columns=("pdf_url",))
-    list(iter_items(conn, "central-bank", "c"))
-    list(iter_items(conn, "central-bank", "c"))
-    reads = [sql for sql, _ in conn.executed if "information_schema" in sql]
-    assert len(reads) == 1
-    assert "d.pdf_url AS document_url" in conn.executed[-1][0]
+def test_the_rename_fallback_is_gone():
+    import inspect
+
+    from data_orchestrator import vault
+
+    for name in ("document_url_column", "document_url_select", "LEGACY_DOCUMENT_URL_COLUMN"):
+        assert not hasattr(vault, name), name
+    assert "document_url_from" not in inspect.signature(build_selection_sql).parameters
 
 
 def test_the_keys_dropped_by_design_never_reach_the_payload_and_are_not_counted(
