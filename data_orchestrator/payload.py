@@ -66,9 +66,16 @@ PAYLOAD_COLUMNS: tuple[str, ...] = (
 #: before it (central-bank rows carried ``date_precision`` and ``date_kind``
 #: there). On a vault row stored before the contract the column is NULL and
 #: the value is still in ``extra``: :func:`row_to_payload` then keeps the value
-#: of ``extra``. Transition only: once the vault's ingestion has run on the
-#: contract (it moves these keys out of ``extra``), the rule never applies; to
-#: remove with the contract's transition cleanup.
+#: of ``extra``. Transition only: the vault's ingestion on the contract moves
+#: these keys out of ``extra`` for every row it writes, but a row it does not
+#: rewrite keeps them there with a NULL column: a row refused since the
+#: contract (not written, so not migrated) or soft-deleted (no longer in a
+#: manifest). To remove with the contract's transition cleanup, once this
+#: query on the vault returns 0 (the live rows; a soft-deleted row is never
+#: selected for ingestion, but sync-metadata reads it as missing-in-vault)::
+#:
+#:     SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind'))
+
 CONTRACT_COLUMNS_FROM_EXTRA: tuple[str, ...] = (
     "date_precision", "date_kind", "entity_scheme", "entity_value",
 )

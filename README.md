@@ -998,13 +998,31 @@ this one.
 
 **Transition code, removed with the contract's cleanup** (once every manifest
 is migrated and the vault drops its transitional aliases, `TRANSITION_ALIASES`
-and the `rag_ingestions (doc_id, collection)` index): `payload.LEGACY_COLUMN_NAMES`
-(`pdf_url`, `bank_code` left out of `extra`), `payload.CONTRACT_COLUMNS_FROM_EXTRA`
-(a NULL contract column keeping the value of `extra`), the `data/` strip of
-`routing.TRANSITION_LOCAL_PATH_STRIP`, `sync_metadata.LEGACY_LINK_KEYS`
-(`pdf_url` removed from points), `vault.document_url_column` /
-`LEGACY_DOCUMENT_URL_COLUMN` (a vault before the `pdf_url` rename), and the
-`split_row` transition (`transition=True`, the contract's default).
+and the `rag_ingestions (doc_id, collection)` index):
+
+- `payload.LEGACY_COLUMN_NAMES` (`pdf_url`, `bank_code` left out of `extra`);
+- `payload.CONTRACT_COLUMNS_FROM_EXTRA` (a NULL contract column keeping the
+  value of `extra`). A row the vault's ingestion did not rewrite on the
+  contract keeps the keys in `extra` with a NULL column: a row refused since
+  then, or soft-deleted. Gate: this query on the vault returns 0 before the
+  removal:
+
+  ```sql
+  SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind'));
+  ```
+- the `data/` strip of `routing.TRANSITION_LOCAL_PATH_STRIP`, and the
+  transition mode of `vault_contract.is_bad_local_path` in
+  `routing.resolve_local_path` (a leading `data/` accepted);
+- the transition mode of `vault_contract.check_row` in
+  `sources/cb_corpus.py::_refusals` (a row without `corpus`, an old alias
+  accepted), and of `split_row` in `payload.manifest_row_to_vault_row`
+  (`transition=True`, the contract's default);
+- `sync_metadata.LEGACY_LINK_KEYS` (`pdf_url` removed from points);
+- `vault.document_url_column` / `LEGACY_DOCUMENT_URL_COLUMN` (a vault before
+  the `pdf_url` rename);
+- the copy of the vault's transitional index
+  `rag_ingestions_doc_collection_transition` in
+  `tests/integration/conftest.py`.
 
 ## Testing
 
