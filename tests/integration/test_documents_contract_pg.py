@@ -128,3 +128,22 @@ def test_the_company_corpus_is_ingested_from_the_vault(clean_state, qdrant_addr,
         assert payload["date_start"] == "2024-11-01T00:00:00Z"
         assert payload["accession"] == "0000320193-24-000123"
         assert not {"local_path", "pdf_path", "text_path", "primary_path"} & set(payload)
+
+
+def test_the_preflight_reads_the_real_catalog(clean_pg):
+    from data_orchestrator.vault import require_contract_schema
+
+    conn = psycopg2.connect(clean_pg)
+    require_contract_schema(conn)  # the schema of vault 12ffd11
+    conn.autocommit = True
+    with conn.cursor() as cur:  # the vault before the contract
+        cur.execute("DROP TABLE rag_ingestions; CREATE TABLE rag_ingestions ("
+                    "doc_id TEXT NOT NULL, collection TEXT NOT NULL, corpus TEXT NOT NULL, "
+                    "embedding_model TEXT NOT NULL, chunk_count INTEGER NOT NULL, "
+                    "PRIMARY KEY (doc_id, collection))")
+        cur.execute("ALTER TABLE documents DROP COLUMN date_kind")
+    conn.autocommit = False
+    with pytest.raises(VaultSchemaTooOld,
+                       match="no column date_kind; rag_ingestions has no key"):
+        require_contract_schema(conn)
+    conn.close()

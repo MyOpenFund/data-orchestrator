@@ -756,6 +756,9 @@ def main(argv: list[str] | None = None) -> int:
             vault_conn = vault_mod.connect()
             vault_mod.lock_collection(vault_conn, collection, exclusive=False,
                                       holder=f"{args.source} ingestion")
+            # Before any Qdrant write: a vault before the documents contract
+            # has no key (corpus, doc_id, collection) for the ledger.
+            vault_mod.require_contract_schema(vault_conn)
             if not args.no_resume:
                 ledger = vault_mod.VaultLedger(
                     vault_conn, collection=collection, corpus=args.corpus,
@@ -942,6 +945,9 @@ def _sync_metadata(args) -> int:
         # (its report may then be stale for the documents that ingestion
         # writes), but it never runs beside a --write.
         vault_mod.lock_collection(conn, collection, exclusive=args.write, holder="sync-metadata")
+        # An older vault keeps date_precision / date_kind in extra: comparing
+        # against it would read them as removed.
+        vault_mod.require_contract_schema(conn)
         schema = sm.payload_schema(store, collection)
         from rag_engine.schema import PAYLOAD_INDEXES
 
@@ -1027,6 +1033,7 @@ def _run_vault_source(args, collection: str) -> int:
         # Never alongside a sync-metadata run of this collection (shared:
         # ingestions do not exclude each other).
         vault_mod.lock_collection(conn, collection, exclusive=False, holder="vault ingestion")
+        vault_mod.require_contract_schema(conn)  # before any Qdrant write
         # --no-resume is rejected for this source before we ever get here
         # (main()), so the ledger — and therefore the anti-join's resume
         # semantics — is always coherent: always on.
@@ -1096,6 +1103,7 @@ def _count_vault_source(args, collection: str) -> int:
     conn = None
     try:
         conn = vault_mod.connect()
+        vault_mod.require_contract_schema(conn)
         filters = _vault_filters(args)
         unsupported = vault_source.count_unsupported(conn, args.corpus, collection, **filters)
         items = vault_source.iter_items(conn, args.corpus, collection, **filters)

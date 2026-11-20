@@ -191,6 +191,55 @@ def document_url_column(conn) -> str:
     return column
 
 
+# ---------------------------------------------------------------------------
+# Preflight: the vault is on the documents contract
+# ---------------------------------------------------------------------------
+#: The ``documents`` columns the contract added (vault 12ffd11).
+CONTRACT_DOCUMENT_COLUMNS: tuple[str, ...] = (
+    "date_precision", "date_kind", "entity_scheme", "entity_value",
+)
+#: The key of ``rag_ingestions`` since the contract, as sorted column names.
+RAG_INGESTIONS_KEY: tuple[str, ...] = ("collection", "corpus", "doc_id")
+
+CONTRACT_SCHEMA_SQL = (
+    "SELECT ARRAY(SELECT column_name::text FROM information_schema.columns\n"
+    "             WHERE table_name = 'documents' AND table_schema = ANY (current_schemas(false))\n"
+    "               AND column_name = ANY (%(columns)s) ORDER BY 1),\n"
+    "       EXISTS (SELECT 1 FROM pg_index i\n"
+    "               WHERE i.indrelid = to_regclass('rag_ingestions') AND i.indisunique\n"
+    "                 AND ARRAY(SELECT a.attname::text FROM pg_attribute a\n"
+    "                           WHERE a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)\n"
+    "                           ORDER BY 1) = %(key)s::text[]\n"
+    "                 AND i.indnatts = %(key_len)s)"
+)
+
+
+def require_contract_schema(conn) -> None:
+    """Raise :class:`VaultSchemaTooOld` unless the vault behind ``conn`` is on
+    the documents contract: ``documents`` has the four contract columns and
+    ``rag_ingestions`` a unique key ``(corpus, doc_id, collection)``. One read
+    of the catalog, before any Qdrant write (vault source, sync-metadata, a
+    disk source with the vault ledger); the transaction it opens is ended.
+    """
+    with conn.cursor() as cur:
+        cur.execute(CONTRACT_SCHEMA_SQL, {"columns": list(CONTRACT_DOCUMENT_COLUMNS),
+                                          "key": list(RAG_INGESTIONS_KEY),
+                                          "key_len": len(RAG_INGESTIONS_KEY)})
+        columns, keyed = cur.fetchone()
+    conn.rollback()
+    missing = [c for c in CONTRACT_DOCUMENT_COLUMNS if c not in set(columns or ())]
+    problems = []
+    if missing:
+        problems.append(f"documents has no column {', '.join(missing)}")
+    if not keyed:
+        problems.append("rag_ingestions has no key (corpus, doc_id, collection)")
+    if problems:
+        raise VaultSchemaTooOld(
+            f"{'; '.join(problems)}: this vault predates the documents contract (vault "
+            "12ffd11). Deploy the vault and run its ingestion once first (README, "
+            "'Deploying with the documents contract'); nothing was written")
+
+
 def document_url_select(column: str, table: str = "d") -> str:
     """The select-list entry of the document's address, always named
     ``document_url``: ``d.document_url``, or ``d.pdf_url AS document_url``."""

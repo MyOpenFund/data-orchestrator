@@ -191,3 +191,90 @@ def test_cli_closes_vault_connection_on_run_failure(monkeypatch, tmp_path):
     sql, params = conn.executed[-1]
     assert "INSERT INTO runs" in sql
     assert params[5] == "failed" and params[6] == 1
+
+
+# ---------------------------------------------------------------------------
+# Preflight: the vault is on the documents contract
+# ---------------------------------------------------------------------------
+class _CatalogConn(FakeConn):
+    def __init__(self, columns, keyed):
+        super().__init__()
+        self.answer = (list(columns), keyed)
+
+    def cursor(self):
+        conn = self
+
+        class _Cursor(FakeCursor):
+            def fetchone(self):
+                return conn.answer
+
+        return _Cursor(self)
+
+
+ALL_COLUMNS = ("date_kind", "date_precision", "entity_scheme", "entity_value")
+
+
+@pytest.mark.real_contract_preflight
+def test_the_preflight_passes_on_a_vault_on_the_contract():
+    from data_orchestrator.vault import require_contract_schema
+
+    conn = _CatalogConn(ALL_COLUMNS, True)
+    require_contract_schema(conn)
+    sql, params = conn.executed[0]
+    assert "information_schema.columns" in sql and "pg_index" in sql
+    assert params["key"] == ["collection", "corpus", "doc_id"]
+    assert conn.rollbacks == 1  # read only: the transaction is ended
+
+
+@pytest.mark.real_contract_preflight
+@pytest.mark.parametrize("columns,keyed,match", [
+    ((), False, "documents has no column date_precision, date_kind, entity_scheme, "
+                "entity_value; rag_ingestions has no key"),
+    (ALL_COLUMNS, False, "^rag_ingestions has no key"),
+    (("date_precision",), True, "no column date_kind, entity_scheme, entity_value:"),
+])
+def test_the_preflight_refuses_a_vault_before_the_contract(columns, keyed, match):
+    from data_orchestrator.vault import VaultSchemaTooOld, require_contract_schema
+
+    with pytest.raises(VaultSchemaTooOld, match=match) as info:
+        require_contract_schema(_CatalogConn(columns, keyed))
+    assert "nothing was written" in str(info.value)
+
+
+@pytest.mark.parametrize("argv", [["vault"], ["vault", "--count-only"], ["cb_corpus"],
+                                  ["sync-metadata"]], ids=" ".join)
+def test_every_vault_run_refuses_an_old_vault_before_any_qdrant_write(
+        monkeypatch, tmp_path, capsys, argv):
+    """The vault source, its count, the cb_corpus source with the vault
+    ledger and sync-metadata all stop on the preflight, before the engine or
+    Qdrant is touched."""
+    from data_orchestrator import cli
+    import data_orchestrator.vault as vault_mod
+    from data_orchestrator.vault import VaultSchemaTooOld
+
+    class Closable(FakeConn):
+        def close(self):
+            pass
+
+    def old_vault(conn):
+        raise VaultSchemaTooOld("rag_ingestions has no key (corpus, doc_id, collection)")
+
+    monkeypatch.setattr(vault_mod, "connect", lambda: Closable())
+    monkeypatch.setattr(vault_mod, "require_contract_schema", old_vault)
+    monkeypatch.setattr(cli, "run_ingest", lambda *a, **k: pytest.fail("run_ingest called"))
+    import data_orchestrator.core as core
+    monkeypatch.setattr(core, "build_store", lambda *a, **k: _NoQdrant())
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "manifest").mkdir()
+    (tmp_path / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    assert cli.main(argv) == 1
+    assert "VaultSchemaTooOld: rag_ingestions has no key" in capsys.readouterr().err
+
+
+class _NoQdrant:
+    host, port = "qdrant.test", 6433
+
+    def __getattr__(self, name):
+        pytest.fail(f"Qdrant touched: {name}")

@@ -102,6 +102,20 @@ def isolated_env(request):
         os.environ.update(saved)
 
 
+@pytest.fixture(autouse=True)
+def _vault_on_the_contract(request, monkeypatch):
+    """The fake vault connections of the unit suite answer no catalog query:
+    ``vault.require_contract_schema`` (the preflight) is taken as passed,
+    except for a test marked ``real_contract_preflight`` (its own tests) and
+    the integration suite (a real Postgres)."""
+    if request.node.get_closest_marker("real_contract_preflight") or \
+            request.node.get_closest_marker("integration"):
+        return
+    from data_orchestrator import vault
+
+    monkeypatch.setattr(vault, "require_contract_schema", lambda conn: None)
+
+
 class DescribedFakeCursor:
     """psycopg2-like cursor over canned rows, exposing ``description``.
 

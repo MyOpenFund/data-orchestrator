@@ -46,11 +46,10 @@ standard library only), a runtime dependency pinned by commit in
   drive, a backslash, ...) is never joined nor read.
 
 This version needs a vault on the contract (vault `12ffd11` or later, after its
-ingestion ran once: that run is the DDL train). Against an older vault the
-vault source and `sync-metadata` fail on the first query (the new columns do
-not exist) and an ingest run with the vault ledger stops at its first document
-(`VaultSchemaTooOld`: `rag_ingestions` has no key `(corpus, doc_id,
-collection)`). See [Deploying with the documents contract](#deploying-with-the-documents-contract).
+ingestion ran once: that run is the DDL train). Against an older vault every
+run that uses it (the vault source, `sync-metadata`, a disk source with the
+vault ledger) stops before any Qdrant write with `VaultSchemaTooOld`, naming
+what is missing (one catalog read, `vault.require_contract_schema`). See [Deploying with the documents contract](#deploying-with-the-documents-contract).
 
 ## Layout
 
@@ -966,7 +965,7 @@ Old and new versions of the two do not mix:
 | | vault before the contract (`2d0457e`) | vault on the contract (`12ffd11`), after its first ingestion |
 |---|---|---|
 | **this repo before** (`81ead10`) | works | **ingestion works** (the vault keeps a transitional unique index on `rag_ingestions (doc_id, collection)` for it) but its payloads lose `date_precision` / `date_kind` (moved out of `extra`): **no ingestion and no `sync-metadata` with it** (a `--write` would strip both keys from every point) |
-| **this repo now** | **refused**: the vault source and `sync-metadata` fail on their first query (no `date_precision` column), an ingest run with the vault ledger stops at its first document (`VaultSchemaTooOld`) | works |
+| **this repo now** | **refused** before any Qdrant write: the vault source (and its `--count-only`), `sync-metadata` and `cb_corpus` with the vault ledger read the catalog first (`vault.require_contract_schema`: the four contract columns, the key `(corpus, doc_id, collection)`) and stop with `VaultSchemaTooOld`, exit 1 | works |
 
 So: deploy the vault and let its ingestion run once (the DDL train, then the
 rows in contract form), then update this repository on every machine that runs
