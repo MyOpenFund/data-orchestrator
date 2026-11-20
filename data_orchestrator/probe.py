@@ -65,6 +65,9 @@ def run_probe(conn, corpus: str, *, limit: int | None = None, batch: int = 50) -
     stats = {"probed": 0, "skipped": 0, "errors": 0}
     pending = 0
     for doc_id, local_path in rows:
+        # The vault source's trim (sources.vault.row_to_item): trailing blanks
+        # are not part of the file name.
+        local_path = local_path.rstrip(" \t\r\n")
         try:
             path = resolve_local_path(corpus, local_path)
         except BadLocalPath as exc:

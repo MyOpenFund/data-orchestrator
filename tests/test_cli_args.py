@@ -1513,3 +1513,22 @@ def test_an_unknown_log_level_fails_before_any_work(monkeypatch, capsys, argv):
     assert cli.main(argv) == 2
     err = capsys.readouterr().err
     assert err.startswith("error:") and "DATA_ORCHESTRATOR_LOG_LEVEL" in err
+
+
+def test_rows_with_a_bad_local_path_are_counted_in_the_run_report(monkeypatch, tmp_path, capsys):
+    _conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [],
+        selection_rows=[("ok", "raw/ok.pdf"), ("escape", "raw/../../x.pdf"),
+                        ("abs", "/etc/x.pdf")])
+    assert cli.main(["vault"]) == 0
+    (rep,) = reports
+    assert rep["docs_bad_local_path"] == 2
+    assert rep["bad_local_path_doc_ids"] == ["escape", "abs"]
+    err = capsys.readouterr().err
+    assert "warning: 2 document(s) skipped, never read" in err
+
+
+def test_a_clean_selection_reports_no_bad_local_path(monkeypatch, tmp_path):
+    _conn, reports = _fake_vault(monkeypatch, tmp_path, [], selection_rows=[("ok", "raw/ok.pdf")])
+    assert cli.main(["vault"]) == 0
+    assert "docs_bad_local_path" not in reports[0]

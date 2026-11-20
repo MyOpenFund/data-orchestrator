@@ -229,7 +229,9 @@ def resolve_local_path(corpus: str, local_path: str) -> Path:
 
     A path the documents contract refuses (``vault_contract.is_bad_local_path``,
     transition on: a leading ``data/`` is accepted) raises :class:`BadLocalPath`
-    first, before the root is read: such a path could leave the root.
+    first, before the root is read: such a path could leave the root. A plain
+    path that leaves the root all the same, through a symbolic link under it
+    (resolved: the root's own links are followed too), raises it as well.
     """
     if not isinstance(local_path, str) or is_bad_local_path(local_path):
         raise BadLocalPath(f"the documents contract refuses local_path {local_path!r} "
@@ -239,4 +241,8 @@ def resolve_local_path(corpus: str, local_path: str) -> Path:
     route = ROUTING[corpus]
     strip = route.local_path_strip
     remainder = local_path[len(strip):] if strip and local_path.startswith(strip) else local_path
-    return root / remainder
+    path = root / remainder
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise BadLocalPath(f"local_path {local_path!r} (corpus {corpus!r}) leaves the corpus "
+                           f"data root {root} through a symbolic link; nothing is read")
+    return path

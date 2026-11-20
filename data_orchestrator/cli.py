@@ -1028,6 +1028,7 @@ def _run_vault_source(args, collection: str) -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     conn = None
     unsupported = None  # known once count_unsupported ran; kept by a fatal report
+    bad_paths: list[str] = []  # rows skipped for their local_path (routing.BadLocalPath)
     try:
         conn = vault_mod.connect()
         # Never alongside a sync-metadata run of this collection (shared:
@@ -1053,7 +1054,9 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"Skipping {n_unsupported} document(s) of a type the engine cannot read "
                   "(see DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES and the README's "
                   "'Supported document types')")
-        items = vault_source.iter_items(conn, args.corpus, collection, **filters)
+        bad_paths: list[str] = []
+        items = vault_source.iter_items(conn, args.corpus, collection, refused=bad_paths,
+                                        **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
               f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
         _print_ocr_state(args.engine_settings, args.ocr)
@@ -1067,6 +1070,7 @@ def _run_vault_source(args, collection: str) -> int:
 
         rep = _build_report("vault", stats, started_at, corpus=args.corpus,
                             ratio=args.degraded_ratio, unsupported=unsupported)
+        _report_bad_paths(rep, bad_paths)
         try:
             vault_mod.insert_run_report(conn, rep)
         except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
@@ -1077,6 +1081,7 @@ def _run_vault_source(args, collection: str) -> int:
         stats = interrupted_stats(exc)
         rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
                             unsupported=unsupported, stats=stats)
+        _report_bad_paths(rep, bad_paths)
         if conn is not None:
             _insert_fatal_report(vault_mod, conn, rep)
         _print_interrupted_summary(stats)
@@ -1085,6 +1090,23 @@ def _run_vault_source(args, collection: str) -> int:
     finally:
         if conn is not None:
             conn.close()
+
+
+#: How many doc_ids of rows skipped for their local_path the run report names.
+BAD_PATH_EXAMPLES = 20
+
+
+def _report_bad_paths(rep: dict, bad_paths: list) -> None:
+    """Count the rows skipped for a local_path the documents contract refuses
+    (``routing.BadLocalPath``) in the run report (keys outside the ``runs``
+    columns: ``runs.extra``), and say so on stderr. Nothing when there is none."""
+    if not bad_paths:
+        return
+    rep["docs_bad_local_path"] = len(bad_paths)
+    rep["bad_local_path_doc_ids"] = bad_paths[:BAD_PATH_EXAMPLES]
+    print(f"warning: {len(bad_paths)} document(s) skipped, never read: their local_path is "
+          f"refused by the documents contract ({', '.join(bad_paths[:5])}"
+          f"{', …' if len(bad_paths) > 5 else ''})", file=sys.stderr)
 
 
 def _count_vault_source(args, collection: str) -> int:

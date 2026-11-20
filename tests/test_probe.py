@@ -240,3 +240,10 @@ def test_run_probe_never_reads_a_bad_local_path(tmp_path, monkeypatch):
     stats = run_probe(conn, "central-bank")
     assert stats == {"probed": 0, "skipped": 1, "errors": 0}
     assert not [e for e in conn.executed if e[0].startswith("UPDATE documents")]
+
+
+def test_run_probe_trims_the_local_path_like_the_vault_source(tmp_path, monkeypatch):
+    _pdf(tmp_path, "t.pdf", True)
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = FakeConn([("d1", "t.pdf \r\n")])
+    assert run_probe(conn, "central-bank") == {"probed": 1, "skipped": 0, "errors": 0}
