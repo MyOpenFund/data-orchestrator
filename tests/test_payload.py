@@ -14,7 +14,9 @@ ENV = "DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS"
 # The setting
 # ---------------------------------------------------------------------------
 def test_the_default_drops_the_producer_paths_and_the_alternative_urls():
-    assert pl.dropped_extra_keys() == ("html_path", "alt_urls", "alt_source_urls", "local_path")
+    assert pl.dropped_extra_keys() == ("html_path", "alt_urls", "alt_source_urls", "local_path",
+                                       "pdf_path", "text_path", "primary_path",
+                                       "submission_path")
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -234,6 +236,7 @@ def test_a_company_row_carries_its_entity():
     assert payload["date_precision"] == "day" and payload["date_kind"] == "publication"
     assert payload["cik"] == "0000320193" and payload["accession"] == "0000320193-24-000123"
     assert "local_path" not in payload and "alt_urls" not in payload
+    assert not {"pdf_path", "text_path", "primary_path", "submission_path"} & set(payload)
 
 
 @pytest.mark.parametrize("name", sorted(golden.accepted()))

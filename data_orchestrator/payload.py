@@ -94,9 +94,13 @@ DROP_EXTRA_KEYS_ENV = "DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS"
 #: Its default: ``html_path`` (a path on the producer's machine),
 #: ``alt_urls`` / ``alt_source_urls`` (lists of other addresses of the
 #: document; ``document_url`` and ``source_url`` are the ones a citation links to),
-#: ``local_path`` (a path in the corpus, never a reader's concern).
+#: ``local_path`` (a path in the corpus, never a reader's concern), and the
+#: company corpus's paths of its other artefacts, ``pdf_path``, ``text_path``,
+#: ``primary_path``, ``submission_path`` (extras of its rows; paths in the
+#: corpus too).
 DEFAULT_DROP_EXTRA_KEYS: tuple[str, ...] = ("html_path", "alt_urls", "alt_source_urls",
-                                            "local_path")
+                                            "local_path", "pdf_path", "text_path",
+                                            "primary_path", "submission_path")
 #: The value of the setting that drops no key.
 DROP_NONE = "none"
 

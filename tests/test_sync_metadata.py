@@ -678,7 +678,8 @@ def test_the_links_are_owned_only_on_request():
     assert keys[:len(sm.OWNED_KEYS)] == sm.OWNED_KEYS
     assert set(keys) == set(sm.OWNED_KEYS) | {"document_url", "source_url", "mime_type",
                                               "pdf_url", "html_path", "alt_urls",
-                                              "alt_source_urls", "local_path"}
+                                              "alt_source_urls", "local_path", "pdf_path",
+                                              "text_path", "primary_path", "submission_path"}
     assert len(keys) == len(set(keys))
 
 
