@@ -75,7 +75,8 @@ def test_run_probe_updates_facts(tmp_path, monkeypatch):
     stats = run_probe(conn, "central-bank")
     assert stats == {"probed": 1, "skipped": 1, "errors": 0}
     updates = [e for e in conn.executed if e[0].startswith("UPDATE documents")]
-    assert updates[0][1] == (True, 2, "d1")
+    assert updates[0][1] == (True, 2, "central-bank", "d1")
+    assert "WHERE corpus = %s AND doc_id = %s" in updates[0][0]
     assert conn.commits >= 1
 
 

@@ -468,3 +468,13 @@ def test_the_dropped_keys_follow_the_setting(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", "none")
     item = row_to_item(_row(extra=extra), "central-bank")
     assert item.payload["html_path"] == "/x.html" and item.payload["repec_handle"] == "h"
+
+
+def test_the_anti_join_matches_the_corpus_and_the_doc_id():
+    """A document is (corpus, doc_id) in the vault: a row of another corpus
+    with the same doc_id in rag_ingestions never hides this one."""
+    for sql, _params in (build_selection_sql("company", "company-e5b-v1"),
+                         build_unsupported_sql("company", "company-e5b-v1")):
+        flat = " ".join(sql.split())
+        assert ("ON r.corpus = d.corpus AND r.doc_id = d.doc_id "
+                "AND r.collection = %(collection)s") in flat

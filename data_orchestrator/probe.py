@@ -31,7 +31,7 @@ ORDER BY doc_id
 """
 
 UPDATE_FACTS_SQL = """
-UPDATE documents SET has_text_layer = %s, page_count = %s WHERE doc_id = %s
+UPDATE documents SET has_text_layer = %s, page_count = %s WHERE corpus = %s AND doc_id = %s
 """
 
 
@@ -72,7 +72,7 @@ def run_probe(conn, corpus: str, *, limit: int | None = None, batch: int = 50) -
         try:
             with conn.cursor() as cur:
                 cur.execute("SAVEPOINT probe_doc")
-                cur.execute(UPDATE_FACTS_SQL, (has_text, page_count, doc_id))
+                cur.execute(UPDATE_FACTS_SQL, (has_text, page_count, corpus, doc_id))
                 cur.execute("RELEASE SAVEPOINT probe_doc")
             stats["probed"] += 1
             pending += 1

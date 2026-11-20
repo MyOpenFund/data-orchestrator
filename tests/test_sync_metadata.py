@@ -944,3 +944,10 @@ def test_an_undated_row_that_lost_its_precision_is_one_difference(tmp_path):
     assert stats.actions[sm.UNDATED] == 1 and stats.to_write == 1
     assert [(r["field"], r["qdrant_value"], r["vault_value"]) for r in rows] == [
         ("date_precision", "month", "")]
+
+
+def test_the_ledger_joins_its_documents_on_the_corpus_and_the_doc_id():
+    conn = LedgerConn([])
+    sm.ledger_rows(conn, CORPUS, COLLECTION)
+    sql = [s for s, _p in conn.executed if "FROM rag_ingestions r" in s][0]
+    assert "LEFT JOIN documents d ON d.corpus = r.corpus AND d.doc_id = r.doc_id" in sql

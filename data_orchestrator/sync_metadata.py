@@ -120,7 +120,7 @@ LEDGER_SQL = (
                 for c in _PAYLOAD_COLUMNS if c != "doc_id")
     + ", d.extra\n"
     "FROM rag_ingestions r\n"
-    "LEFT JOIN documents d ON d.doc_id = r.doc_id\n"
+    "LEFT JOIN documents d ON d.corpus = r.corpus AND d.doc_id = r.doc_id\n"
     "WHERE r.collection = %(collection)s AND r.corpus = %(corpus)s{doc_ids}\n"
     "ORDER BY r.doc_id{limit}"
 )

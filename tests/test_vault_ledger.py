@@ -83,7 +83,8 @@ def test_resume_set_loaded_at_construction():
     assert "d1" in led and "d2" in led and "d3" not in led
     assert len(led) == 2
     sql, params = conn.executed[0]
-    assert "FROM rag_ingestions" in sql and params == ("central-bank-e5b-v1",)
+    assert "FROM rag_ingestions" in sql and params == ("central-bank-e5b-v1", "central-bank")
+    assert "WHERE collection = %s AND corpus = %s" in sql  # a document is (corpus, doc_id)
 
 
 def test_mark_upserts_with_metadata_and_commits():
@@ -92,7 +93,8 @@ def test_mark_upserts_with_metadata_and_commits():
     led.mark("d9", 42, payload={"source_code": "us", "title": "x"})
     sql, params = conn.executed[-1]
     assert "INSERT INTO rag_ingestions" in sql
-    assert "ON CONFLICT (doc_id, collection) DO UPDATE" in sql
+    assert "ON CONFLICT (corpus, doc_id, collection) DO UPDATE" in sql
+    assert "corpus = EXCLUDED.corpus" not in sql  # part of the key
     assert params == (
         "d9", "central-bank-e5b-v1", "central-bank", "us",
         "intfloat/multilingual-e5-base", "e5-prefixes-v1", 42,
@@ -124,6 +126,24 @@ def test_mark_rolls_back_and_reraises_on_upsert_failure():
     assert conn.rollbacks == 1
     assert conn.commits == 0
     assert "poison" not in led  # in-memory resume set untouched by the failure
+
+
+def test_a_vault_before_the_documents_contract_stops_the_run_at_the_first_document():
+    """Against a vault without the key (corpus, doc_id, collection), Postgres
+    refuses the ON CONFLICT (SQLSTATE 42P10): every document would fail the
+    same way after its points were written, so the run stops, saying why."""
+    from data_orchestrator.core import FatalRunError
+    from data_orchestrator.vault import VaultSchemaTooOld
+
+    class NoMatchingKey(Exception):
+        pgcode = "42P10"
+
+    conn = FailOnceConn(fail_exc=NoMatchingKey("no unique or exclusion constraint"))
+    led = _ledger(conn)
+    with pytest.raises(VaultSchemaTooOld, match="predates the documents contract") as info:
+        led.mark("d1", 5, payload={"source_code": "us"})
+    assert isinstance(info.value, FatalRunError)
+    assert conn.rollbacks == 1 and "d1" not in led
 
 
 def test_connect_requires_database_url(monkeypatch):

@@ -114,9 +114,11 @@ def _where(
     return clauses, params
 
 
+# A document is (corpus, doc_id) in the vault (documents contract): the
+# anti-join matches both, so another corpus's doc_id never hides one.
 _FROM = ("FROM documents d\n"
          "LEFT JOIN rag_ingestions r\n"
-         "  ON r.doc_id = d.doc_id AND r.collection = %(collection)s\n")
+         "  ON r.corpus = d.corpus AND r.doc_id = d.doc_id AND r.collection = %(collection)s\n")
 
 
 def _select_list(document_url_from: str) -> str:
