@@ -22,9 +22,11 @@ writes), because the captured value came from ``extra`` (see below), from
 which :func:`_vault_row` moves it to the column. :func:`_expected` is the captured
 payload through both translations.
 
-Never adapt the fixture to make this pass. The one translation of the
+Never adapt the fixture to make this pass. The translations of the
 captured rows, :func:`_vault_row` (``pdf_url`` moved from ``extra`` to its
-column, today ``document_url``), is not an adaptation of the expected points: the captured row with
+column, today ``document_url``; ``local_path`` without its pre-contract
+``data/`` prefix, as the vault stores it on the documents contract), are not
+an adaptation of the expected points: the captured row with
 ``pdf_url`` in ``extra`` is synthetic, the vault cannot produce it
 (``pdf_url`` is one of its columns, ``ingestion/ingest.py`` ``KNOWN_FIELDS``),
 so today's selection of the same document carries the value in the column.
@@ -149,6 +151,10 @@ def _vault_row(row):
         out["extra"] = {k: v for k, v in extra.items() if k not in RENAMED_KEYS} or None
     if out.get("date"):
         out["date"] = datetime.date.fromisoformat(out["date"])
+    # The vault on the documents contract stores local_path relative to the
+    # corpus data root: the captured "data/raw/..." without its "data/".
+    assert row["local_path"].startswith("data/raw/")
+    out["local_path"] = row["local_path"][len("data/"):]
     path = FIXTURE / "corpus" / row["local_path"].strip()[len("data/"):]
     out["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     return out

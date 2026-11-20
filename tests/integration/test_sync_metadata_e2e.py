@@ -105,7 +105,7 @@ def _build(pg_url, addr, corpus_dir, tmp_path, monkeypatch):
     client = _client(addr)
     for c in client.get_collections().collections:
         client.delete_collection(c.name)
-    gb = "data/raw/gb/A3/"
+    gb = "raw/gb/A3/"
     insert_documents(pg_url, [
         {"doc_id": "a-moved-year", "corpus": "central-bank", "source_code": "gb",
          "doc_type": "A3", "title": "Minutes", "date": "2016-01-01", "year": 2016,
@@ -125,7 +125,7 @@ def _build(pg_url, addr, corpus_dir, tmp_path, monkeypatch):
         {"doc_id": "f-unchanged-date", "corpus": "central-bank", "source_code": "us",
          "doc_type": "A2", "title": "Statement", "date": "2010-03-04", "year": 2010,
          "language": "en", "local_path": gb + "f.md",
-         "extra": json.dumps({"date_precision": "day", "date_kind": "meeting"})},
+         "date_precision": "day", "date_kind": "meeting"},
         {"doc_id": "g-garbage-precision", "corpus": "central-bank", "source_code": "gb",
          "doc_type": "A3", "title": "Minutes", "date": "2012-05-09", "year": 2012,
          "language": "en", "local_path": gb + "g.pdf"},
@@ -145,17 +145,18 @@ def _build(pg_url, addr, corpus_dir, tmp_path, monkeypatch):
     stale = dict(d_point.payload, chunk_number=7, date="2014-02-03", year=2014)
     client.upsert(coll, points=[models.PointStruct(
         id=point_id("d-disagree", 0, 7), vector=d_point.vector, payload=stale)], wait=True)
-    # The corrections of the vault (what the policy-dates backfill did).
-    _sql(pg_url, "UPDATE documents SET date='2015-12-17', year=2015, extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_precision": "day", "date_kind": "meeting", "date_source": "title"}),
-          "a-moved-year"))
-    _sql(pg_url, "UPDATE documents SET extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_precision": "month", "date_kind": "period",
-                      "date_start": "1999-01-01T00:00:00Z"}), "b-month"))
-    _sql(pg_url, "UPDATE documents SET date=NULL, extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_kind": "meeting"}), "c-undated"))
-    _sql(pg_url, "UPDATE documents SET extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_precision": "fortnight"}), "g-garbage-precision"))
+    # The corrections of the vault (what the policy-dates backfill did), in
+    # the documents contract's columns.
+    _sql(pg_url, "UPDATE documents SET date='2015-12-17', year=2015, date_precision='day', "
+                 "date_kind='meeting', extra=%s WHERE doc_id=%s",
+         (json.dumps({"date_source": "title"}), "a-moved-year"))
+    _sql(pg_url, "UPDATE documents SET date_precision='month', date_kind='period', extra=%s "
+                 "WHERE doc_id=%s",
+         (json.dumps({"date_start": "1999-01-01T00:00:00Z"}), "b-month"))
+    _sql(pg_url, "UPDATE documents SET date=NULL, date_kind='meeting' WHERE doc_id=%s",
+         ("c-undated",))
+    _sql(pg_url, "UPDATE documents SET date_precision='fortnight' WHERE doc_id=%s",
+         ("g-garbage-precision",))
     _sql(pg_url, "UPDATE documents SET deleted_at=now() WHERE doc_id='e-deleted'")
     return coll, client
 
@@ -311,7 +312,7 @@ def test_a_strict_collection_without_the_doc_id_index(
     client.upsert(coll, points=[models.PointStruct(id=1, vector=[0.1] * 768, payload={
         "doc_id": "s1", "date": "2016-01-01", "year": 2016})], wait=True)
     insert_documents(pg, [{"doc_id": "s1", "corpus": "central-bank", "date": "2016-02-01",
-                           "year": 2016, "extra": json.dumps({"date_precision": "month"})}])
+                           "year": 2016, "date_precision": "month"}])
     _sql(pg, "INSERT INTO rag_ingestions (doc_id, collection, corpus, embedding_model, "
              "chunk_count) VALUES ('s1', %s, 'central-bank', 'm', 1)", (coll,))
 
@@ -418,7 +419,7 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
     client = _client(addr)
     for c in client.get_collections().collections:  # the keyed Qdrant is shared
         client.delete_collection(c.name)
-    gb = "data/raw/gb/A3/"
+    gb = "raw/gb/A3/"
     insert_documents(pg, [
         {"doc_id": "linked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
          "title": "Minutes", "date": "2016-01-01", "year": 2016, "language": "en",
@@ -429,7 +430,7 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
                               "date_precision": "day", "repec_handle": "RePEc:a"})},
         {"doc_id": "unlinked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
          "title": "Minutes", "date": "2016-02-01", "year": 2016, "language": "en",
-         "local_path": gb + "b.pdf", "extra": json.dumps({"pdf_url": "https://stale.org/b"})},
+         "local_path": gb + "b.pdf"},
     ])
     _env(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY)
     assert cli.main(["vault", "--corpus", "central-bank"]) == 0
@@ -442,8 +443,8 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
             assert payload["mime_type"] == "application/pdf"
             assert payload["repec_handle"] == "RePEc:a"
             assert "html_path" not in payload and "alt_urls" not in payload
-        else:  # NULL columns: absent, even where extra holds the name
-            assert not {"document_url", "pdf_url", "source_url", "mime_type"} & set(payload)
+        else:  # NULL columns: absent
+            assert not {"document_url", "source_url", "mime_type"} & set(payload)
 
     # The points as an older ingestion wrote them: no links, the producer's keys.
     client.delete_payload(coll, keys=["document_url", "source_url", "mime_type"],

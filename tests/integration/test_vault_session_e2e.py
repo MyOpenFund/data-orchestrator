@@ -79,7 +79,7 @@ def _corpus(tmp_path):
 def _seed_vault(pg_url):
     insert_documents(pg_url, [
         {"doc_id": f"doc{i}", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
-         "date": "2016-01-01", "year": 2016, "local_path": f"data/raw/gb/A3/2016/doc{i}.pdf",
+         "date": "2016-01-01", "year": 2016, "local_path": f"raw/gb/A3/2016/doc{i}.pdf",
          "extra": json.dumps({"date_precision": "month"})}
         for i in range(N_DOCS)])
 

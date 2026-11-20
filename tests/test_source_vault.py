@@ -52,15 +52,14 @@ def _row(**over):
         "document_url": "https://example.org/d1.pdf", "source_url": "https://example.org/d1",
         "mime_type": "application/pdf",
         "date_precision": None, "date_kind": None, "entity_scheme": None, "entity_value": None,
-        "local_path": "data/raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
+        "local_path": "raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
     }
     row.update(over)
     return row
 
 
 def test_row_to_item_maps_payload_and_path(monkeypatch, tmp_path):
-    # local_path is repo-root-relative ("data/raw/..."); resolve_local_path
-    # (routing) strips "data/" for central-bank before joining with the root.
+    # local_path is relative to the corpus data root (documents contract).
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     item = row_to_item(_row(), "central-bank")
     assert item.doc_id == "d1"
@@ -94,7 +93,7 @@ def test_row_to_item_strips_trailing_whitespace_from_local_path(monkeypatch, tmp
     """The SQL compares on rtrim(local_path, ' \\t\\r\\n'): a row it selected as
     '.pdf' must resolve to the '.pdf' file, not to a name ending in blanks."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    item = row_to_item(_row(local_path="data/raw/us/C1/2015/d1.pdf" + tail), "central-bank")
+    item = row_to_item(_row(local_path="raw/us/C1/2015/d1.pdf" + tail), "central-bank")
     assert item.path == tmp_path / "raw" / "us" / "C1" / "2015" / "d1.pdf"
 
 
@@ -281,7 +280,7 @@ def test_a_vault_item_with_a_dirty_extra_is_ingested_not_failed(monkeypatch, tmp
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     path = _md_item(tmp_path / "raw", doc_id="d1").path
-    item = row_to_item(_row(local_path="data/raw/d1.md",
+    item = row_to_item(_row(local_path="raw/d1.md",
                             extra={"filename": "old.pdf", "page": 4, "cik": "0001"}),
                        "central-bank")
     assert item.path == path
@@ -306,7 +305,7 @@ def test_a_vault_extra_holding_the_derived_interval_is_ingested_not_failed(monke
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     _md_item(tmp_path / "raw", doc_id="d1")
-    item = row_to_item(_row(local_path="data/raw/d1.md", date=datetime.date(2016, 7, 1),
+    item = row_to_item(_row(local_path="raw/d1.md", date=datetime.date(2016, 7, 1),
                             year=2016, date_precision="month", date_kind="meeting",
                             extra={"date_source": "title",
                                    "date_start": "1999-01-01T00:00:00Z", "date_end": 5}),
@@ -332,7 +331,7 @@ def test_an_undated_vault_row_gets_no_interval(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     _md_item(tmp_path / "raw", doc_id="d1")
-    item = row_to_item(_row(local_path="data/raw/d1.md", date=None, year=None,
+    item = row_to_item(_row(local_path="raw/d1.md", date=None, year=None,
                             date_precision="garbage"), "central-bank")
     store = FakeStore([])
     run_ingest([item], collection="c", store=store, embedder=FakeEmbedder())

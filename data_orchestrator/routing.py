@@ -162,21 +162,6 @@ class CorpusRoute:
 
     corpus: str
     root_env_key: str  # .env key holding this machine's corpus data root
-    # Leading prefix stripped from the vault's local_path before joining with
-    # corpus_root(). Only ever a leading-prefix strip (never a substring
-    # removal anywhere in the path) — see resolve_local_path(). Transition
-    # only (TRANSITION_LOCAL_PATH_STRIP): the documents contract has
-    # local_path relative to the corpus data root already.
-    local_path_strip: str = ""
-
-
-#: The ``data/`` prefix central-bank manifests gave ``local_path`` before the
-#: documents contract (relative to the cb_corpus repository, not to its data
-#: root). The vault strips it when it ingests (``split_row``, transition on),
-#: so a vault on the contract never returns it; this fallback only serves a
-#: row stored before the contract. To remove with the contract's transition
-#: cleanup.
-TRANSITION_LOCAL_PATH_STRIP = "data/"
 
 ROUTING: dict[str, CorpusRoute] = {
     # Contract: local_path is relative to the corpus data root, the directory
@@ -185,7 +170,6 @@ ROUTING: dict[str, CorpusRoute] = {
     "central-bank": CorpusRoute(
         corpus="central-bank",
         root_env_key="CB_CORPUS_ROOT",
-        local_path_strip=TRANSITION_LOCAL_PATH_STRIP,
     ),
     "company": CorpusRoute(
         corpus="company",
@@ -229,27 +213,21 @@ def _resolved(root: Path) -> Path:
 def resolve_local_path(corpus: str, local_path: str) -> Path:
     """Join a vault ``local_path`` with its corpus root.
 
-    Strips the route's ``local_path_strip`` prefix first, when present, to
-    reconcile manifest-relative local_paths with a root that already points
-    past that prefix (see ``ROUTING["central-bank"]`` for the concrete case).
-    The strip is a leading-prefix match only — a "data/" occurring anywhere
-    else in the path is left untouched.
-
-    A path the documents contract refuses (``vault_contract.is_bad_local_path``,
-    transition on: a leading ``data/`` is accepted) raises :class:`BadLocalPath`
-    first, before the root is read: such a path could leave the root. A plain
-    path that leaves the root all the same, through a symbolic link under it
-    (resolved: the root's own links are followed too), raises it as well.
+    ``local_path`` is relative to the corpus data root (the documents
+    contract). A path the contract refuses (``vault_contract.is_bad_local_path``
+    with ``transition=False``, as the vault ingests: a leading ``data/``, the
+    pre-contract central-bank form, is refused too) raises
+    :class:`BadLocalPath` first, before the root is read: such a path could
+    leave the root, or name a file under another one. A plain path that leaves
+    the root all the same, through a symbolic link under it (resolved: the
+    root's own links are followed too), raises it as well.
     """
-    if not isinstance(local_path, str) or is_bad_local_path(local_path):
+    if not isinstance(local_path, str) or is_bad_local_path(local_path, transition=False):
         raise BadLocalPath(f"the documents contract refuses local_path {local_path!r} "
                            f"(corpus {corpus!r}): not a plain path relative to the corpus "
                            "data root; nothing is read")
     root = corpus_root(corpus)
-    route = ROUTING[corpus]
-    strip = route.local_path_strip
-    remainder = local_path[len(strip):] if strip and local_path.startswith(strip) else local_path
-    path = root / remainder
+    path = root / local_path
     if not path.resolve().is_relative_to(_resolved(root)):
         raise BadLocalPath(f"local_path {local_path!r} (corpus {corpus!r}) leaves the corpus "
                            f"data root {root} through a symbolic link; nothing is read")

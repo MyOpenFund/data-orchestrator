@@ -56,27 +56,19 @@ def test_corpus_root_unset_env(monkeypatch):
         routing.corpus_root("central-bank")
 
 
-def test_resolve_local_path_strips_data_prefix_for_central_bank(monkeypatch, tmp_path):
-    # CB_CORPUS_ROOT points at the data dir (contains raw/), but the vault's
-    # local_path is repo-root-relative ("data/raw/..."); the resolver must
-    # strip "data/" so the join lands on <root>/raw/... not <root>/data/raw/...
+@pytest.mark.parametrize("corpus", ["central-bank", "company"])
+def test_a_data_prefix_is_refused_not_stripped(monkeypatch, tmp_path, corpus):
+    """The pre-contract central-bank form (``data/raw/...``, relative to the
+    cb_corpus repository) is refused as the vault refuses it
+    (``is_bad_local_path`` with ``transition=False``): never stripped, never
+    read."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    result = routing.resolve_local_path("central-bank", "data/raw/us/C1/2010/doc123.pdf")
-    assert result == tmp_path / "raw" / "us" / "C1" / "2010" / "doc123.pdf"
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(tmp_path))
+    with pytest.raises(routing.BadLocalPath, match="documents contract refuses"):
+        routing.resolve_local_path(corpus, "data/raw/us/C1/2010/doc123.pdf")
 
 
-def test_resolve_local_path_empty_strip_passes_through_unchanged(monkeypatch, tmp_path):
-    monkeypatch.setitem(
-        routing.ROUTING, "no-strip-corpus",
-        routing.CorpusRoute(corpus="no-strip-corpus", root_env_key="NO_STRIP_ROOT"),
-    )
-    monkeypatch.setenv("NO_STRIP_ROOT", str(tmp_path))
-    result = routing.resolve_local_path("no-strip-corpus", "data/raw/x.pdf")
-    assert result == tmp_path / "data" / "raw" / "x.pdf"
-
-
-def test_resolve_local_path_strip_only_matches_leading_prefix(monkeypatch, tmp_path):
-    # "data/" appears mid-path here, not as a leading prefix — must be left alone.
+def test_a_data_segment_inside_the_path_is_an_ordinary_segment(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     result = routing.resolve_local_path("central-bank", "raw/us/data/2010/doc.pdf")
     assert result == tmp_path / "raw" / "us" / "data" / "2010" / "doc.pdf"
@@ -144,9 +136,10 @@ def test_a_central_bank_path_on_the_contract_is_joined_as_it_is(monkeypatch, tmp
         tmp_path / "raw" / "ecb" / "A1" / "2022" / "a.pdf"
 
 
-def test_the_data_prefix_is_only_a_transition_fallback():
-    assert routing.ROUTING["central-bank"].local_path_strip == routing.TRANSITION_LOCAL_PATH_STRIP
-    assert routing.ROUTING["company"].local_path_strip == ""
+def test_the_data_prefix_fallback_is_gone():
+    assert not hasattr(routing, "TRANSITION_LOCAL_PATH_STRIP")
+    for route in routing.ROUTING.values():
+        assert not hasattr(route, "local_path_strip")
 
 
 @pytest.mark.parametrize("bad", [
