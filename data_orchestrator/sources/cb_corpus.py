@@ -85,9 +85,9 @@ REFUSED_EXAMPLES = 5
 ROOT_ENV_KEY = "CB_CORPUS_ROOT"
 
 #: The vault corpus of this source's documents (the vault's own default
-#: ``CORPUS``, ``central-bank``): the ``corpus`` of a payload whose manifest row
-#: names none, and of every path-derived payload. ``iter_items(corpus=...)``
-#: (the CLI's ``--corpus``) overrides it.
+#: ``CORPUS``, ``central-bank``): the ``corpus`` of every path-derived payload
+#: (a manifest row without ``corpus`` is refused ``missing_corpus``).
+#: ``iter_items(corpus=...)`` (the CLI's ``--corpus``) overrides it.
 DEFAULT_CORPUS = "central-bank"
 
 #: ``date_precision`` of a path-derived date (``<year>-01-01``).

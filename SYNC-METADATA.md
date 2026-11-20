@@ -25,8 +25,8 @@ scratch collection, the CSVs) and two snapshots of production under `~`
 ## After the documents contract (vault 12ffd11 or later)
 
 The vault's `documents` contract 1.0.0 (unchanged on this in 1.1.0) turns
-`date_precision` and `date_kind` into columns: the vault's first ingestion on the contract moves both out of
-`extra` into their columns, under the same names and with the same values, and
+`date_precision` and `date_kind` into columns: the vault's first ingestion on the
+contract moves both out of `extra` into their columns, under the same names and with the same values, and
 this repo reads them from the columns (`payload.PAYLOAD_COLUMNS`, last
 positions). The payload an ingestion builds today is then the one the points of
 `central-bank-e5b-v1` were written with, and a dry run is the check:
