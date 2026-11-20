@@ -83,6 +83,26 @@ def test_html_is_never_yielded_and_include_html_is_gone(tmp_path):
         list(iter_items(root, prefer_manifest=False, include_html=True))
 
 
+#: The fields the documents contract requires of a row (``vault_contract.check_row``
+#: with ``transition=False``): a test row the contract accepts starts from them.
+ACCEPTED = {"corpus": "central-bank", "source_code": "us", "doc_type": "C1", "language": "en",
+            "provenance": "bis"}
+
+
+def _ok(doc_id, **fields):
+    """A manifest row (JSON) the documents contract accepts: :data:`ACCEPTED`,
+    then ``fields``, ``year`` from ``date``. Asserted, so a test row that the
+    run would skip is never mistaken for one it reads."""
+    from vault_contract import check_row
+
+    row = {"doc_id": doc_id, **ACCEPTED, **fields}
+    if row.get("date") and "year" not in fields:
+        row["year"] = int(row["date"][:4])
+    refusals = check_row(row, None, expected_corpus=row["corpus"], transition=False).refusals
+    assert not refusals, refusals
+    return json.dumps(row)
+
+
 def _manifest(root, bank, *rows):
     """Write ``<root>/manifest/<bank>.jsonl`` — the per-bank layout cb_corpus
     produces (the single-file ``manifest.jsonl`` no longer exists upstream)."""
@@ -108,15 +128,15 @@ def test_manifest_hit_carries_the_exact_date(tmp_path):
     must get its real publication date and title, flagged as coming from the
     manifest so the point-in-time layer can trust the date."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "A speech",'
-                          ' "document_url": "https://example.org/a.pdf", "sha256": "ab12",'
-                          ' "provenance": "bis"}')
+    _manifest(root, "us", _ok("a", date="2015-06-30", title="A speech",
+                              document_url="https://example.org/a.pdf", sha256="ab" * 32,
+                              provenance="bis"))
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
     assert item.payload["date"] == "2015-06-30"
     assert item.payload["title"] == "A speech"
     assert item.payload["document_url"] == "https://example.org/a.pdf"
-    assert item.payload["sha256"] == "ab12"
+    assert item.payload["sha256"] == "ab" * 32
     assert item.payload["provenance"] == "bis"
 
 
@@ -124,9 +144,7 @@ def test_a_pdf_url_is_no_longer_read_as_document_url(tmp_path):
     """The contract's transition is over: ``pdf_url`` is an ordinary field,
     never the document's address."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    _manifest(root, "us", json.dumps({"doc_id": "a", "corpus": "central-bank",
-                                      "source_code": "us", "doc_type": "C1",
-                                      "pdf_url": "https://example.org/a.pdf"}))
+    _manifest(root, "us", _ok("a", pdf_url="https://example.org/a.pdf"))
     (item,) = iter_items(root)
     assert "document_url" not in item.payload
     assert item.payload["pdf_url"] == "https://example.org/a.pdf"
@@ -137,7 +155,7 @@ def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
     conservative <year>-01-01 date flagged as path-derived, so a later reindex
     can upgrade it instead of the document being silently dropped."""
     root = _corpus(tmp_path, "us/C1/2015/indexed.pdf", "us/C1/2015/fresh.pdf")
-    _manifest(root, "us", '{"doc_id": "indexed", "date": "2015-06-30"}')
+    _manifest(root, "us", _ok("indexed", date="2015-06-30"))
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
     assert payloads["fresh"] == {
         "date_precision": "year", "doc_id": "fresh", "corpus": "central-bank",
@@ -153,9 +171,9 @@ def test_malformed_manifest_line_does_not_cost_its_neighbours(tmp_path):
     root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
     _manifest(
         root, "us",
-        '{"doc_id": "a", "date": "2015-06-30"}',
+        _ok("a", date="2015-06-30"),
         '{"doc_id": "b", "date": "2015-0',  # torn tail
-        '{"doc_id": "b", "date": "2015-07-31"}',
+        _ok("b", date="2015-07-31"),
     )
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
     assert payloads["a"]["date"] == "2015-06-30"
@@ -167,7 +185,7 @@ def test_per_bank_manifest_layout_is_read(tmp_path):
     connector must read that layout, or every real corpus document loses its
     exact publication date without any error being raised (issue #5)."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}')
+    _manifest(root, "us", _ok("a", date="2015-06-30"))
     (item,) = iter_items(root)
     assert item.payload["metadata_source"] == "manifest"
     assert item.payload["date"] == "2015-06-30"
@@ -178,8 +196,9 @@ def test_all_bank_files_are_merged_into_one_index(tmp_path):
     ``ecb.jsonl`` must be enriched just like one indexed in ``us.jsonl`` —
     reading only the first file would silently degrade every other bank."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf", "ecb/A3/2019/c.pdf")
-    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "US"}')
-    _manifest(root, "ecb", '{"doc_id": "c", "date": "2019-03-07", "title": "ECB"}')
+    _manifest(root, "us", _ok("a", date="2015-06-30", title="US"))
+    _manifest(root, "ecb", _ok("c", source_code="ecb", doc_type="A3", date="2019-03-07",
+                               title="ECB"))
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
     assert payloads["a"]["metadata_source"] == "manifest"
     assert payloads["a"]["date"] == "2015-06-30"
@@ -193,7 +212,7 @@ def test_single_file_manifest_is_not_recognised(tmp_path):
     NOT read (pre-release: clean break, no compat shim). With a per-bank dir
     present, a stray single file must have no effect on the index."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
-    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}')
+    _manifest(root, "us", _ok("a", date="2015-06-30"))
     (root / "manifest.jsonl").write_text('{"doc_id": "b", "date": "2015-07-31"}\n', encoding="utf-8")
     payloads = {i.doc_id: i.payload for i in iter_items(root)}
     assert payloads["a"]["metadata_source"] == "manifest"
@@ -268,7 +287,7 @@ def test_the_payload_never_sets_a_key_the_engine_writes_itself(tmp_path, indexed
 
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
     if indexed:
-        _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30", "title": "A speech"}')
+        _manifest(root, "us", _ok("a", date="2015-06-30", title="A speech"))
     (item,) = iter_items(root, prefer_manifest=indexed)
     assert set(item.payload) & set(RESERVED_KEYS) == {"doc_id"}
     assert item.payload["doc_id"] == item.doc_id
@@ -289,12 +308,17 @@ def test_an_undated_path_document_has_no_date_and_no_precision(tmp_path):
 
 
 def test_the_corpus_of_a_disk_payload_is_the_run_s(tmp_path):
+    """A row of another corpus than the run's is refused (``corpus_conflict``)
+    and skipped, as the vault skips it; a path-derived payload has the run's."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf", "us/C1/2015/b.pdf")
-    _manifest(root, "us", '{"doc_id": "a", "date": "2015-06-30"}',
-              '{"doc_id": "b", "corpus": "own", "date": "2015-06-30"}')
-    payloads = {i.doc_id: i.payload for i in iter_items(root, corpus="scratch")}
+    _manifest(root, "us", _ok("a", corpus="scratch", date="2015-06-30"),
+              _ok("b", corpus="own", date="2015-06-30"))
+    refused = []
+    payloads = {i.doc_id: i.payload
+                for i in iter_items(root, corpus="scratch", refused=refused)}
     assert payloads["a"]["corpus"] == "scratch"
-    assert payloads["b"]["corpus"] == "own"  # the row's own corpus, like the vault column
+    assert "b" not in payloads
+    assert refused == [("b", ("corpus_conflict",))]
     (item,) = iter_items(_corpus(tmp_path / "p", "us/C1/2015/c.pdf"), prefer_manifest=False,
                          corpus="scratch")
     assert item.payload["corpus"] == "scratch"
@@ -305,16 +329,15 @@ def test_a_manifest_row_with_unknown_dropped_and_reserved_keys(tmp_path):
     design are left out silently, a reserved key is left out and counted, a
     null or absent field is absent, never an empty string."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    _manifest(root, "us", json.dumps({
-        "doc_id": "a", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
-        "title": None, "date": "2015-06-30",
-        "year": 2015, "html_path": "/Users/someone/a.html", "alt_urls": ["https://alt"],
-        "alt_source_urls": [], "text": "stale", "repec_handle": "RePEc:x", "speaker": "J. Doe"}))
+    _manifest(root, "us", _ok(
+        "a", title=None, date="2015-06-30", html_path="raw/us/C1/2015/a.html",
+        alt_urls=["https://alt"], alt_source_urls=[], text="stale", repec_handle="RePEc:x",
+        speaker="J. Doe"))
     (item,) = iter_items(root)
     assert item.payload == {
         "repec_handle": "RePEc:x", "speaker": "J. Doe", "doc_id": "a", "corpus": "central-bank",
         "source_code": "us", "doc_type": "C1", "date": "2015-06-30", "year": 2015,
-        "metadata_source": "manifest"}
+        "language": "en", "provenance": "bis", "metadata_source": "manifest"}
     assert item.dropped_keys == ("text",)
 
 
@@ -376,8 +399,13 @@ def _vault_row_by_hand(rec):
 
 @pytest.mark.parametrize("drop", [None, "none", "repec_handle"])
 def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypatch, drop):
+    """The payload of a row, whatever the contract says of it: the run skips
+    the rows it refuses (tested apart below), so the check is switched off here
+    to compare the payloads of adversarial rows too."""
+    from data_orchestrator.sources import cb_corpus
     from data_orchestrator.sources.vault import row_to_item
 
+    monkeypatch.setattr(cb_corpus, "_refusals", lambda rec, corpus: ())
     if drop is not None:
         monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", drop)
     root = _corpus(tmp_path, *(f"us/C1/2015/{r['doc_id']}.pdf" for r in PARITY_ROWS))
@@ -435,25 +463,26 @@ def test_a_migrated_manifest_row_is_accepted_and_used(tmp_path, caplog):
     assert caplog.text == ""  # accepted by the contract
 
 
-def test_a_legacy_manifest_row_is_refused_and_counted_not_mapped(tmp_path, caplog):
+def test_a_legacy_manifest_row_is_refused_skipped_and_counted(tmp_path, caplog):
     """The pre-contract form (``bank_code``, no ``corpus``, ``local_path``
     under ``data/``) is judged as the vault ingests it (``check_row`` with
-    ``transition=False``): refused and counted in the run's warning. Like any
-    refused row it is used as it is: no old key is mapped (``bank_code`` stays
-    an ordinary field, the payload has no ``source_code``)."""
+    ``transition=False``): refused, skipped (never read, as the vault keeps no
+    row for it), handed to ``refused`` with its reasons and named in the run's
+    warning. No old key is mapped."""
     import logging
 
     root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf")
     _manifest(root, "au", json.dumps(LEGACY_ROW),
               json.dumps(_migrated(dict(LEGACY_ROW, doc_id="b"))))
+    refused = []
     with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
-        items = {i.doc_id: i for i in iter_items(root)}
-    assert "1 manifest row(s) the documents contract refuses" in caplog.text
-    assert "a: missing_corpus, missing_source_code, bad_local_path" in caplog.text
-    legacy = items["a"].payload
-    assert "source_code" not in legacy and legacy["bank_code"] == "au"
-    assert legacy["corpus"] == "central-bank"  # the run's --corpus: the row names none
+        items = {i.doc_id: i for i in iter_items(root, refused=refused)}
+    assert list(items) == ["b"]
     assert items["b"].payload["source_code"] == "au"
+    assert refused == [("a", ("missing_corpus", "missing_source_code", "bad_local_path"))]
+    assert "1 manifest row(s) the documents contract refuses" in caplog.text
+    assert "skipped, never read" in caplog.text
+    assert "a: missing_corpus, missing_source_code, bad_local_path" in caplog.text
 
 
 def test_the_refusals_are_the_vault_s(monkeypatch):
@@ -470,22 +499,37 @@ def test_the_refusals_are_the_vault_s(monkeypatch):
         return check_row(rec, vocabulary, **kwargs)
 
     monkeypatch.setattr(cb_corpus, "check_row", fake_check_row)
-    assert cb_corpus._refusals(_migrated(LEGACY_ROW), "central-bank") == ""
+    assert cb_corpus._refusals(_migrated(LEGACY_ROW), "central-bank") == ()
     assert seen == {"expected_corpus": "central-bank", "transition": False}
 
 
-def test_a_row_the_contract_refuses_is_used_and_the_run_says_so(tmp_path, caplog):
+def test_a_row_the_contract_refuses_is_skipped_and_the_run_says_so(tmp_path, caplog):
     import logging
 
     root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf")
     good = _migrated(LEGACY_ROW)
     bad = dict(good, doc_id="b", language="english", local_path="raw/../b.pdf")
     _manifest(root, "au", json.dumps(good), json.dumps(bad))
+    refused = []
     with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
-        items = {i.doc_id: i for i in iter_items(root)}
-    assert items["b"].payload["language"] == "english"
+        items = {i.doc_id: i for i in iter_items(root, refused=refused)}
+    assert list(items) == ["a"]
+    assert refused == [("b", ("bad_language", "bad_local_path"))]
     assert "1 manifest row(s) the documents contract refuses" in caplog.text
     assert "b: bad_language, bad_local_path" in caplog.text
+
+
+@pytest.mark.parametrize("corpus", ["Central Bank", "", None])
+def test_a_corpus_that_is_not_a_corpus_code_is_a_usage_error(tmp_path, corpus):
+    """Not a refusal of every row: ``iter_items`` raises before the walk."""
+    from data_orchestrator.sources.cb_corpus import check_corpus
+
+    root = _corpus(tmp_path, "au/A1/1997/a.pdf")
+    _manifest(root, "au", json.dumps(_migrated(LEGACY_ROW)))
+    with pytest.raises(ValueError, match="not a corpus code"):
+        check_corpus(corpus)
+    with pytest.raises(ValueError, match="not a corpus code"):
+        list(iter_items(root, corpus=corpus))
 
 
 def test_a_path_derived_payload_has_its_precision_as_a_column(tmp_path):
@@ -497,15 +541,16 @@ def test_a_path_derived_payload_has_its_precision_as_a_column(tmp_path):
                             "date_precision": "year", "metadata_source": "path"}
 
 
-def test_a_run_stopped_early_still_says_it_used_refused_rows(tmp_path, caplog):
+def test_a_run_stopped_early_still_says_it_skipped_refused_rows(tmp_path, caplog):
     import logging
 
-    root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf")
+    root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf", "au/A1/1997/c.pdf")
     good = _migrated(LEGACY_ROW)
     bad = dict(good, doc_id="a", language="english")
-    _manifest(root, "au", json.dumps(bad), json.dumps(dict(good, doc_id="b")))
+    _manifest(root, "au", json.dumps(bad), json.dumps(dict(good, doc_id="b")),
+              json.dumps(dict(good, doc_id="c")))
     with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
         items = iter_items(root)
-        assert next(items).doc_id == "a"
+        assert next(items).doc_id == "b"
         items.close()  # --limit 1: the run stops here
     assert "1 manifest row(s) the documents contract refuses" in caplog.text

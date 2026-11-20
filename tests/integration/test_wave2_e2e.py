@@ -114,6 +114,46 @@ def test_a_pre_contract_local_path_is_skipped_and_counted(
         assert cur.fetchall() == [("1", ["doc-legacy"])]
 
 
+def test_a_manifest_row_the_contract_refuses_is_skipped_by_the_disk_source(
+    clean_state, qdrant_addr, tmp_path, monkeypatch, capsys
+):
+    """``cb_corpus`` with the vault ledger: a manifest row ``check_row``
+    (``transition=False``) refuses is never read, and the run report the vault
+    stores counts it (``runs.extra``) and as a failure for the outcome."""
+    import json
+
+    root = tmp_path / "cbc"
+    good = {"corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+            "language": "en", "provenance": "bank_site", "date": "2015-01-01", "year": 2015}
+    lines = []
+    for doc_id in ("doc-a", "doc-legacy"):
+        write_text_pdf(root / "raw" / "us" / "C1" / "2015" / f"{doc_id}.pdf")
+        lines.append(json.dumps({"doc_id": doc_id, **good}))
+    legacy = dict(good, doc_id="doc-legacy", bank_code="us")
+    del legacy["source_code"], legacy["corpus"]
+    lines[1] = json.dumps(legacy)
+    (root / "manifest").mkdir()
+    (root / "manifest" / "us.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    insert_documents(clean_state, [
+        {"doc_id": d, "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+         "year": 2015, "local_path": f"raw/us/C1/2015/{d}.pdf"} for d in ("doc-a", "doc-legacy")])
+    monkeypatch.setenv("DATABASE_URL", clean_state)
+    monkeypatch.setenv("QDRANT_HOST", qdrant_addr[0])
+    monkeypatch.setenv("QDRANT_PORT", str(qdrant_addr[1]))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    rc = cli.main(["cb_corpus", "--root", str(root), "--corpus", "central-bank"])
+    assert rc == 3  # 1 skipped of 2: past the 10 % default failure ratio
+    assert "doc-legacy" in capsys.readouterr().err
+    with psycopg2.connect(clean_state) as conn, conn.cursor() as cur:
+        cur.execute("SELECT doc_id FROM rag_ingestions ORDER BY doc_id")
+        assert [r[0] for r in cur.fetchall()] == ["doc-a"]
+        cur.execute("SELECT outcome, extra->>'docs_refused_contract', "
+                    "extra->'refused_contract_doc_ids', extra->'refused_contract_reasons' "
+                    "FROM runs")
+        assert cur.fetchall() == [("degraded", "1", ["doc-legacy"],
+                                   {"missing_corpus": 1, "missing_source_code": 1})]
+
+
 def test_cli_vault_second_run_selects_nothing(
     clean_state, qdrant_addr, corpus_dir, monkeypatch
 ):

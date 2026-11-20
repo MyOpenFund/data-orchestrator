@@ -240,13 +240,19 @@ compares it with a vault row written out by hand in the test, and
 `tests/test_payload.py` checks the split against the contract's golden rows.
 A manifest row the contract refuses (`vault_contract.check_row` without
 vocabulary, `transition=False` as the vault ingests: the vault keeps no row for
-it) is still used as it is; the run logs a warning with their number and the
-first reasons (also when it stops early). A row in the pre-contract form
-(`bank_code`, `pdf_url`, `local_path` under `data/`, no `corpus`) is such a
-row (`missing_corpus`, `missing_source_code`, `bad_local_path`): nothing is
-mapped, so its payload has no `source_code` and carries `bank_code` as an
-ordinary key. Migrate the manifest first (central-bank-corpus
-`migrate-contract`).
+it) is skipped, never read, as the vault skips it: the run warns with their
+number and the first doc_ids and reasons (also when it stops early), and the
+run report counts them (`docs_refused_contract`, the first 20 doc_ids in
+`refused_contract_doc_ids`, every reason with its count in
+`refused_contract_reasons`; `runs.extra`) and as failures for the outcome,
+like `docs_bad_local_path` (a run where they pass the degraded ratio is
+`degraded`, exit 3). `--count-only` leaves them out of its count and says how
+many there are. A row in the pre-contract form (`bank_code`, `pdf_url`,
+`local_path` under `data/`, no `corpus`) is such a row (`missing_corpus`,
+`missing_source_code`, `bad_local_path`): nothing is mapped. Migrate the
+manifest first (central-bank-corpus `migrate-contract`). Every row is checked
+against `--corpus`: a value that is not a corpus code (`[A-Za-z0-9_.-]{1,32}`,
+`vault_contract.CODE_PATTERN`) is a usage error, exit 2, before any work.
 **Change with the contract:** `date` and `year` are taken as the row gives
 them; this source used to cut a `date` with a time to its day
 (`2015-03-01T09:00:00Z` -> `2015-03-01`) and read a `year` of digits as an
@@ -521,8 +527,10 @@ error (exit 1 or 2, before any work). Exit codes are honest:
   ratio is `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, default `0.10`; `0` =
   any failure degrades, `1` = rule (b) off. `docs_unsupported` never degrades;
   the documents the `vault` source skipped for a bad `local_path`
-  (`docs_bad_local_path`, below) count as failed in (a) and (b), so a run where
-  they pass the ratio is at least `degraded`;
+  (`docs_bad_local_path`, below) and the documents the `cb_corpus` source
+  skipped for a manifest row the contract refuses (`docs_refused_contract`,
+  below) count as failed in (a) and (b), so a run where they pass the ratio is
+  at least `degraded`;
 - `1` **failed**: a fatal error (e.g. Qdrant unreachable; a refused API key,
   at setup or in the middle of a run; an embedding model whose dimension is
   not the declared one; a collection that is not a single unnamed vector of
@@ -571,7 +579,8 @@ Report fields that have no column of their own are swept into `runs.extra`
 applies to central-bank-corpus's `runs.jsonl`. A `vault` run carries
 `unsupported_by_source` (even `{}`) whenever its unsupported count was computed
 — every successful one, so a successful `vault` run's `extra` is never NULL;
-a disk source's successful run has a NULL `extra`. A fatal run's reason is
+a disk source's successful run has a NULL `extra` (unless it skipped refused
+manifest rows, below). A fatal run's reason is
 `extra->>'fatal'` (capped at 500 characters, the key central-bank-corpus
 writes); rows written before 2026-11 carry it as `extra->>'error'`, so a reader
 covering both uses `coalesce(extra->>'fatal', extra->>'error')`. A `vault` run
@@ -579,7 +588,13 @@ that skipped documents for their `local_path` ([Path resolution
 convention](#path-resolution-convention)) carries `docs_bad_local_path` (how
 many, on success and on a fatal error alike) and `bad_local_path_doc_ids` (the
 first 20 `doc_id`s) in `extra`, and says so on stderr (`warning: N document(s)
-skipped, never read: …`); they are absent from a run without any.
+skipped, never read: …`); they are absent from a run without any. Likewise a
+`cb_corpus` run that skipped documents for a manifest row the documents
+contract refuses ([cb_corpus](#cb_corpus--the-central-bank-corpus)) carries
+`docs_refused_contract` (how many, on success and on a fatal error alike),
+`refused_contract_doc_ids` (the first 20 `doc_id`s) and
+`refused_contract_reasons` (each `vault_contract` reason with the number of
+rows it refused) in `extra`, with the same stderr warning.
 `totals.docs_failed` stays the engine's count.
 
 ## Collections & embedding model
@@ -1048,8 +1063,12 @@ What went, and what replaces it:
   (skipped, counted, never read);
 - the transition mode of `vault_contract.check_row` in
   `sources/cb_corpus.py::_refusals` and of `split_row` in
-  `payload.manifest_row_to_vault_row`: both pass `transition=False`, so a
-  manifest row in the pre-contract form is refused and counted, never mapped;
+  `payload.manifest_row_to_vault_row`: both pass `transition=False`, so the
+  `cb_corpus` disk source skips a manifest row in the pre-contract form (or
+  any row the contract refuses), never reads or maps it, and counts it in the
+  run report (`docs_refused_contract`, `refused_contract_doc_ids`,
+  `refused_contract_reasons`) and as a failure for the outcome; a `--corpus`
+  that is not a corpus code is a usage error (exit 2);
 - `sync_metadata.LEGACY_LINK_KEYS`: `--include-links` no longer owns
   `pdf_url` (neither compared nor removed);
 - `vault.document_url_column` / `LEGACY_DOCUMENT_URL_COLUMN` /
@@ -1064,8 +1083,8 @@ did), and a vault on the contract stores every row in contract form whichever
 mode it ingests with, so it reads the vault before and after its cleanup the
 same way; the vault's cleanup in turn only needs every orchestrator to be at
 `2695b26` or later. The `cb_corpus` disk source, unlike a vault still on
-`transition=True`, refuses a pre-contract manifest row: run it on migrated
-manifests only.
+`transition=True`, refuses and skips a pre-contract manifest row: run it on
+migrated manifests only.
 
 ## Testing
 

@@ -115,6 +115,7 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         year_min=args.year_min,
         year_max=args.year_max,
         corpus=args.corpus,
+        refused=args.refused_contract,
     )
 
 
@@ -195,13 +196,17 @@ FATAL_MAX_CHARS = 500
 
 def _build_report(command: str, stats: IngestStats, started_at: str, *,
                   corpus: str, ratio: float,
-                  unsupported: dict[str, int] | None = None, bad_paths: int = 0) -> dict:
+                  unsupported: dict[str, int] | None = None, bad_paths: int = 0,
+                  refused_contract: int = 0) -> dict:
     """The run report of a run that finished. ``bad_paths``: documents the
     vault source skipped for a ``local_path`` the documents contract refuses
-    (``routing.BadLocalPath``): never attempted, they count as failures for
-    the outcome (``policy.run_outcome``), so a run where they pass the
-    degraded ratio is ``degraded``; ``totals.docs_failed`` stays the engine's
-    count, the skipped ones are ``docs_bad_local_path`` (``_report_bad_paths``)."""
+    (``routing.BadLocalPath``); ``refused_contract``: documents the cb_corpus
+    disk source skipped for a manifest row the contract refuses. Never
+    attempted, both count as failures for the outcome
+    (``policy.run_outcome``), so a run where they pass the degraded ratio is
+    ``degraded``; ``totals.docs_failed`` stays the engine's count, the skipped
+    ones are ``docs_bad_local_path`` (``_report_bad_paths``) and
+    ``docs_refused_contract`` (``_report_refused_contract``)."""
     totals = {
         "docs_seen": stats.docs_seen,
         "docs_new": stats.docs_ingested,
@@ -227,7 +232,7 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
     sources = [{"source_code": code, **counts} for code, counts in sorted(by_source.items())]
     outcome, exit_code = policy.run_outcome(
         docs_ingested=stats.docs_ingested, docs_empty=stats.docs_empty,
-        docs_failed=stats.docs_error + bad_paths, ratio=ratio,
+        docs_failed=stats.docs_error + bad_paths + refused_contract, ratio=ratio,
     )
     report = {
         "run_id": str(uuid.uuid4()),
@@ -662,6 +667,13 @@ def main(argv: list[str] | None = None) -> int:
         args.corpus = IMPLIED_CORPUS.get(args.source, "central-bank")
 
     if args.source == "cb_corpus":
+        # Every manifest row is checked against --corpus: a value that is not
+        # a corpus code is a usage error, never a refusal of every row.
+        try:
+            cb_corpus_source.check_corpus(args.corpus)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         # Eager pre-flight: cb_corpus's iter_items() is a generator, so a
         # missing/misconfigured root only surfaces at its first next() —
         # after the ledger/vault connection and engine are already spun up
@@ -691,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        # (doc_id, reasons) of the manifest rows the contract refuses: skipped.
+        args.refused_contract = []
         items = _build_cb_corpus_items(args)
 
     if args.source == "vault":
@@ -756,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Matching documents: {total}")
         print(f"  by {key1}:", dict(sorted(by_key1.items(), key=lambda kv: -kv[1])))
         print(f"  by {key2}:", dict(sorted(by_key2.items(), key=lambda kv: (str(kv[0])))))
+        _warn_refused_contract(getattr(args, "refused_contract", []))
         return 0
 
     ledger = None
@@ -810,8 +825,10 @@ def main(argv: list[str] | None = None) -> int:
         elapsed = time.time() - t0
         _print_summary(stats, elapsed)
 
+        refused_contract = getattr(args, "refused_contract", [])
         rep = _build_report(args.source, stats, started_at, corpus=args.corpus,
-                            ratio=args.degraded_ratio)
+                            ratio=args.degraded_ratio, refused_contract=len(refused_contract))
+        _report_refused_contract(rep, refused_contract)
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -846,6 +863,7 @@ def main(argv: list[str] | None = None) -> int:
         stats = interrupted_stats(exc)
         elapsed = None if t0 is None else time.time() - t0
         rep = _fatal_report(args.source, started_at, exc, corpus=args.corpus, stats=stats)
+        _report_refused_contract(rep, getattr(args, "refused_contract", []))
         if args.no_vault:
             try:
                 _append_report_jsonl(rep)
@@ -1126,6 +1144,42 @@ def _report_bad_paths(rep: dict, bad_paths: list) -> None:
     print(f"warning: {len(bad_paths)} document(s) skipped, never read: their local_path is "
           f"refused by the documents contract ({', '.join(bad_paths[:5])}"
           f"{', …' if len(bad_paths) > 5 else ''})", file=sys.stderr)
+
+
+#: How many doc_ids of manifest rows the documents contract refuses the run
+#: report names (``refused_contract_doc_ids``); ``docs_refused_contract`` and
+#: ``refused_contract_reasons`` count them all.
+REFUSED_CONTRACT_EXAMPLES = 20
+
+
+def _warn_refused_contract(refused: list) -> None:
+    """Say on stderr how many documents the cb_corpus disk source skipped for
+    a manifest row the documents contract refuses. Nothing when there is none."""
+    if not refused:
+        return
+    ids = [doc_id for doc_id, _ in refused]
+    print(f"warning: {len(ids)} document(s) skipped, never read: their manifest row is "
+          f"refused by the documents contract ({', '.join(ids[:5])}"
+          f"{', …' if len(ids) > 5 else ''}); migrate the manifest "
+          "(central-bank-corpus migrate-contract)", file=sys.stderr)
+
+
+def _report_refused_contract(rep: dict, refused: list) -> None:
+    """Count the manifest rows the documents contract refuses (``(doc_id,
+    reasons)`` from ``cb_corpus.iter_items(refused=)``) in the run report
+    (keys outside the ``runs`` columns: ``runs.extra``): their number, the
+    first doc_ids (:data:`REFUSED_CONTRACT_EXAMPLES`) and every reason with
+    its count; and say so on stderr. Nothing when there is none."""
+    if not refused:
+        return
+    reasons: dict[str, int] = {}
+    for _, row_reasons in refused:
+        for reason in row_reasons:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    rep["docs_refused_contract"] = len(refused)
+    rep["refused_contract_doc_ids"] = [doc_id for doc_id, _ in refused[:REFUSED_CONTRACT_EXAMPLES]]
+    rep["refused_contract_reasons"] = dict(sorted(reasons.items()))
+    _warn_refused_contract(refused)
 
 
 def _count_vault_source(args, collection: str) -> int:

@@ -1013,8 +1013,10 @@ def test_a_refused_api_key_exits_1_with_the_reason(tmp_path, monkeypatch, capsys
                             "check QDRANT_API_KEY")
 
 
-def _cb_corpus_with_documents(tmp_path, n):
-    """A cb_corpus root with ``n`` indexed one-page PDFs of bank ``us``."""
+def _cb_corpus_with_documents(tmp_path, n, legacy=()):
+    """A cb_corpus root with ``n`` indexed one-page PDFs of bank ``us``; the
+    rows of the indexes in ``legacy`` are in the pre-contract form the
+    documents contract refuses (``bank_code``, no ``corpus``)."""
     import json
 
     import fitz
@@ -1028,9 +1030,116 @@ def _cb_corpus_with_documents(tmp_path, n):
         doc.new_page().insert_text((72, 72), f"Monetary policy note {i}. " * 30)
         doc.save(folder / f"doc{i}.pdf")
         doc.close()
-        lines.append(json.dumps({"doc_id": f"doc{i}", "source_code": "us", "date": "2015-01-01", "title": "t"}))
+        row = {"doc_id": f"doc{i}", "corpus": "central-bank", "source_code": "us",
+               "doc_type": "C1", "language": "en", "provenance": "bank_site",
+               "date": "2015-01-01", "year": 2015, "title": "t"}
+        if i in legacy:
+            row["bank_code"] = row.pop("source_code")
+            del row["corpus"]
+        lines.append(json.dumps(row))
     (root / "manifest" / "us.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return root
+
+
+def test_a_manifest_row_the_contract_refuses_is_skipped_and_counted(tmp_path, monkeypatch,
+                                                                   capsys):
+    """A row ``check_row(transition=False)`` refuses is never read (the vault
+    keeps no row for it): counted in the run report with its doc_id and
+    reasons, and as a failure for the outcome, like ``docs_bad_local_path``."""
+    store = _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={1})
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 3
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["exit_code"]) == ("degraded", 3)  # 1 of 4 > 0.10
+    assert rep["totals"]["docs_new"] == 3 and rep["totals"]["docs_failed"] == 0
+    assert rep["docs_refused_contract"] == 1
+    assert rep["refused_contract_doc_ids"] == ["doc1"]
+    assert rep["refused_contract_reasons"] == {"missing_corpus": 1, "missing_source_code": 1}
+    ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
+    assert '"doc1"' not in ledger  # never read
+    err = capsys.readouterr().err
+    assert "warning: 1 document(s) skipped, never read: their manifest row is refused by " \
+           "the documents contract (doc1)" in err
+    assert store  # the engine ran
+
+
+@pytest.mark.parametrize("ratio,rc,outcome", [("0.5", 0, "ok"), ("0.2", 3, "degraded")])
+def test_refused_manifest_rows_count_toward_the_failure_ratio(tmp_path, monkeypatch,
+                                                              ratio, rc, outcome):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", ratio)
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={0})  # 1 of 4: 0.25
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == rc
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["docs_refused_contract"]) == (outcome, 1)
+
+
+def test_a_clean_cb_corpus_report_has_no_refused_contract_keys(tmp_path, monkeypatch):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 2)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 0
+    assert not {k for k in _last_report(tmp_path) if "refused_contract" in k}
+
+
+def test_only_refused_manifest_rows_is_a_degraded_run(tmp_path, monkeypatch):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 2, legacy={0, 1})
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 3
+    rep = _last_report(tmp_path)
+    assert rep["docs_refused_contract"] == 2 and rep["totals"]["docs_new"] == 0
+
+
+def test_the_refused_contract_doc_ids_are_bounded(tmp_path, monkeypatch):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(cli, "REFUSED_CONTRACT_EXAMPLES", 2)
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={0, 1, 2})
+    cli.main(["cb_corpus", "--no-vault", "--root", str(root)])
+    rep = _last_report(tmp_path)
+    assert rep["docs_refused_contract"] == 3
+    assert rep["refused_contract_doc_ids"] == ["doc0", "doc1"]
+    assert rep["refused_contract_reasons"] == {"missing_corpus": 3, "missing_source_code": 3}
+
+
+def test_a_fatal_report_keeps_the_refused_manifest_rows(tmp_path, monkeypatch):
+    from tests.test_core_engine import _KeyRevokedStore
+
+    _fake_engine(monkeypatch, store=_KeyRevokedStore([], good=1, status=401))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={0})
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 1
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["docs_refused_contract"]) == ("failed", 1)
+    assert rep["refused_contract_doc_ids"] == ["doc0"]
+
+
+def test_count_only_says_how_many_manifest_rows_are_refused(tmp_path, capsys):
+    root = _cb_corpus_with_documents(tmp_path, 3, legacy={2})
+    assert cli.main(["cb_corpus", "--no-vault", "--count-only", "--root", str(root)]) == 0
+    captured = capsys.readouterr()
+    assert "Matching documents: 2" in captured.out
+    assert "warning: 1 document(s) skipped, never read: their manifest row is refused by " \
+           "the documents contract (doc2)" in captured.err
+
+
+@pytest.mark.parametrize("extra", [[], ["--count-only"]])
+def test_a_corpus_that_is_not_a_corpus_code_is_a_usage_error_exit_2(tmp_path, monkeypatch,
+                                                                    capsys, extra):
+    """Every manifest row is checked against --corpus: a value that is not a
+    corpus code is the operator's error (exit 2), before any work, never a
+    refusal of every row."""
+    def no_run(*args, **kwargs):
+        raise AssertionError("the run must not start")
+
+    monkeypatch.setattr(cli, "run_ingest", no_run)
+    root = _cb_corpus_with_documents(tmp_path, 1)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root),
+                     "--corpus", "Central Bank", *extra]) == 2
+    assert "error: corpus 'Central Bank' is not a corpus code" in capsys.readouterr().err
 
 
 def test_a_key_refused_in_the_middle_of_a_run_is_one_fatal_exit_1(tmp_path, monkeypatch, capsys):

@@ -70,7 +70,10 @@ def _corpus(tmp_path):
     lines = []
     for i in range(N_DOCS):
         write_text_pdf(root / "raw" / "gb" / "A3" / "2016" / f"doc{i}.pdf")
-        lines.append(json.dumps({"doc_id": f"doc{i}", "date": "2016-01-01", "title": f"T{i}"}))
+        lines.append(json.dumps({"doc_id": f"doc{i}", "corpus": "central-bank",
+                                 "source_code": "gb", "doc_type": "A3", "language": "en",
+                                 "provenance": "bank_site", "date": "2016-01-01",
+                                 "year": 2016, "title": f"T{i}"}))
     (root / "manifest").mkdir(parents=True)
     (root / "manifest" / "gb.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return root
