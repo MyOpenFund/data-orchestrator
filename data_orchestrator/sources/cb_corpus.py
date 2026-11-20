@@ -41,8 +41,10 @@ with the first reasons, and the CLI counts them in the run report
 ``refused_contract_reasons``; ``iter_items(refused=)``) and as failures for the
 outcome. A row in the pre-contract form (``bank_code``, ``pdf_url``,
 ``local_path`` under ``data/``, no ``corpus``) is such a row
-(``missing_corpus``, ``missing_source_code``, ``bad_local_path``): no old key is
-mapped. Migrate the manifest (central-bank-corpus ``migrate-contract``).
+(``missing_corpus``, ``missing_source_code``, ``bad_local_path``,
+``legacy_key``): no old key is mapped, and since contract 1.1.0 a row carrying
+``bank_code`` or ``pdf_url`` is refused ``legacy_key`` even beside its contract
+key. Migrate the manifest (central-bank-corpus ``migrate-contract``).
 A ``corpus`` that is not a corpus code (``vault_contract.CODE_PATTERN``) is a
 usage error (``check_corpus``, ``ValueError``), never a refusal per row.
 
@@ -73,7 +75,8 @@ from ..payload import dropped_extra_keys, manifest_row_to_payload, row_to_payloa
 
 logger = logging.getLogger(__name__)
 
-#: How many refused manifest rows the run's warning names, with their reasons.
+#: How many refused manifest rows a warning names, with their reasons (this
+#: source's own, or the CLI's).
 REFUSED_EXAMPLES = 5
 
 # Name of the ``.env`` key holding this machine's corpus root. The path itself
@@ -223,13 +226,17 @@ def iter_items(
         flag for it); mostly useful for testing.
     corpus:
         The vault corpus of the documents (:data:`DEFAULT_CORPUS`; the CLI
-        passes ``--corpus``): ``corpus`` of a manifest row without one, and of
-        every path-derived payload.
+        passes ``--corpus``): the corpus every manifest row must name (a row
+        without ``corpus`` is refused ``missing_corpus``, one naming another
+        corpus ``corpus_conflict``, as the vault refuses them), and the
+        ``corpus`` of every path-derived payload.
     refused:
         When given, receives ``(doc_id, reasons)`` (``reasons`` a tuple of
         ``vault_contract`` refusal reasons) for every manifest row the
         documents contract refuses, as they are met: those documents are
-        skipped, never read.
+        skipped, never read, and the caller reports them. When ``None``
+        (default) the source logs one warning naming the first
+        :data:`REFUSED_EXAMPLES` with their reasons.
 
     Raises
     ------
@@ -265,6 +272,9 @@ def iter_items(
     else:
         index = {}
     drop_keys = dropped_extra_keys()
+    # A caller collecting the refused rows reports them itself (the CLI: one
+    # warning and the run report); for any other caller the source warns.
+    warn = refused is None
     if refused is None:
         refused = []
     first_refused = len(refused)
@@ -320,7 +330,7 @@ def iter_items(
                                          dropped_keys=dropped)
     finally:
         mine = refused[first_refused:]
-        if mine:
+        if warn and mine:
             logger.warning(
                 "%d manifest row(s) the documents contract refuses (the vault keeps no row for "
                 "them) skipped, never read: %s", len(mine),

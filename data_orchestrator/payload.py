@@ -29,10 +29,12 @@ value of a column the contract reads blank as absent
 a date is written as its ISO string.
 
 The contract's transition is over (vault 2859fa6, which ingests with
-``transition=False``): the former column names ``pdf_url`` and ``bank_code``
-are ordinary keys of ``extra``, and a NULL ``date_precision``, ``date_kind``,
-``entity_scheme`` or ``entity_value`` removes the same key of ``extra`` like
-any other column.
+``transition=False``): these functions map no old key, so the former column
+names ``pdf_url`` and ``bank_code`` are ordinary keys of ``extra`` here; the
+vault (contract 1.1.0) and the ``cb_corpus`` disk source refuse a row carrying
+either (``legacy_key``), so no such row reaches a run. A NULL
+``date_precision``, ``date_kind``, ``entity_scheme`` or ``entity_value``
+removes the same key of ``extra`` like any other column.
 """
 from __future__ import annotations
 
@@ -49,8 +51,8 @@ from .core import split_reserved_keys
 #: added later goes at the end, so the position of every earlier key stays the
 #: same: ``document_url``, ``source_url`` and ``mime_type`` (``document_url``
 #: was ``pdf_url`` until the 2026-11 rename), then the four columns of the
-#: ``documents`` contract 1.0.0 (``date_precision``, ``date_kind``,
-#: ``entity_scheme``, ``entity_value``).
+#: ``documents`` contract (added by 1.0.0, unchanged in 1.1.0:
+#: ``date_precision``, ``date_kind``, ``entity_scheme``, ``entity_value``).
 PAYLOAD_COLUMNS: tuple[str, ...] = (
     "doc_id", "corpus", "source_code", "doc_type", "title", "date",
     "year", "language", "sha256", "provenance",
@@ -152,11 +154,13 @@ def manifest_row_to_vault_row(rec: Mapping, default_corpus: str) -> dict:
     field in ``extra`` (None when empty). No old key is mapped: ``bank_code``
     and ``pdf_url`` are ordinary fields of ``extra``, and ``local_path`` is
     kept as given (a leading ``data/`` included). An absent or blank
-    ``corpus`` is ``default_corpus`` (the disk source's ``--corpus``). The
-    split never refuses: the vault refuses a row the contract refuses
-    (``check_row``; a pre-contract row among them: ``missing_corpus``,
-    ``missing_source_code``, ``bad_local_path``) and keeps no row for it; here
-    the row is split all the same.
+    ``corpus`` is ``default_corpus`` (the cb_corpus disk source never gets
+    there: it skips such a row first, refused ``missing_corpus``). The split
+    never refuses: the vault refuses a row the contract refuses (``check_row``;
+    a pre-contract row among them: ``missing_corpus``, ``missing_source_code``,
+    ``bad_local_path``, and since contract 1.1.0 ``legacy_key`` for a row
+    carrying ``bank_code`` or ``pdf_url``) and keeps no row for it; here the
+    row is split all the same.
     """
     columns, extra = split_row(rec, transition=False)
     corpus = columns["corpus"]

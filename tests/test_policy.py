@@ -134,3 +134,20 @@ def test_validate_mimes_rejects_a_non_string_entry_with_a_value_error(bad):
 def test_validate_mimes_rejects_a_bare_string():
     with pytest.raises(ValueError, match="not the string"):
         routing.validate_mimes("application/pdf", origin="supported_mimes")
+
+
+@pytest.mark.parametrize("raw,expected", [(None, 20), ("", 20), ("  ", 20), ("0", 0),
+                                          (" 7 ", 7), ("100", 100)])
+def test_report_doc_ids_default_and_values(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv(policy.REPORT_DOC_IDS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(policy.REPORT_DOC_IDS_ENV, raw)
+    assert policy.report_doc_ids() == expected
+
+
+@pytest.mark.parametrize("raw", ["-1", "1.5", "ten", "1e2", "+3", "٣"])
+def test_report_doc_ids_refuses_anything_but_a_whole_number(monkeypatch, raw):
+    monkeypatch.setenv(policy.REPORT_DOC_IDS_ENV, raw)
+    with pytest.raises(ValueError, match=policy.REPORT_DOC_IDS_ENV):
+        policy.report_doc_ids()

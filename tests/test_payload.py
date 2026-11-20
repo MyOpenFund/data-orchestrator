@@ -271,7 +271,10 @@ def test_the_golden_legacy_form_is_refused_as_the_vault_ingests():
     checked = check_row(case["row"], None, expected_corpus=case["expected_corpus"],
                         transition=False)
     assert {r.reason for r in checked.refusals} == {"missing_corpus", "missing_source_code",
-                                                    "bad_local_path"}
+                                                    "bad_local_path", "legacy_key"}
+    # Contract 1.1.0: one legacy_key per old key, whatever its value.
+    assert sorted(r.field for r in checked.refusals if r.reason == "legacy_key") == [
+        "bank_code", "pdf_url"]
 
 
 # ---------------------------------------------------------------------------
@@ -445,14 +448,16 @@ def test_a_central_bank_row_in_contract_form_is_accepted_as_the_vault_ingests(re
 @pytest.mark.parametrize("rec", CB_ROWS, ids=lambda r: r["doc_id"])
 def test_a_central_bank_row_in_the_legacy_form_is_refused_and_not_mapped(rec):
     """The pre-contract form (``bank_code``, no ``corpus``, ``data/raw/...``)
-    is refused as the vault ingests (transition=False), and its split maps no
-    old key: ``bank_code`` stays an ordinary extra field, ``source_code`` is
-    absent."""
+    is refused as the vault ingests (transition=False; ``legacy_key`` for
+    ``bank_code`` since contract 1.1.0), and the payload functions' split maps
+    no old key: ``bank_code`` stays an ordinary extra field there,
+    ``source_code`` is absent."""
     from vault_contract import check_row
 
     checked = check_row(rec, None, expected_corpus="central-bank", transition=False)
     assert {r.reason for r in checked.refusals} == {"missing_corpus", "missing_source_code",
-                                                    "bad_local_path"}
+                                                    "bad_local_path", "legacy_key"}
+    assert [r.field for r in checked.refusals if r.reason == "legacy_key"] == ["bank_code"]
     payload, _ = pl.manifest_row_to_payload(rec, "central-bank")
     assert "source_code" not in payload and payload["bank_code"] == rec["bank_code"]
 

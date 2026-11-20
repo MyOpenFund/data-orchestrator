@@ -24,7 +24,7 @@ the interval from ``date`` and ``date_precision``. File paths join the
 per-machine corpus root (routing) with the vault's ``local_path``, relative to
 that root; a ``local_path`` the contract refuses, or one that leaves the root
 through a symbolic link (``routing.BadLocalPath``), is skipped, never read,
-logged with its ``doc_id`` and counted in the run report
+named with its ``doc_id`` and counted in the run report
 (``docs_bad_local_path``, ``bad_local_path_doc_ids``; ``iter_items(refused=)``).
 A document is ``(corpus, doc_id)``: the anti-join matches both.
 
@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 
 _PAYLOAD_COLUMNS = PAYLOAD_COLUMNS
 
-#: How many doc_ids of rows refused for their local_path the warning names.
+#: How many doc_ids of rows refused for their local_path a warning names
+#: (this source's own, or the CLI's).
 REFUSED_EXAMPLES = 10
 
 _SELECT_COLUMNS = _PAYLOAD_COLUMNS + ("local_path", "extra")
@@ -188,9 +189,13 @@ def iter_items(conn, corpus: str, collection: str, *, refused: list | None = Non
     """Yield SourceItems for every vault doc not yet in ``collection``.
 
     ``refused``, when given, receives the ``doc_id`` of every row skipped for
-    its ``local_path`` (``routing.BadLocalPath``), as they are met."""
+    its ``local_path`` (``routing.BadLocalPath``), as they are met, and the
+    caller reports them (the CLI: one warning and the run report); when
+    ``None`` (default) the source logs one warning naming the first
+    :data:`REFUSED_EXAMPLES`."""
     sql, params = build_selection_sql(corpus, collection, **filters)
     skipped = 0
+    warn = refused is None
     if refused is None:
         refused = []
     first_refused = len(refused)
@@ -211,7 +216,7 @@ def iter_items(conn, corpus: str, collection: str, *, refused: list | None = Non
     if skipped:
         logger.warning("vault selection: %d row(s) without local_path skipped", skipped)
     mine = refused[first_refused:]
-    if mine:
+    if warn and mine:
         logger.warning("vault selection: %d row(s) with a local_path the documents contract "
                        "refuses skipped, never read: %s", len(mine),
                        ", ".join(mine[:REFUSED_EXAMPLES]))

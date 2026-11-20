@@ -13,9 +13,15 @@ still reported ``ok``.
       (resume skips are not attempts);
 - otherwise ``ok`` / exit 0. A fatal exception is ``failed`` / exit 1
   (``cli._fatal_report``). Documents of unsupported types are never selected,
-  so they never count here. Documents the vault source skips for a
-  ``local_path`` the documents contract refuses count as failed
-  (``cli._build_report``): selected, never read.
+  so they never count here. Documents skipped, never read, count as failed
+  (``cli._build_report``): those the vault source skips for a ``local_path``
+  the documents contract refuses (``docs_bad_local_path``), and those the
+  cb_corpus disk source skips for a manifest row the contract refuses
+  (``docs_refused_contract``).
+
+The run report names the doc_ids of those skipped documents, up to
+:func:`report_doc_ids` of each kind (``bad_local_path_doc_ids``,
+``refused_contract_doc_ids``); the counts are always whole.
 """
 from __future__ import annotations
 
@@ -30,6 +36,13 @@ DEFAULT_DEGRADED_FAILURE_RATIO = 0.10
 # Plain decimal only: "0", "0.25", ".5". float() alone would also take
 # "0_1", "1e-1", "inf" or "nan", none of which an operator means as a ratio.
 _DECIMAL = re.compile(r"\d+(\.\d+)?|\.\d+", re.ASCII)
+
+REPORT_DOC_IDS_ENV = "DATA_ORCHESTRATOR_REPORT_DOC_IDS"
+# Default (configurable through REPORT_DOC_IDS_ENV): how many doc_ids of the
+# documents skipped, never read, a run report names per kind. A bound only, so
+# that a corpus refused whole does not write tens of thousands of ids into one
+# runs row; the counts beside them are always whole.
+DEFAULT_REPORT_DOC_IDS = 20
 
 
 def degraded_failure_ratio() -> float:
@@ -51,6 +64,22 @@ def degraded_failure_ratio() -> float:
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"{DEGRADED_RATIO_ENV}={raw!r} is outside 0..1")
     return value
+
+
+def report_doc_ids() -> int:
+    """How many doc_ids of skipped documents a run report names per kind.
+    Unset or blank -> :data:`DEFAULT_REPORT_DOC_IDS`.
+
+    Raises ``ValueError`` (caller turns it into exit 2) for a value that is not
+    a whole number >= 0 (surrounding whitespace ignored; ``0`` names none).
+    """
+    raw = os.environ.get(REPORT_DOC_IDS_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_REPORT_DOC_IDS
+    text = raw.strip()
+    if not text.isascii() or not text.isdigit():
+        raise ValueError(f"{REPORT_DOC_IDS_ENV}={raw!r} is not a whole number >= 0")
+    return int(text)
 
 
 def run_outcome(*, docs_ingested: int, docs_empty: int, docs_failed: int,

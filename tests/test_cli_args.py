@@ -1055,12 +1055,14 @@ def test_a_manifest_row_the_contract_refuses_is_skipped_and_counted(tmp_path, mo
     assert rep["totals"]["docs_new"] == 3 and rep["totals"]["docs_failed"] == 0
     assert rep["docs_refused_contract"] == 1
     assert rep["refused_contract_doc_ids"] == ["doc1"]
-    assert rep["refused_contract_reasons"] == {"missing_corpus": 1, "missing_source_code": 1}
+    assert rep["refused_contract_reasons"] == {"legacy_key": 1, "missing_corpus": 1,
+                                               "missing_source_code": 1}
     ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
     assert '"doc1"' not in ledger  # never read
     err = capsys.readouterr().err
     assert "warning: 1 document(s) skipped, never read: their manifest row is refused by " \
-           "the documents contract (doc1)" in err
+           "the documents contract (doc1: missing_corpus, missing_source_code, legacy_key)" in err
+    assert err.count("skipped, never read") == 1  # one warning: the source leaves it to the CLI
     assert store  # the engine ran
 
 
@@ -1096,13 +1098,37 @@ def test_only_refused_manifest_rows_is_a_degraded_run(tmp_path, monkeypatch):
 def test_the_refused_contract_doc_ids_are_bounded(tmp_path, monkeypatch):
     _fake_engine(monkeypatch)
     monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(cli, "REFUSED_CONTRACT_EXAMPLES", 2)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_REPORT_DOC_IDS", "2")
     root = _cb_corpus_with_documents(tmp_path, 4, legacy={0, 1, 2})
     cli.main(["cb_corpus", "--no-vault", "--root", str(root)])
     rep = _last_report(tmp_path)
     assert rep["docs_refused_contract"] == 3
     assert rep["refused_contract_doc_ids"] == ["doc0", "doc1"]
-    assert rep["refused_contract_reasons"] == {"missing_corpus": 3, "missing_source_code": 3}
+    assert rep["refused_contract_reasons"] == {"legacy_key": 3, "missing_corpus": 3,
+                                               "missing_source_code": 3}
+
+
+def test_the_refused_contract_doc_ids_default_to_twenty(tmp_path, monkeypatch):
+    from data_orchestrator import policy
+
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    n = policy.DEFAULT_REPORT_DOC_IDS + 1
+    root = _cb_corpus_with_documents(tmp_path, n, legacy=set(range(n)))
+    cli.main(["cb_corpus", "--no-vault", "--root", str(root)])
+    rep = _last_report(tmp_path)
+    assert policy.DEFAULT_REPORT_DOC_IDS == 20
+    assert rep["docs_refused_contract"] == n
+    assert len(rep["refused_contract_doc_ids"]) == 20
+
+
+@pytest.mark.parametrize("value", ["-1", "two", "2.0", "1e3", "\u0662"])
+def test_a_bad_report_doc_ids_fails_before_any_work(monkeypatch, capsys, value):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_REPORT_DOC_IDS", value)
+    _forbid_any_work(monkeypatch)
+    assert cli.main(["cb_corpus", "--no-vault"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "DATA_ORCHESTRATOR_REPORT_DOC_IDS" in err
 
 
 def test_a_fatal_report_keeps_the_refused_manifest_rows(tmp_path, monkeypatch):
@@ -1123,7 +1149,9 @@ def test_count_only_says_how_many_manifest_rows_are_refused(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Matching documents: 2" in captured.out
     assert "warning: 1 document(s) skipped, never read: their manifest row is refused by " \
-           "the documents contract (doc2)" in captured.err
+           "the documents contract (doc2: missing_corpus, missing_source_code, legacy_key)" \
+           in captured.err
+    assert captured.err.count("skipped, never read") == 1
 
 
 @pytest.mark.parametrize("extra", [[], ["--count-only"]])
@@ -1638,6 +1666,19 @@ def test_rows_with_a_bad_local_path_are_counted_in_the_run_report(monkeypatch, t
     assert rep["bad_local_path_doc_ids"] == ["escape", "abs"]
     err = capsys.readouterr().err
     assert "warning: 2 document(s) skipped, never read" in err
+    assert err.count("skipped, never read") == 1  # one warning: the source leaves it to the CLI
+
+
+def test_the_bad_local_path_doc_ids_are_bounded_by_the_setting(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_REPORT_DOC_IDS", "1")
+    _conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [],
+        selection_rows=[("ok", "raw/ok.pdf"), ("escape", "raw/../../x.pdf"),
+                        ("abs", "/etc/x.pdf")])
+    cli.main(["vault"])
+    (rep,) = reports
+    assert rep["docs_bad_local_path"] == 2
+    assert rep["bad_local_path_doc_ids"] == ["escape"]
 
 
 def test_a_clean_selection_reports_no_bad_local_path(monkeypatch, tmp_path):

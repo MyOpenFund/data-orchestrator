@@ -140,14 +140,24 @@ def test_manifest_hit_carries_the_exact_date(tmp_path):
     assert item.payload["provenance"] == "bis"
 
 
-def test_a_pdf_url_is_no_longer_read_as_document_url(tmp_path):
-    """The contract's transition is over: ``pdf_url`` is an ordinary field,
-    never the document's address."""
+@pytest.mark.parametrize("fields", [
+    {"pdf_url": "https://example.org/a.pdf"},
+    {"pdf_url": "https://example.org/a.pdf", "document_url": "https://example.org/a.pdf"},
+    {"bank_code": "us"},
+    {"pdf_url": ""},
+])
+def test_a_pdf_url_is_no_longer_read_as_document_url(tmp_path, fields):
+    """The contract's transition is over: ``pdf_url`` is never the document's
+    address. Since contract 1.1.0 a row carrying ``pdf_url`` or ``bank_code``
+    is refused ``legacy_key``, whatever its value and even beside its
+    contract key, as the vault refuses it: the disk source skips it (an
+    ordinary key only for the payload functions and the vault source)."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
-    _manifest(root, "us", _ok("a", pdf_url="https://example.org/a.pdf"))
-    (item,) = iter_items(root)
-    assert "document_url" not in item.payload
-    assert item.payload["pdf_url"] == "https://example.org/a.pdf"
+    row = {"doc_id": "a", **ACCEPTED, **fields}
+    _manifest(root, "us", json.dumps(row))
+    refused = []
+    assert list(iter_items(root, refused=refused)) == []
+    assert refused == [("a", ("legacy_key",))]
 
 
 def test_manifest_miss_falls_back_to_the_path_year(tmp_path):
@@ -330,7 +340,7 @@ def test_a_manifest_row_with_unknown_dropped_and_reserved_keys(tmp_path):
     null or absent field is absent, never an empty string."""
     root = _corpus(tmp_path, "us/C1/2015/a.pdf")
     _manifest(root, "us", _ok(
-        "a", title=None, date="2015-06-30", html_path="raw/us/C1/2015/a.html",
+        "a", title=None, date="2015-06-30", html_path="/Users/someone/a.html",
         alt_urls=["https://alt"], alt_source_urls=[], text="stale", repec_handle="RePEc:x",
         speaker="J. Doe"))
     (item,) = iter_items(root)
@@ -341,37 +351,47 @@ def test_a_manifest_row_with_unknown_dropped_and_reserved_keys(tmp_path):
     assert item.dropped_keys == ("text",)
 
 
-# Manifest rows, adversarial on purpose: a row in the documents contract's
-# form, NULL and blank columns, an extra-bound key named like a payload key
-# that the vault keeps as a column, keys dropped by design next to a reserved
-# key, unknown keys, an undated row with a precision and a kind (both
-# dropped), a blank source_code next to a bank_code and a pdf_url next to a
-# blank document_url (no alias any more: both stay ordinary extra fields).
+# Manifest rows the documents contract accepts (check_row, transition=False,
+# as the vault ingests), adversarial on purpose: NULL and blank columns, an
+# extra-bound key named like a payload key that the vault keeps as a column,
+# keys dropped by design next to a reserved key, unknown keys, an undated row
+# with a precision and a kind (both dropped), a blank title, document_url and
+# source_url (no title, no link).
 PARITY_ROWS = [
     {"doc_id": "a", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
      "title": "A speech", "document_url": "https://x.org/a.pdf", "source_url": "https://x.org/a",
      "date": "2015-06-30", "year": 2015, "language": "en", "provenance": "bis",
-     "mime_type": "application/pdf", "sha256": "ab12", "local_path": "raw/us/C1/2015/a.pdf",
+     "mime_type": "application/pdf", "sha256": "ab12" * 16, "local_path": "raw/us/C1/2015/a.pdf",
      "date_precision": "day", "date_kind": "publication", "date_source": "title"},
     {"doc_id": "b", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
-     "title": None, "document_url": None,
+     "title": None, "document_url": None, "language": "en", "provenance": "bis",
      "date": "", "year": None, "html_path": "/Users/someone/b.html",
      "alt_urls": ["https://alt/b"], "alt_source_urls": ["https://alt/b2"], "page": 7,
      "chunk_number": 1, "repec_handle": "RePEc:b", "nested": {"k": [1, 2]},
      "date_precision": "month", "date_kind": "meeting"},
+    {"doc_id": "d", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+     "date": "2015-04-01", "year": 2015, "language": "fr", "provenance": "bank_site",
+     "document_url": "", "source_url": "  ", "title": "  "},
+]
+
+# Manifest rows the contract refuses, which the run skips: their payload is
+# compared with the check switched off. A blank source_code next to a
+# bank_code, a NULL provenance, a pdf_url next to a blank document_url
+# (legacy_key since contract 1.1.0; the payload functions map no old key).
+REFUSED_PARITY_ROWS = [
     {"doc_id": "c", "corpus": "central-bank", "source_code": "", "bank_code": "us",
      "doc_type": "C1", "date": "2015-03-01", "year": 2015, "date_precision": "month",
      "local_path": "raw/us/C1/2015/c.pdf", "provenance": None, "flag": False,
      "source_url": "", "mime_type": "  ", "date_kind": None, "pdf_url": "https://x.org/c.pdf"},
-    {"doc_id": "d", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
-     "date": "2015-04-01", "year": 2015,
-     "document_url": "", "pdf_url": "https://x.org/d.pdf", "title": "  "},
+    {"doc_id": "e", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+     "date": "2015-04-01", "year": 2015, "language": "en", "provenance": "bis",
+     "document_url": "", "pdf_url": "https://x.org/e.pdf", "title": "  "},
 ]
 
 
 def _vault_row_by_hand(rec):
     """The ``documents`` row the vault stores for ``rec`` (documents contract
-    1.0.0, transition=False as the vault ingests), written out here
+    1.1.0, transition=False as the vault ingests), written out here
     independently of ``payload.manifest_row_to_vault_row``: the contract's
     columns (blank optional values NULL, no precision nor kind without a
     date; no old name mapped), ``date`` a ``datetime.date``, the other fields
@@ -397,37 +417,70 @@ def _vault_row_by_hand(rec):
     return row
 
 
-@pytest.mark.parametrize("drop", [None, "none", "repec_handle"])
-def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypatch, drop):
-    """The payload of a row, whatever the contract says of it: the run skips
-    the rows it refuses (tested apart below), so the check is switched off here
-    to compare the payloads of adversarial rows too."""
-    from data_orchestrator.sources import cb_corpus
+def _assert_same_payloads(tmp_path, monkeypatch, rows, drop):
+    """The disk source's items for ``rows`` (one manifest, one file each) and
+    the vault source's items for the vault rows written out by hand carry the
+    same payload and the same dropped keys. Returns the disk items by doc_id."""
     from data_orchestrator.sources.vault import row_to_item
 
-    monkeypatch.setattr(cb_corpus, "_refusals", lambda rec, corpus: ())
     if drop is not None:
         monkeypatch.setenv("DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS", drop)
-    root = _corpus(tmp_path, *(f"us/C1/2015/{r['doc_id']}.pdf" for r in PARITY_ROWS))
-    _manifest(root, "us", *(json.dumps(r) for r in PARITY_ROWS))
+    root = _corpus(tmp_path, *(f"us/C1/2015/{r['doc_id']}.pdf" for r in rows))
+    _manifest(root, "us", *(json.dumps(r) for r in rows))
     monkeypatch.setenv(ROOT_ENV_KEY, str(root))
-    disk = {i.doc_id: i for i in iter_items(root)}
-    assert len(disk) == len(PARITY_ROWS)
-    for rec in PARITY_ROWS:
+    refused = []
+    disk = {i.doc_id: i for i in iter_items(root, refused=refused)}
+    assert refused == []
+    assert len(disk) == len(rows)
+    for rec in rows:
         vault = row_to_item(_vault_row_by_hand(rec), "central-bank")
         payload = dict(disk[rec["doc_id"]].payload)
         assert payload.pop("metadata_source") == "manifest"
         assert payload == vault.payload, rec["doc_id"]
         assert disk[rec["doc_id"]].dropped_keys == vault.dropped_keys
+    return disk
+
+
+@pytest.mark.parametrize("drop", [None, "none", "repec_handle"])
+def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypatch, drop):
+    """Rows the contract accepts, read with the run's own check on."""
+    from vault_contract import check_row
+
+    for rec in PARITY_ROWS:
+        assert check_row(rec, None, expected_corpus="central-bank", transition=False).accepted
+    disk = _assert_same_payloads(tmp_path, monkeypatch, PARITY_ROWS, drop)
     # A blank link and a null field are left out, whichever the source.
-    assert not {"source_url", "mime_type", "date_kind"} & set(disk["c"].payload)
+    assert not {"document_url", "source_url"} & set(disk["d"].payload)
     # An undated row has no precision nor kind; a blank title is no title.
     assert not {"date", "date_precision", "date_kind"} & set(disk["b"].payload)
-    assert "title" not in disk["d"].payload
-    # No alias: a pdf_url is no document_url, a bank_code no source_code.
-    assert "document_url" not in disk["c"].payload and "document_url" not in disk["d"].payload
-    assert disk["d"].payload["pdf_url"] == "https://x.org/d.pdf"
+    assert "title" not in disk["b"].payload and "title" not in disk["d"].payload
+
+
+@pytest.mark.parametrize("drop", [None, "none", "repec_handle"])
+def test_the_payload_of_a_refused_row_is_the_same_from_both_sources(tmp_path, monkeypatch,
+                                                                     drop):
+    """The payload of a row the contract refuses: the run skips it (tested
+    apart below), so the check is switched off here to compare the payload
+    functions on those rows too."""
+    from vault_contract import check_row
+
+    from data_orchestrator.sources import cb_corpus
+
+    for rec in REFUSED_PARITY_ROWS:
+        reasons = {r.reason for r in check_row(rec, None, expected_corpus="central-bank",
+                                               transition=False).refusals}
+        assert "legacy_key" in reasons, rec["doc_id"]
+    monkeypatch.setattr(cb_corpus, "_refusals", lambda rec, corpus: ())
+    disk = _assert_same_payloads(tmp_path, monkeypatch, REFUSED_PARITY_ROWS, drop)
+    # A blank link and a null field are left out, whichever the source.
+    assert not {"source_url", "mime_type", "date_kind", "provenance"} & set(disk["c"].payload)
+    assert "title" not in disk["e"].payload
+    # No alias in the payload functions: a pdf_url is no document_url, a
+    # bank_code no source_code; both stay ordinary keys.
+    assert "document_url" not in disk["c"].payload and "document_url" not in disk["e"].payload
+    assert disk["e"].payload["pdf_url"] == "https://x.org/e.pdf"
     assert disk["c"].payload["bank_code"] == "us"
+    assert disk["c"].payload["source_code"] == ""  # as written, not filled from bank_code
 
 
 # ---------------------------------------------------------------------------
@@ -479,10 +532,14 @@ def test_a_legacy_manifest_row_is_refused_skipped_and_counted(tmp_path, caplog):
         items = {i.doc_id: i for i in iter_items(root, refused=refused)}
     assert list(items) == ["b"]
     assert items["b"].payload["source_code"] == "au"
-    assert refused == [("a", ("missing_corpus", "missing_source_code", "bad_local_path"))]
+    assert refused == [("a", ("missing_corpus", "missing_source_code", "bad_local_path",
+                              "legacy_key"))]
+    assert caplog.text == ""  # a caller collecting them reports them itself
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
+        assert [i.doc_id for i in iter_items(root)] == ["b"]
     assert "1 manifest row(s) the documents contract refuses" in caplog.text
     assert "skipped, never read" in caplog.text
-    assert "a: missing_corpus, missing_source_code, bad_local_path" in caplog.text
+    assert "a: missing_corpus, missing_source_code, bad_local_path, legacy_key" in caplog.text
 
 
 def test_the_refusals_are_the_vault_s(monkeypatch):
@@ -511,10 +568,11 @@ def test_a_row_the_contract_refuses_is_skipped_and_the_run_says_so(tmp_path, cap
     bad = dict(good, doc_id="b", language="english", local_path="raw/../b.pdf")
     _manifest(root, "au", json.dumps(good), json.dumps(bad))
     refused = []
-    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
-        items = {i.doc_id: i for i in iter_items(root, refused=refused)}
+    items = {i.doc_id: i for i in iter_items(root, refused=refused)}
     assert list(items) == ["a"]
     assert refused == [("b", ("bad_language", "bad_local_path"))]
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
+        assert [i.doc_id for i in iter_items(root)] == ["a"]
     assert "1 manifest row(s) the documents contract refuses" in caplog.text
     assert "b: bad_language, bad_local_path" in caplog.text
 

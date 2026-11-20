@@ -605,6 +605,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _setup_logging()
         args.degraded_ratio = policy.degraded_failure_ratio()
+        policy.report_doc_ids()  # DATA_ORCHESTRATOR_REPORT_DOC_IDS: exit 2 here, not mid-run
         from . import vault as _vault
 
         _vault.keepalive_options()  # DATA_ORCHESTRATOR_PG_KEEPALIVES_*: exit 2 here, not mid-run
@@ -1130,47 +1131,47 @@ def _run_vault_source(args, collection: str) -> int:
             conn.close()
 
 
-#: How many doc_ids of rows skipped for their local_path the run report names.
-BAD_PATH_EXAMPLES = 20
-
-
 def _report_bad_paths(rep: dict, bad_paths: list) -> None:
     """Count the rows skipped for a local_path the documents contract refuses
     (``routing.BadLocalPath``) in the run report (keys outside the ``runs``
-    columns: ``runs.extra``), and say so on stderr. Nothing when there is none."""
+    columns: ``runs.extra``): their number and the first doc_ids
+    (``policy.report_doc_ids``, ``DATA_ORCHESTRATOR_REPORT_DOC_IDS``); and say
+    so on stderr, naming the first ``vault_source.REFUSED_EXAMPLES``. Nothing
+    when there is none."""
+    from .sources import vault as vault_source
+
     if not bad_paths:
         return
+    shown = vault_source.REFUSED_EXAMPLES
     rep["docs_bad_local_path"] = len(bad_paths)
-    rep["bad_local_path_doc_ids"] = bad_paths[:BAD_PATH_EXAMPLES]
+    rep["bad_local_path_doc_ids"] = bad_paths[:policy.report_doc_ids()]
     print(f"warning: {len(bad_paths)} document(s) skipped, never read: their local_path is "
-          f"refused by the documents contract ({', '.join(bad_paths[:5])}"
-          f"{', …' if len(bad_paths) > 5 else ''})", file=sys.stderr)
-
-
-#: How many doc_ids of manifest rows the documents contract refuses the run
-#: report names (``refused_contract_doc_ids``); ``docs_refused_contract`` and
-#: ``refused_contract_reasons`` count them all.
-REFUSED_CONTRACT_EXAMPLES = 20
+          f"refused by the documents contract ({', '.join(bad_paths[:shown])}"
+          f"{', …' if len(bad_paths) > shown else ''})", file=sys.stderr)
 
 
 def _warn_refused_contract(refused: list) -> None:
     """Say on stderr how many documents the cb_corpus disk source skipped for
-    a manifest row the documents contract refuses. Nothing when there is none."""
+    a manifest row the documents contract refuses, naming the first
+    ``cb_corpus.REFUSED_EXAMPLES`` with their reasons (the source itself
+    warns only for a caller that does not collect them). Nothing when there
+    is none."""
     if not refused:
         return
-    ids = [doc_id for doc_id, _ in refused]
-    print(f"warning: {len(ids)} document(s) skipped, never read: their manifest row is "
-          f"refused by the documents contract ({', '.join(ids[:5])}"
-          f"{', …' if len(ids) > 5 else ''}); migrate the manifest "
-          "(central-bank-corpus migrate-contract)", file=sys.stderr)
+    shown = cb_corpus_source.REFUSED_EXAMPLES
+    named = "; ".join(f"{doc_id}: {', '.join(reasons)}" for doc_id, reasons in refused[:shown])
+    print(f"warning: {len(refused)} document(s) skipped, never read: their manifest row is "
+          f"refused by the documents contract ({named}{'; …' if len(refused) > shown else ''}); "
+          "migrate the manifest (central-bank-corpus migrate-contract)", file=sys.stderr)
 
 
 def _report_refused_contract(rep: dict, refused: list) -> None:
     """Count the manifest rows the documents contract refuses (``(doc_id,
     reasons)`` from ``cb_corpus.iter_items(refused=)``) in the run report
     (keys outside the ``runs`` columns: ``runs.extra``): their number, the
-    first doc_ids (:data:`REFUSED_CONTRACT_EXAMPLES`) and every reason with
-    its count; and say so on stderr. Nothing when there is none."""
+    first doc_ids (``policy.report_doc_ids``, ``DATA_ORCHESTRATOR_REPORT_DOC_IDS``)
+    and every reason with its count; and say so on stderr. Nothing when there
+    is none."""
     if not refused:
         return
     reasons: dict[str, int] = {}
@@ -1178,7 +1179,7 @@ def _report_refused_contract(rep: dict, refused: list) -> None:
         for reason in row_reasons:
             reasons[reason] = reasons.get(reason, 0) + 1
     rep["docs_refused_contract"] = len(refused)
-    rep["refused_contract_doc_ids"] = [doc_id for doc_id, _ in refused[:REFUSED_CONTRACT_EXAMPLES]]
+    rep["refused_contract_doc_ids"] = [doc_id for doc_id, _ in refused[:policy.report_doc_ids()]]
     rep["refused_contract_reasons"] = dict(sorted(reasons.items()))
     _warn_refused_contract(refused)
 
