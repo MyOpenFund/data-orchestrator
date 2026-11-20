@@ -1523,7 +1523,7 @@ def test_rows_with_a_bad_local_path_are_counted_in_the_run_report(monkeypatch, t
         monkeypatch, tmp_path, [],
         selection_rows=[("ok", "raw/ok.pdf"), ("escape", "raw/../../x.pdf"),
                         ("abs", "/etc/x.pdf")])
-    assert cli.main(["vault"]) == 0
+    assert cli.main(["vault"]) == 3  # skipped rows count as failures (next test)
     (rep,) = reports
     assert rep["docs_bad_local_path"] == 2
     assert rep["bad_local_path_doc_ids"] == ["escape", "abs"]
@@ -1564,3 +1564,17 @@ def test_an_unknown_flag_with_a_real_source_is_still_an_error(capsys):
         cli.main(["vault", "--ciks", "320193"])
     assert info.value.code == 2
     assert "unrecognized arguments: --ciks 320193" in capsys.readouterr().err
+
+
+def test_bad_local_paths_past_the_degraded_ratio_degrade_the_run(monkeypatch, tmp_path):
+    """Skipped rows are failures for the outcome: 2 of 3 selected documents
+    never read is far past the 10 % default (the one good row 'ingested' here
+    by the fake engine is not counted, so even more so)."""
+    _conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [],
+        selection_rows=[("ok", "raw/ok.pdf"), ("escape", "raw/../../x.pdf"),
+                        ("abs", "/etc/x.pdf")])
+    assert cli.main(["vault"]) == 3
+    (rep,) = reports
+    assert (rep["outcome"], rep["exit_code"]) == ("degraded", 3)
+    assert rep["totals"]["docs_failed"] == 0 and rep["docs_bad_local_path"] == 2

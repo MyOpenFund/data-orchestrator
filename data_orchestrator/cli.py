@@ -195,7 +195,13 @@ FATAL_MAX_CHARS = 500
 
 def _build_report(command: str, stats: IngestStats, started_at: str, *,
                   corpus: str, ratio: float,
-                  unsupported: dict[str, int] | None = None) -> dict:
+                  unsupported: dict[str, int] | None = None, bad_paths: int = 0) -> dict:
+    """The run report of a run that finished. ``bad_paths``: documents the
+    vault source skipped for a ``local_path`` the documents contract refuses
+    (``routing.BadLocalPath``): never attempted, they count as failures for
+    the outcome (``policy.run_outcome``), so a run where they pass the
+    degraded ratio is ``degraded``; ``totals.docs_failed`` stays the engine's
+    count, the skipped ones are ``docs_bad_local_path`` (``_report_bad_paths``)."""
     totals = {
         "docs_seen": stats.docs_seen,
         "docs_new": stats.docs_ingested,
@@ -221,7 +227,7 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
     sources = [{"source_code": code, **counts} for code, counts in sorted(by_source.items())]
     outcome, exit_code = policy.run_outcome(
         docs_ingested=stats.docs_ingested, docs_empty=stats.docs_empty,
-        docs_failed=stats.docs_error, ratio=ratio,
+        docs_failed=stats.docs_error + bad_paths, ratio=ratio,
     )
     report = {
         "run_id": str(uuid.uuid4()),
@@ -1068,7 +1074,6 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"Skipping {n_unsupported} document(s) of a type the engine cannot read "
                   "(see DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES and the README's "
                   "'Supported document types')")
-        bad_paths: list[str] = []
         items = vault_source.iter_items(conn, args.corpus, collection, refused=bad_paths,
                                         **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
@@ -1083,7 +1088,8 @@ def _run_vault_source(args, collection: str) -> int:
         _print_summary(stats)
 
         rep = _build_report("vault", stats, started_at, corpus=args.corpus,
-                            ratio=args.degraded_ratio, unsupported=unsupported)
+                            ratio=args.degraded_ratio, unsupported=unsupported,
+                            bad_paths=len(bad_paths))
         _report_bad_paths(rep, bad_paths)
         try:
             vault_mod.insert_run_report(conn, rep)

@@ -13,7 +13,9 @@ still reported ``ok``.
       (resume skips are not attempts);
 - otherwise ``ok`` / exit 0. A fatal exception is ``failed`` / exit 1
   (``cli._fatal_report``). Documents of unsupported types are never selected,
-  so they never count here.
+  so they never count here. Documents the vault source skips for a
+  ``local_path`` the documents contract refuses count as failed
+  (``cli._build_report``): selected, never read.
 """
 from __future__ import annotations
 
