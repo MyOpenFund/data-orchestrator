@@ -74,6 +74,15 @@ SYNC_METADATA = "sync-metadata"
 # named in a clear refusal rather than argparse's list of choices.
 REMOVED_COMPANY_SOURCE = "company"
 
+
+class _Sources(list):
+    """The choices of the source argument: :data:`SOURCES`, plus the removed
+    company source, accepted (``in``) but never listed (iteration), so that
+    neither the help nor argparse's invalid-choice message offers it."""
+
+    def __contains__(self, value) -> bool:
+        return value == REMOVED_COMPANY_SOURCE or super().__contains__(value)
+
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
 # _count_vault_source; cb_corpus payloads use the vault's keys).
@@ -488,10 +497,10 @@ def main(argv: list[str] | None = None) -> int:
         prog="data-orchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
-    # The removed company source is accepted by the parser (not listed) so that
-    # it is refused with its replacement wherever it stands on the line.
-    parser.add_argument("source", choices=[*SOURCES, REMOVED_COMPANY_SOURCE],
-                        metavar="{" + ",".join(SOURCES) + "}", help="data source to ingest")
+    # The removed company source is accepted by the parser but never listed
+    # (help, invalid-choice message), so that it is refused with its
+    # replacement wherever it stands on the line.
+    parser.add_argument("source", choices=_Sources(SOURCES), help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/, or the source's data dir)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
     parser.add_argument("--doctypes", help="comma list of doc-type codes of the corpus, e.g. "
@@ -549,12 +558,15 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "
                            "(date_start, date_end) and exit; needs a key allowed to write")
-    args = parser.parse_args(argv)
+    # Known arguments first: a line naming the removed source with its old
+    # flags (--ciks, --prefer) gets the replacement, not "unrecognized arguments".
+    args, _unknown = parser.parse_known_args(argv)
     if args.source == REMOVED_COMPANY_SOURCE:
         print("error: the 'company' disk source was removed: company documents come from the "
               "vault now. Run: data-orchestrator vault --corpus company (COMPANY_CORPUS_ROOT "
               "names the company corpus data root)", file=sys.stderr)
         return 2
+    args = parser.parse_args(argv)  # anything unknown is an error now (exit 2)
     # The one .env loader (issue #8), run before anything reads the
     # environment: the engine loads no .env of its own, it reads the process
     # environment when asked (its settings below; ENABLE_OCR / TESSDATA_PREFIX

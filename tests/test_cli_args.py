@@ -796,6 +796,8 @@ def test_cb_count_only_prints_no_qdrant_line(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("argv", [["company"], ["company", "--no-vault"], ["--no-vault", "company"],
+                                  ["company", "--ciks", "320193", "--no-vault"],
+                                  ["company", "--prefer", "text"],
                                   ["--limit", "3", "company", "--corpus", "company"]],
                          ids=" ".join)
 def test_the_removed_company_source_says_where_company_documents_come_from(
@@ -1547,3 +1549,18 @@ def test_company_as_the_value_of_corpus_is_no_removed_source(monkeypatch, capsys
     monkeypatch.setenv("QDRANT_PORT", "abc")  # stops the run before any work
     assert cli.main(["vault", "--corpus", "company"]) == 2
     assert "removed" not in capsys.readouterr().err
+
+
+def test_a_mistyped_source_is_refused_without_offering_company(capsys):
+    with pytest.raises(SystemExit) as info:
+        cli.main(["compnay"])
+    assert info.value.code == 2
+    err = capsys.readouterr().err
+    assert "invalid choice: 'compnay'" in err and "'vault'" in err and "company" not in err
+
+
+def test_an_unknown_flag_with_a_real_source_is_still_an_error(capsys):
+    with pytest.raises(SystemExit) as info:
+        cli.main(["vault", "--ciks", "320193"])
+    assert info.value.code == 2
+    assert "unrecognized arguments: --ciks 320193" in capsys.readouterr().err
