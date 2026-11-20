@@ -76,8 +76,12 @@ PAYLOAD_COLUMNS: tuple[str, ...] = (
 #:
 #:     SELECT count(*) FROM documents WHERE deleted_at IS NULL
 #:       AND ((date_precision IS NULL AND extra ? 'date_precision')
-#:         OR (date_kind IS NULL AND extra ? 'date_kind'))
-
+#:         OR (date_kind IS NULL AND extra ? 'date_kind')
+#:         OR (entity_scheme IS NULL AND extra ? 'entity_scheme')
+#:         OR (entity_value IS NULL AND extra ? 'entity_value'))
+#:
+#: (no row carried ``entity_*`` before the contract, the company corpus entered
+#: the vault with it; the pair is checked all the same, the rule covering it.)
 CONTRACT_COLUMNS_FROM_EXTRA: tuple[str, ...] = (
     "date_precision", "date_kind", "entity_scheme", "entity_value",
 )

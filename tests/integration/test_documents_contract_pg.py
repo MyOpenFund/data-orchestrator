@@ -147,3 +147,24 @@ def test_the_preflight_reads_the_real_catalog(clean_pg):
                        match="no column date_kind; rag_ingestions has no key"):
         require_contract_schema(conn)
     conn.close()
+
+
+@pytest.mark.parametrize("index", [
+    "CREATE UNIQUE INDEX k ON rag_ingestions (corpus, doc_id, collection) WHERE corpus <> ''",
+    "CREATE UNIQUE INDEX k ON rag_ingestions (corpus, doc_id) INCLUDE (collection)",
+    "CREATE INDEX k ON rag_ingestions (corpus, doc_id, collection)",
+])
+def test_only_a_key_on_conflict_can_use_passes_the_preflight(clean_pg, index):
+    """A partial index, one with the third column only included, or a plain
+    index cannot serve ON CONFLICT (corpus, doc_id, collection)."""
+    from data_orchestrator.vault import require_contract_schema
+
+    conn = psycopg2.connect(clean_pg)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("ALTER TABLE rag_ingestions DROP CONSTRAINT rag_ingestions_pkey")
+        cur.execute(index)
+    conn.autocommit = False
+    with pytest.raises(VaultSchemaTooOld, match="^rag_ingestions has no key"):
+        require_contract_schema(conn)
+    conn.close()

@@ -221,7 +221,8 @@ def test_the_preflight_passes_on_a_vault_on_the_contract():
     conn = _CatalogConn(ALL_COLUMNS, True)
     require_contract_schema(conn)
     sql, params = conn.executed[0]
-    assert "information_schema.columns" in sql and "pg_index" in sql
+    assert "to_regclass('documents')" in sql and "pg_index" in sql
+    assert "indpred IS NULL" in sql and "indisvalid" in sql and "indimmediate" in sql
     assert params["key"] == ["collection", "corpus", "doc_id"]
     assert conn.rollbacks == 1  # read only: the transaction is ended
 

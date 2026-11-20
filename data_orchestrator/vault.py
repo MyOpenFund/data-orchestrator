@@ -201,16 +201,21 @@ CONTRACT_DOCUMENT_COLUMNS: tuple[str, ...] = (
 #: The key of ``rag_ingestions`` since the contract, as sorted column names.
 RAG_INGESTIONS_KEY: tuple[str, ...] = ("collection", "corpus", "doc_id")
 
+# Both tables as the run's search path finds them (to_regclass), as its
+# queries do. The key: a unique index that ON CONFLICT can infer, i.e. not
+# partial (indpred), immediate, valid, on exactly these key columns.
 CONTRACT_SCHEMA_SQL = (
-    "SELECT ARRAY(SELECT column_name::text FROM information_schema.columns\n"
-    "             WHERE table_name = 'documents' AND table_schema = ANY (current_schemas(false))\n"
-    "               AND column_name = ANY (%(columns)s) ORDER BY 1),\n"
+    "SELECT ARRAY(SELECT a.attname::text FROM pg_attribute a\n"
+    "             WHERE a.attrelid = to_regclass('documents') AND a.attnum > 0\n"
+    "               AND NOT a.attisdropped AND a.attname = ANY (%(columns)s) ORDER BY 1),\n"
     "       EXISTS (SELECT 1 FROM pg_index i\n"
     "               WHERE i.indrelid = to_regclass('rag_ingestions') AND i.indisunique\n"
+    "                 AND i.indpred IS NULL AND i.indimmediate AND i.indisvalid\n"
+    "                 AND i.indnkeyatts = %(key_len)s\n"
     "                 AND ARRAY(SELECT a.attname::text FROM pg_attribute a\n"
-    "                           WHERE a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)\n"
-    "                           ORDER BY 1) = %(key)s::text[]\n"
-    "                 AND i.indnatts = %(key_len)s)"
+    "                           WHERE a.attrelid = i.indrelid\n"
+    "                             AND a.attnum = ANY ((i.indkey::int2[])[0:i.indnkeyatts - 1])\n"
+    "                           ORDER BY 1) = %(key)s::text[])"
 )
 
 

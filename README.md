@@ -1036,7 +1036,7 @@ and the `rag_ingestions (doc_id, collection)` index):
   removal:
 
   ```sql
-  SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind'));
+  SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind') OR (entity_scheme IS NULL AND extra ? 'entity_scheme') OR (entity_value IS NULL AND extra ? 'entity_value'));
   ```
 - the `data/` strip of `routing.TRANSITION_LOCAL_PATH_STRIP`, and the
   transition mode of `vault_contract.is_bad_local_path` in

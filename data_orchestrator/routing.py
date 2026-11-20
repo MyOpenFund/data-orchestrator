@@ -7,6 +7,7 @@ vault. Adding a corpus = adding one CorpusRoute entry, never new connector code.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 from dataclasses import dataclass
@@ -218,6 +219,13 @@ def corpus_root(corpus: str) -> Path:
     return root
 
 
+@functools.lru_cache(maxsize=16)
+def _resolved(root: Path) -> Path:
+    """``root`` with its links followed, once per root and process (a run
+    resolves one root for every document)."""
+    return root.resolve()
+
+
 def resolve_local_path(corpus: str, local_path: str) -> Path:
     """Join a vault ``local_path`` with its corpus root.
 
@@ -242,7 +250,7 @@ def resolve_local_path(corpus: str, local_path: str) -> Path:
     strip = route.local_path_strip
     remainder = local_path[len(strip):] if strip and local_path.startswith(strip) else local_path
     path = root / remainder
-    if not path.resolve().is_relative_to(root.resolve()):
+    if not path.resolve().is_relative_to(_resolved(root)):
         raise BadLocalPath(f"local_path {local_path!r} (corpus {corpus!r}) leaves the corpus "
                            f"data root {root} through a symbolic link; nothing is read")
     return path
