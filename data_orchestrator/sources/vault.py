@@ -18,8 +18,8 @@ A key of ``extra`` that the engine writes itself (``filename``, ``chunk_number``
 ``text``, ``page``, and the derived ``date_start`` / ``date_end``) is left
 out and counted, never sent: the engine refuses it, and one stray key must not
 fail the document. ``date_precision``, ``date_kind``, ``entity_scheme`` and
-``entity_value`` are columns since the documents contract (keys of ``extra``
-before it, still read from there when the column is NULL); the engine derives
+``entity_value`` are columns of the documents contract (a NULL one removes
+the same key of ``extra``, like every column); the engine derives
 the interval from ``date`` and ``date_precision``. File paths join the
 per-machine corpus root (routing) with the vault's ``local_path``, relative to
 that root; a ``local_path`` the contract refuses, or one that leaves the root
