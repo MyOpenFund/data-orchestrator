@@ -39,9 +39,12 @@ data-orchestrator sync-metadata --collection central-bank-e5b-v1 --csv ~/sync-me
 `unchanged`), except the rows below.** Run it only after the vault deploy
 (its ingestion ran once on the contract) and after updating this repository
 (an older one reads `date_precision`/`date_kind` from `extra` only: against a
-vault on the contract its dry run would report every precision and kind as
-removed, and its `--write` would strip them from the points; it fails earlier
-anyway on `rag_ingestions`' new key).
+vault on the contract its dry run reports every precision and kind as removed,
+and its `--write` runs cleanly and strips them from the points: replayed on the
+39,664 public central-bank rows, `date_precision` lost on 14,659 rows,
+`date_kind` on 2,555. Nothing in the old version stops it: sync-metadata never
+writes `rag_ingestions` and its `doc_id` join still works on the new schema.
+The deploy order is the only protection).
 
 The stated exceptions, each one a single key:
 

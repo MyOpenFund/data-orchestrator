@@ -971,7 +971,11 @@ Old and new versions of the two do not mix:
 So: deploy the vault and let its ingestion run once (the DDL train, then the
 rows in contract form), then update this repository on every machine that runs
 it, before any ingestion or `sync-metadata`. Between the two steps, run
-neither. Then:
+neither: **nothing in the old version stops it**. Its `sync-metadata` never
+writes `rag_ingestions` and its `doc_id` join still works on the new schema,
+so an old `sync-metadata --write` runs cleanly and strips the keys (replayed on
+the 39,664 public central-bank rows: `date_precision` lost on 14,659 rows,
+`date_kind` on 2,555). The deploy order is the only protection. Then:
 
 1. `git pull` and `pip install -e .` (it installs `vault-contract` at the
    pinned commit), then `python tools/check_engine_pin.py` (both pins);
