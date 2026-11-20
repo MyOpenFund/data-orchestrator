@@ -77,3 +77,23 @@ def test_the_vault_ingests_with_the_same_contract():
 def test_the_contract_is_the_version_this_repo_was_written_for():
     assert vault_contract.CONTRACT_NAME == "documents"
     assert vault_contract.CONTRACT_VERSION.split(".")[0] == "1"
+
+
+def test_the_vault_ddl_is_the_schema_the_integration_suite_copies():
+    """tests/integration/conftest.py copies the vault's tables by hand: the
+    pinned vault's DDL must still have the key and the columns it copies."""
+    from tests.integration.conftest import SCHEMA_SQL
+
+    ddl = (_checkout() / "ingestion" / "ingest.py").read_text(encoding="utf-8")
+    flat = " ".join(ddl.split())
+    copy = " ".join(SCHEMA_SQL.split())
+    for clause in ("PRIMARY KEY (corpus, doc_id, collection)",
+                   "FOREIGN KEY (corpus, doc_id) REFERENCES documents (corpus, doc_id)",
+                   "UNIQUE (corpus, doc_id)",
+                   "CREATE UNIQUE INDEX IF NOT EXISTS rag_ingestions_doc_collection_transition "
+                   "ON rag_ingestions (doc_id, collection)"):
+        assert clause in flat, clause
+        assert clause in copy, clause
+    for column in ("date_precision", "date_kind", "entity_scheme", "entity_value"):
+        assert re.search(rf"^\s+{column} TEXT,?$", ddl, re.M), column
+        assert f"{column} TEXT" in copy, column
