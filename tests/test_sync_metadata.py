@@ -100,8 +100,18 @@ def vault_row(doc_id, *, date=datetime.date(2016, 1, 1), year=2016, extra=None, 
            "corpus": CORPUS, "source_code": "gb", "doc_type": "A3", "title": title,
            "date": date, "year": year, "language": "en", "sha256": "ff",
            "provenance": "manifest", "extra": extra}
+    # The vault on the contract keeps the contract's columns out of extra: a
+    # date_precision / date_kind given in ``extra`` here is stored as its column.
+    if extra:
+        lifted = {k: v for k, v in extra.items() if k in CONTRACT_COLUMNS}
+        row["extra"] = {k: v for k, v in extra.items() if k not in CONTRACT_COLUMNS} or None
+        row.update(lifted)
     row.update(cols)
     return row
+
+
+#: The four columns the documents contract added to ``documents``.
+CONTRACT_COLUMNS = ("date_precision", "date_kind", "entity_scheme", "entity_value")
 
 
 def make_store():

@@ -27,17 +27,20 @@ splits it (the ``documents`` contract's columns, the rest as ``extra``), then
 the vault source's rules (columns win over ``extra``, absent/null fields left
 out, the keys of ``extra`` dropped by design left out silently, the keys the
 engine writes itself left out and counted). The split is the contract's own
-(``vault_contract.split_row``, the one the vault ingests with), so a manifest
-written before the contract (``bank_code``, ``pdf_url``, ``local_path`` under
-``data/``, no ``corpus``) and one migrated to it give the same payload. The
-keys are the vault's: ``corpus``, ``source_code``, ``doc_type``, ``title``,
+(``vault_contract.split_row`` with ``transition=False``, as the vault ingests).
+The keys are the vault's: ``corpus``, ``source_code``, ``doc_type``, ``title``,
 ``date``, ``year``, ``language``, ``sha256``, ``provenance``, ``document_url``,
 ``source_url``, ``mime_type``, ``date_precision``, ``date_kind``,
 ``entity_scheme``, ``entity_value`` and the other fields of the row
 (``date_source``, ...), plus ``metadata_source="manifest"``. A manifest row
-the contract refuses (``vault_contract.check_row`` without vocabulary: the
-vault keeps no row for it) is still used; the run logs how many there are,
-with the first reasons.
+the contract refuses (``vault_contract.check_row`` without vocabulary and with
+``transition=False``, as the vault ingests: the vault keeps no row for it) is
+still used as it is; the run logs how many there are, with the first reasons.
+A row in the pre-contract form (``bank_code``, ``pdf_url``, ``local_path``
+under ``data/``, no ``corpus``) is such a row (``missing_corpus``,
+``missing_source_code``, ``bad_local_path``): no old key is mapped, so its
+payload has no ``source_code`` and carries ``bank_code`` as an ordinary
+field. Migrate the manifest (central-bank-corpus ``migrate-contract``).
 
 When it is not yet indexed we fall back to what the path encodes:
 ``corpus``, ``source_code`` (the bank folder), ``doc_type``, ``year``, and
@@ -301,10 +304,10 @@ def iter_items(
 
 def _refusals(rec: dict, corpus: str) -> str:
     """The reasons the vault would refuse manifest row ``rec`` for
-    (``vault_contract.check_row`` without vocabulary, transition on), as
-    text; "" when it is accepted."""
+    (``vault_contract.check_row`` without vocabulary, ``transition=False``
+    as the vault ingests), as text; "" when it is accepted."""
     try:
-        checked = check_row(rec, None, expected_corpus=corpus)
+        checked = check_row(rec, None, expected_corpus=corpus, transition=False)
     except (TypeError, ValueError) as exc:  # --corpus that is not a corpus code
         return str(exc)
     return ", ".join(r.reason for r in checked.refusals)

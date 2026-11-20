@@ -18,8 +18,8 @@ Since the 2026-11 rename the vault column ``pdf_url`` is ``document_url``, and
 the payload carries the address under that name. :func:`_renamed` renames the
 captured key and nothing else: the value is the captured one; the key sits
 where the column puts it (after the other columns, before the keys the engine
-writes), because the captured value came from ``extra`` (see below), where the
-old name is now left out (the column wins). :func:`_expected` is the captured
+writes), because the captured value came from ``extra`` (see below), from
+which :func:`_vault_row` moves it to the column. :func:`_expected` is the captured
 payload through both translations.
 
 Never adapt the fixture to make this pass. The one translation of the
@@ -145,6 +145,8 @@ def _vault_row(row):
     for col in LINK_COLUMNS:
         old = {v: k for k, v in RENAMED_KEYS.items()}.get(col, col)
         out[col] = extra.get(old)
+    if row.get("extra") is not None:  # moved, not copied: the vault keeps no pdf_url in extra
+        out["extra"] = {k: v for k, v in extra.items() if k not in RENAMED_KEYS} or None
     if out.get("date"):
         out["date"] = datetime.date.fromisoformat(out["date"])
     path = FIXTURE / "corpus" / row["local_path"].strip()[len("data/"):]
@@ -226,13 +228,13 @@ def test_the_stale_reserved_keys_of_an_extra_are_dropped_and_reported(monkeypatc
     assert first["meeting"] == "June 2024"  # the rest of the extra is kept
 
 
-def test_a_precision_and_a_kind_from_the_extra_add_only_themselves_and_their_interval(monkeypatch):
-    """The corrected vault rows carry ``date_precision`` and ``date_kind`` in
-    ``extra``: on the captured documents they reach the payload as two more
+def test_a_precision_and_a_kind_add_only_themselves_and_their_interval(monkeypatch):
+    """The vault rows carry ``date_precision`` and ``date_kind`` (columns of
+    the documents contract): on the captured documents they reach the payload as two more
     keys of the metadata, the interval follows the precision, and the ids, the
     vectors and every other key stay the captured ones."""
     (document,) = [d for d in DOCUMENTS if d["row"]["doc_id"] == "au-e1-2022-02-statement"]
-    row = dict(document["row"], extra={"date_precision": "month", "date_kind": "period"})
+    row = dict(document["row"], date_precision="month", date_kind="period")
     item, written, client = _ingest({**document, "row": row}, monkeypatch)
     assert written == len(document["points"])
     assert [p.id for p in client.written] == [p["id"] for p in document["points"]]

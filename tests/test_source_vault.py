@@ -296,8 +296,8 @@ def test_a_vault_item_with_a_dirty_extra_is_ingested_not_failed(monkeypatch, tmp
 def test_a_vault_extra_holding_the_derived_interval_is_ingested_not_failed(monkeypatch, tmp_path):
     """The vault's ``extra`` must never make ingestion fail: a stale
     ``date_start`` / ``date_end`` there is left out and counted, and the engine
-    writes the interval it derives from ``date`` and ``date_precision``, which
-    pass through from ``extra`` with ``date_kind``."""
+    writes the interval it derives from ``date`` and ``date_precision`` (columns,
+    with ``date_kind``)."""
     import datetime
 
     from data_orchestrator.core import run_ingest
@@ -307,9 +307,8 @@ def test_a_vault_extra_holding_the_derived_interval_is_ingested_not_failed(monke
     (tmp_path / "raw").mkdir()
     _md_item(tmp_path / "raw", doc_id="d1")
     item = row_to_item(_row(local_path="data/raw/d1.md", date=datetime.date(2016, 7, 1),
-                            year=2016,
-                            extra={"date_precision": "month", "date_kind": "meeting",
-                                   "date_source": "title",
+                            year=2016, date_precision="month", date_kind="meeting",
+                            extra={"date_source": "title",
                                    "date_start": "1999-01-01T00:00:00Z", "date_end": 5}),
                        "central-bank")
     assert item.dropped_keys == ("date_start", "date_end")
@@ -334,7 +333,7 @@ def test_an_undated_vault_row_gets_no_interval(monkeypatch, tmp_path):
     (tmp_path / "raw").mkdir()
     _md_item(tmp_path / "raw", doc_id="d1")
     item = row_to_item(_row(local_path="data/raw/d1.md", date=None, year=None,
-                            extra={"date_precision": "garbage"}), "central-bank")
+                            date_precision="garbage"), "central-bank")
     store = FakeStore([])
     run_ingest([item], collection="c", store=store, embedder=FakeEmbedder())
     payload = store.client.points[0].payload
@@ -369,10 +368,9 @@ def test_null_link_columns_are_absent_and_remove_the_same_key_of_extra(monkeypat
     (the column wins, as for every other column)."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     item = row_to_item(_row(document_url=None, source_url=None, mime_type=None,
-                            extra={"document_url": "https://stale.org/x.pdf",
-                                   "pdf_url": "https://stale.org/x.pdf", "source_url": "s"}),
+                            extra={"document_url": "https://stale.org/x.pdf", "source_url": "s"}),
                        "central-bank")
-    for col in ("document_url", "pdf_url", "source_url", "mime_type"):
+    for col in ("document_url", "source_url", "mime_type"):
         assert col not in item.payload
     assert item.dropped_keys == ()
 
@@ -384,15 +382,16 @@ def test_a_link_column_wins_over_extra(monkeypatch, tmp_path):
     assert item.payload["document_url"] == "https://col.org/a.pdf"
 
 
-def test_a_pdf_url_of_extra_never_reaches_the_payload(monkeypatch, tmp_path):
-    """``pdf_url`` is the former name of the ``document_url`` column: the column
-    wins, so the old name is left out of the payload (silently, not counted),
-    whatever ``extra`` holds."""
+def test_a_pdf_url_of_extra_is_an_ordinary_key(monkeypatch, tmp_path):
+    """The contract's transition is over: ``pdf_url`` is no longer read as the
+    former name of ``document_url``. The vault (transition=False) keeps a
+    manifest's ``pdf_url`` in ``extra`` as any other field, so it is carried
+    as given, next to the column."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     item = row_to_item(_row(document_url="https://col.org/a.pdf",
                             extra={"pdf_url": "https://extra.org/a.pdf", "cik": "1"}),
                        "central-bank")
-    assert "pdf_url" not in item.payload and item.dropped_keys == ()
+    assert item.payload["pdf_url"] == "https://extra.org/a.pdf" and item.dropped_keys == ()
     assert item.payload["document_url"] == "https://col.org/a.pdf"
     assert item.payload["cik"] == "1"
 
@@ -429,9 +428,9 @@ def test_the_keys_dropped_by_design_never_reach_the_payload_and_are_not_counted(
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     extra = {"html_path": "/Users/someone/cb/x.html", "alt_urls": ["https://a", "https://b"],
              "alt_source_urls": [], "local_path": "data/raw/x.pdf", "text": "stale",
-             "date_precision": "month", "date_kind": "meeting", "date_source": "title",
-             "repec_handle": "RePEc:x:y:z"}
-    item = row_to_item(_row(extra=extra), "central-bank")
+             "date_source": "title", "repec_handle": "RePEc:x:y:z"}
+    item = row_to_item(_row(extra=extra, date_precision="month", date_kind="meeting"),
+                       "central-bank")
     for key in ("html_path", "alt_urls", "alt_source_urls", "local_path", "text"):
         assert key not in item.payload
     assert item.dropped_keys == ("text",)
