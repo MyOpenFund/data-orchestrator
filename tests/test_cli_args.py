@@ -1556,7 +1556,8 @@ def test_a_mistyped_source_is_refused_without_offering_company(capsys):
         cli.main(["compnay"])
     assert info.value.code == 2
     err = capsys.readouterr().err
-    assert "invalid choice: 'compnay'" in err and "'vault'" in err and "company" not in err
+    # Python 3.12 lists the choices unquoted, 3.13 quotes them: match either.
+    assert "invalid choice: 'compnay'" in err and "vault" in err and "company" not in err
 
 
 def test_an_unknown_flag_with_a_real_source_is_still_an_error(capsys):
