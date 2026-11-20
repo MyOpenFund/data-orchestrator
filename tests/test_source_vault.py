@@ -478,3 +478,40 @@ def test_the_anti_join_matches_the_corpus_and_the_doc_id():
         flat = " ".join(sql.split())
         assert ("ON r.corpus = d.corpus AND r.doc_id = d.doc_id "
                 "AND r.collection = %(collection)s") in flat
+
+
+def test_iter_items_refuses_a_bad_local_path_before_reading_and_says_how_many(
+        monkeypatch, tmp_path, caplog):
+    """A local_path the documents contract refuses (here one that would leave
+    the corpus root) is never joined nor read: the row is skipped, counted
+    and named; the other rows go on."""
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = DescribedFakeConn(
+        rows=[_tuple_row(doc_id="ok"),
+              _tuple_row(doc_id="escape", local_path="raw/../../etc/passwd.pdf"),
+              _tuple_row(doc_id="absolute", local_path="/Users/x/raw/a.pdf")],
+        columns=_SELECT_COLUMNS)
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.vault"):
+        items = list(iter_items(conn, "central-bank", "central-bank-e5b-v1"))
+    assert [i.doc_id for i in items] == ["ok"]
+    assert "2 row(s) with a local_path the documents contract refuses skipped" in caplog.text
+    assert "escape" in caplog.text and "absolute" in caplog.text
+
+
+def test_row_to_item_raises_on_a_bad_local_path(monkeypatch, tmp_path):
+    from data_orchestrator.routing import BadLocalPath
+
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(tmp_path))
+    with pytest.raises(BadLocalPath):
+        row_to_item(_row(corpus="company", local_path="raw/../x.pdf"), "company")
+
+
+def test_a_company_row_maps_to_its_file_under_the_company_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(tmp_path))
+    item = row_to_item(_row(doc_id="cf0e49e6e176a851", corpus="company", source_code="sec",
+                            doc_type="A1", local_path="raw/0000320193/A1/2024/cf0e49e6e176a851.pdf",
+                            entity_scheme="cik", entity_value="0000320193",
+                            extra={"cik": "0000320193", "accession": "0000320193-24-000123"}),
+                       "company")
+    assert item.path == tmp_path / "raw" / "0000320193" / "A1" / "2024" / "cf0e49e6e176a851.pdf"
+    assert item.payload["corpus"] == "company" and item.payload["entity_value"] == "0000320193"

@@ -18,10 +18,14 @@ left out silently, not counted). A key of ``extra`` that
 the engine writes itself (``filename``, ``chunk_number``, ``ingestion_date``,
 ``text``, ``page``, and the derived ``date_start`` / ``date_end``) is left
 out and counted, never sent: the engine refuses it, and one stray key must not
-fail the document. ``date_precision`` and ``date_kind`` are ordinary keys of
-``extra`` and reach the payload as they are; the engine derives the interval
-from ``date`` and ``date_precision``. File paths join the per-machine corpus root
-(routing) with the vault's relative ``local_path``.
+fail the document. ``date_precision``, ``date_kind``, ``entity_scheme`` and
+``entity_value`` are columns since the documents contract (keys of ``extra``
+before it, still read from there when the column is NULL); the engine derives
+the interval from ``date`` and ``date_precision``. File paths join the
+per-machine corpus root (routing) with the vault's ``local_path``, relative to
+that root; a ``local_path`` the contract refuses (``routing.BadLocalPath``) is
+skipped and counted, never read. A document is ``(corpus, doc_id)``: the
+anti-join matches both.
 
 Transition (2026-11 rename): the vault's ``pdf_url`` column became
 ``document_url``. :func:`iter_items` reads which of the two the vault has, once
@@ -38,12 +42,15 @@ from ..core import SourceItem, source_label
 from ..payload import PAYLOAD_COLUMNS, row_to_payload  # noqa: F401  (row_to_payload: re-exported)
 from ..vault import DOCUMENT_URL_COLUMN, document_url_column, document_url_select
 from ..routing import (
-    resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
+    BadLocalPath, resolve_local_path, supported_extensions, supported_mime_types, validate_mimes,
 )
 
 logger = logging.getLogger(__name__)
 
 _PAYLOAD_COLUMNS = PAYLOAD_COLUMNS
+
+#: How many doc_ids of rows refused for their local_path the warning names.
+REFUSED_EXAMPLES = 10
 
 _SELECT_COLUMNS = _PAYLOAD_COLUMNS + ("local_path", "extra")
 
@@ -173,7 +180,8 @@ def count_unsupported(conn, corpus, collection, **kwargs) -> dict[str, int]:
 
 
 def row_to_item(row: dict, corpus: str) -> SourceItem | None:
-    """Map one selection row to a SourceItem. None when local_path is NULL."""
+    """Map one selection row to a SourceItem. None when local_path is NULL;
+    ``routing.BadLocalPath`` when the documents contract refuses it."""
     local_path = row.get("local_path")
     if local_path:
         # Same trailing-whitespace trim as the SQL predicate (_PATH_EXPR), so
@@ -197,14 +205,24 @@ def iter_items(conn, corpus: str, collection: str, **filters) -> Iterator[Source
     sql, params = build_selection_sql(corpus, collection,
                                       document_url_from=document_url_column(conn), **filters)
     skipped = 0
+    refused: list[str] = []
     with conn.cursor() as cur:
         cur.execute(sql, params)
         columns = [d[0] for d in cur.description]
         for raw in cur:
-            item = row_to_item(dict(zip(columns, raw)), corpus)
+            row = dict(zip(columns, raw))
+            try:
+                item = row_to_item(row, corpus)
+            except BadLocalPath:
+                refused.append(row["doc_id"])
+                continue
             if item is None:
                 skipped += 1
                 continue
             yield item
     if skipped:
         logger.warning("vault selection: %d row(s) without local_path skipped", skipped)
+    if refused:
+        logger.warning("vault selection: %d row(s) with a local_path the documents contract "
+                       "refuses skipped, never read: %s", len(refused),
+                       ", ".join(refused[:REFUSED_EXAMPLES]))

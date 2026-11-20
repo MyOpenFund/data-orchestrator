@@ -232,3 +232,11 @@ def test_probe_file_survives_a_corrupt_pdf(tmp_path, caplog):
 
     assert "probe failed for" in caplog.text
     assert "truncated.pdf" in caplog.text
+
+
+def test_run_probe_never_reads_a_bad_local_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = FakeConn([("d1", "../outside.pdf")])
+    stats = run_probe(conn, "central-bank")
+    assert stats == {"probed": 0, "skipped": 1, "errors": 0}
+    assert not [e for e in conn.executed if e[0].startswith("UPDATE documents")]
