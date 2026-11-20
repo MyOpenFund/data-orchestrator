@@ -22,18 +22,72 @@ in step 7: four files under `/tmp` (a helper script, two snapshots of the
 scratch collection, the CSVs) and two snapshots of production under `~`
 (about 100 MB together: they hold the payloads). Step 9 removes them.
 
+## After the documents contract (vault 12ffd11)
+
+The vault's `documents` contract 1.0.0 turns `date_precision` and `date_kind`
+into columns: the vault's first ingestion on the contract moves both out of
+`extra` into their columns, under the same names and with the same values, and
+this repo reads them from the columns (`payload.PAYLOAD_COLUMNS`, last
+positions). The payload an ingestion builds today is then the one the points of
+`central-bank-e5b-v1` were written with, and a dry run is the check:
+
+```bash
+data-orchestrator sync-metadata --collection central-bank-e5b-v1 --csv ~/sync-metadata-contract-dry.csv
+```
+
+**Expected: nothing to write (`documents to write: 0`, every dated document
+`unchanged`), except the rows below.** Run it only after the vault deploy
+(its ingestion ran once on the contract) and after updating this repository
+(an older one reads `date_precision`/`date_kind` from `extra` only: against a
+vault on the contract its dry run would report every precision and kind as
+removed, and its `--write` would strip them from the points; it fails earlier
+anyway on `rag_ingestions`' new key).
+
+The stated exceptions, each one a single key:
+
+- **`date_precision` on an undated row.** The contract drops a precision
+  without a date (`split_row`, notice `precision_without_date`); the vault
+  had kept it in `extra`. Seven rows of the public central-bank manifests
+  (commit `ea679d4`) are in that case, all RePEc working papers with
+  `date_precision: "month"` and no date: `ca` D1 `34578afa2cca7273`,
+  `f004ff56f40ace8e`, `3ef71f017c160f2b`, `3830c82e02d32d31`,
+  `58a08d8bddef1486`, `nl` D1 `bbef4639a44dcb72`, `482b2b109cb42b2d`. Those
+  that are in the collection are reported `undated` with one difference,
+  `date_precision` `month` -> absent. How many are in the collection (reads
+  only):
+
+  ```sql
+  SELECT doc_id FROM rag_ingestions WHERE collection = 'central-bank-e5b-v1' AND corpus = 'central-bank' AND doc_id IN ('34578afa2cca7273','f004ff56f40ace8e','3ef71f017c160f2b','3830c82e02d32d31','58a08d8bddef1486','bbef4639a44dcb72','482b2b109cb42b2d');
+  ```
+
+  A `--write` removes that precision from their points, which is what a new
+  ingestion would write (a precision of no date says nothing). central-bank-corpus's
+  `migrate-contract` drops it from the manifests as well.
+- **With `--include-title`**: a title that is blank in the manifest (110 rows of
+  the public manifests) is now absent (the contract reads a blank optional
+  value as absent; the vault stored `""`). Those in the collection show
+  `title` `""` -> absent. Not owned by default.
+- **With `--include-links`**: nothing new (a blank `source_url` was already
+  read as absent).
+
+Anything else in the CSV (a `date`, a `date_kind`, a precision on a dated
+row) is a reason to stop and look: it would mean the vault's row is not the
+one the points were written from.
+
 ## 0. Before starting
 
 The vault must have ingested the corrected manifests (the policy-dates
 backfill of central-bank-corpus, then the vault's next ingestion). With
-`psql` on the vault, this reads only:
+`psql` on the vault, this reads only (on a vault on the documents contract the
+precision and the kind are columns; before it, they were `extra ? 'date_kind'`
+and `extra ? 'date_precision'`):
 
 ```sql
-SELECT count(*) FILTER (WHERE extra ? 'date_kind') AS with_kind,
-       count(*) FILTER (WHERE extra ? 'date_precision') AS with_precision,
+SELECT count(*) FILTER (WHERE d.date_kind IS NOT NULL) AS with_kind,
+       count(*) FILTER (WHERE d.date_precision IS NOT NULL) AS with_precision,
        count(*) FILTER (WHERE date IS NULL) AS undated
 FROM documents d
-JOIN rag_ingestions r ON r.doc_id = d.doc_id AND r.collection = 'central-bank-e5b-v1';
+JOIN rag_ingestions r ON r.corpus = d.corpus AND r.doc_id = d.doc_id AND r.collection = 'central-bank-e5b-v1';
 ```
 
 Expected: `with_kind` close to 2,554 (the backfill gave a kind to 2,554 rows;
@@ -109,10 +163,10 @@ INSERT INTO rag_ingestions (doc_id, collection, corpus, source_code, embedding_m
 SELECT doc_id, 'zz-sync-check', corpus, source_code, embedding_model, embedding_version, chunk_count
 FROM (
   SELECT r.*, row_number() OVER (
-           PARTITION BY d.source_code, d.doc_type, d.extra->>'date_precision', d.date IS NULL
+           PARTITION BY d.source_code, d.doc_type, d.date_precision, d.date IS NULL
            ORDER BY r.doc_id) AS n
   FROM rag_ingestions r
-  JOIN documents d ON d.doc_id = r.doc_id
+  JOIN documents d ON d.corpus = r.corpus AND d.doc_id = r.doc_id
   WHERE r.collection = 'central-bank-e5b-v1' AND d.deleted_at IS NULL
 ) AS picked
 WHERE n = 1;
