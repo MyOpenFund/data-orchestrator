@@ -255,10 +255,11 @@ def test_the_split_of_every_golden_row_is_the_contract_s(name):
 # ---------------------------------------------------------------------------
 # Central-bank points ingested before the contract keep their payload
 # ---------------------------------------------------------------------------
-# Four real rows of the public central-bank manifests (repo central-bank-corpus,
+# Five real rows of the public central-bank manifests (repo central-bank-corpus,
 # data/manifest, commit ea679d4), as the producer wrote them before the
-# contract: a precision and a kind, a month precision, no precision, and one of
-# the 7 undated rows that carry a precision. OLD_PAYLOADS is what this repo's
+# contract: a precision and a kind, a month precision, no precision, one of
+# the 7 undated rows that carry a precision, and one of the 110 rows with a
+# blank title. OLD_PAYLOADS is what this repo's
 # payload rule gave them before the contract (main 81ead10, from the manifest
 # and from the vault row alike), written out here.
 CB_ROWS = [
@@ -299,6 +300,15 @@ CB_ROWS = [
      "local_path": "data/raw/ca/D1/0/34578afa2cca7273.pdf", "html_path": None,
      "date_precision": "month", "date_source": "repec", "repec_handle": "",
      "doc_id": "34578afa2cca7273", "year": None},
+    {"bank_code": "ca", "doc_type": "E1", "title": "",
+     "document_url": "https://www.bankofcanada.ca/publications/mpr/mpr-2026-10-28/in-focus-3/",
+     "source_url": "https://www.bankofcanada.ca/wp-sitemap.xml", "date": "2026-10-28",
+     "language": "en", "provenance": "bank_site", "mime_type": "application/pdf",
+     "sha256": "79cf7158ea4c4b7aa6502af030244d70f5d4f2d70f7aa1a6db0ef95bdcce1276",
+     "local_path": "data/raw/ca/E1/2026/0149e9c0c8a10104.pdf",
+     "html_path": "data/raw/ca/E1/2026/0149e9c0c8a10104.html", "date_precision": "day",
+     "date_source": "bank_site", "repec_handle": "", "alt_urls": [],
+     "doc_id": "0149e9c0c8a10104", "year": 2026, "date_kind": "publication"},
 ]
 
 _COMMON = {"corpus": "central-bank", "language": "en", "mime_type": "application/pdf"}
@@ -335,11 +345,23 @@ OLD_PAYLOADS = {
         "sha256": "d73a5518868730f8c6a314989bf249d00fed1c48ba6d1ad0e6917457b11218a5",
         "provenance": "repec_discovery", "document_url": "https://doi.org/10.34989/swp-1994-5",
         "source_url": "https://ideas.repec.org/p/bca/bocawp/94-5.html"},
+    "0149e9c0c8a10104": {
+        "date_precision": "day", "date_source": "bank_site", "repec_handle": "",
+        "date_kind": "publication", "doc_id": "0149e9c0c8a10104", **_COMMON,
+        "source_code": "ca", "doc_type": "E1", "title": "", "date": "2026-10-28", "year": 2026,
+        "sha256": "79cf7158ea4c4b7aa6502af030244d70f5d4f2d70f7aa1a6db0ef95bdcce1276",
+        "provenance": "bank_site",
+        "document_url": "https://www.bankofcanada.ca/publications/mpr/mpr-2026-10-28/in-focus-3/",
+        "source_url": "https://www.bankofcanada.ca/wp-sitemap.xml"},
 }
 #: The undated row with a precision: the contract drops a precision without a
 #: date (notice precision_without_date), so its new payload has no
 #: date_precision. The only change; SYNC-METADATA.md names these rows.
 UNDATED_WITH_PRECISION = "34578afa2cca7273"
+#: One of the 110 rows with a blank title: the contract reads a blank optional
+#: value as absent, so its payload has no title (it had ``""``), whichever the
+#: form (a vault row stored before the contract holds ``""``, read as absent).
+BLANK_TITLE = "0149e9c0c8a10104"
 
 
 def _migrated(rec):
@@ -392,6 +414,8 @@ def _expected(doc_id, *, undated_precision_kept=False):
     want = dict(OLD_PAYLOADS[doc_id])
     if doc_id == UNDATED_WITH_PRECISION and not undated_precision_kept:
         del want["date_precision"]
+    if doc_id == BLANK_TITLE:
+        del want["title"]
     return want
 
 
@@ -402,8 +426,9 @@ def test_a_central_bank_payload_is_the_one_its_points_were_ingested_with(rec, fo
     """Same keys, same values: ``date_precision`` and ``date_kind`` now come
     from their columns instead of ``extra`` (a column is a payload key under
     the same name), so no Qdrant point of the central-bank collection needs a
-    rewrite, whichever form the manifest or the vault row is in. The one
-    exception, by the contract: an undated row's precision is dropped."""
+    rewrite, whichever form the manifest or the vault row is in. Two
+    exceptions, by the contract: an undated row's precision is dropped (7
+    public rows) and a blank title is absent (110 public rows)."""
     if form == "legacy manifest":
         payload, dropped = pl.manifest_row_to_payload(rec, "central-bank")
     elif form == "migrated manifest":
