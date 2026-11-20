@@ -1013,8 +1013,10 @@ def test_a_refused_api_key_exits_1_with_the_reason(tmp_path, monkeypatch, capsys
                             "check QDRANT_API_KEY")
 
 
-def _cb_corpus_with_documents(tmp_path, n):
-    """A cb_corpus root with ``n`` indexed one-page PDFs of bank ``us``."""
+def _cb_corpus_with_documents(tmp_path, n, legacy=()):
+    """A cb_corpus root with ``n`` indexed one-page PDFs of bank ``us``; the
+    rows of the indexes in ``legacy`` are in the pre-contract form the
+    documents contract refuses (``bank_code``, no ``corpus``)."""
     import json
 
     import fitz
@@ -1028,9 +1030,144 @@ def _cb_corpus_with_documents(tmp_path, n):
         doc.new_page().insert_text((72, 72), f"Monetary policy note {i}. " * 30)
         doc.save(folder / f"doc{i}.pdf")
         doc.close()
-        lines.append(json.dumps({"doc_id": f"doc{i}", "source_code": "us", "date": "2015-01-01", "title": "t"}))
+        row = {"doc_id": f"doc{i}", "corpus": "central-bank", "source_code": "us",
+               "doc_type": "C1", "language": "en", "provenance": "bank_site",
+               "date": "2015-01-01", "year": 2015, "title": "t"}
+        if i in legacy:
+            row["bank_code"] = row.pop("source_code")
+            del row["corpus"]
+        lines.append(json.dumps(row))
     (root / "manifest" / "us.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return root
+
+
+def test_a_manifest_row_the_contract_refuses_is_skipped_and_counted(tmp_path, monkeypatch,
+                                                                   capsys):
+    """A row ``check_row(transition=False)`` refuses is never read (the vault
+    keeps no row for it): counted in the run report with its doc_id and
+    reasons, and as a failure for the outcome, like ``docs_bad_local_path``."""
+    store = _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={1})
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 3
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["exit_code"]) == ("degraded", 3)  # 1 of 4 > 0.10
+    assert rep["totals"]["docs_new"] == 3 and rep["totals"]["docs_failed"] == 0
+    assert rep["docs_refused_contract"] == 1
+    assert rep["refused_contract_doc_ids"] == ["doc1"]
+    assert rep["refused_contract_reasons"] == {"legacy_key": 1, "missing_corpus": 1,
+                                               "missing_source_code": 1}
+    ledger = (tmp_path / "state" / "central-bank-e5b-v1.jsonl").read_text(encoding="utf-8")
+    assert '"doc1"' not in ledger  # never read
+    err = capsys.readouterr().err
+    assert "warning: 1 document(s) skipped, never read: their manifest row is refused by " \
+           "the documents contract (doc1: missing_corpus, missing_source_code, legacy_key)" in err
+    assert err.count("skipped, never read") == 1  # one warning: the source leaves it to the CLI
+    assert store  # the engine ran
+
+
+@pytest.mark.parametrize("ratio,rc,outcome", [("0.5", 0, "ok"), ("0.2", 3, "degraded")])
+def test_refused_manifest_rows_count_toward_the_failure_ratio(tmp_path, monkeypatch,
+                                                              ratio, rc, outcome):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO", ratio)
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={0})  # 1 of 4: 0.25
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == rc
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["docs_refused_contract"]) == (outcome, 1)
+
+
+def test_a_clean_cb_corpus_report_has_no_refused_contract_keys(tmp_path, monkeypatch):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 2)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 0
+    assert not {k for k in _last_report(tmp_path) if "refused_contract" in k}
+
+
+def test_only_refused_manifest_rows_is_a_degraded_run(tmp_path, monkeypatch):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 2, legacy={0, 1})
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 3
+    rep = _last_report(tmp_path)
+    assert rep["docs_refused_contract"] == 2 and rep["totals"]["docs_new"] == 0
+
+
+def test_the_refused_contract_doc_ids_are_bounded(tmp_path, monkeypatch):
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_REPORT_DOC_IDS", "2")
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={0, 1, 2})
+    cli.main(["cb_corpus", "--no-vault", "--root", str(root)])
+    rep = _last_report(tmp_path)
+    assert rep["docs_refused_contract"] == 3
+    assert rep["refused_contract_doc_ids"] == ["doc0", "doc1"]
+    assert rep["refused_contract_reasons"] == {"legacy_key": 3, "missing_corpus": 3,
+                                               "missing_source_code": 3}
+
+
+def test_the_refused_contract_doc_ids_default_to_twenty(tmp_path, monkeypatch):
+    from data_orchestrator import policy
+
+    _fake_engine(monkeypatch)
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    n = policy.DEFAULT_REPORT_DOC_IDS + 1
+    root = _cb_corpus_with_documents(tmp_path, n, legacy=set(range(n)))
+    cli.main(["cb_corpus", "--no-vault", "--root", str(root)])
+    rep = _last_report(tmp_path)
+    assert policy.DEFAULT_REPORT_DOC_IDS == 20
+    assert rep["docs_refused_contract"] == n
+    assert len(rep["refused_contract_doc_ids"]) == 20
+
+
+@pytest.mark.parametrize("value", ["-1", "two", "2.0", "1e3", "\u0662"])
+def test_a_bad_report_doc_ids_fails_before_any_work(monkeypatch, capsys, value):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_REPORT_DOC_IDS", value)
+    _forbid_any_work(monkeypatch)
+    assert cli.main(["cb_corpus", "--no-vault"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "DATA_ORCHESTRATOR_REPORT_DOC_IDS" in err
+
+
+def test_a_fatal_report_keeps_the_refused_manifest_rows(tmp_path, monkeypatch):
+    from tests.test_core_engine import _KeyRevokedStore
+
+    _fake_engine(monkeypatch, store=_KeyRevokedStore([], good=1, status=401))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    root = _cb_corpus_with_documents(tmp_path, 4, legacy={0})
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root)]) == 1
+    rep = _last_report(tmp_path)
+    assert (rep["outcome"], rep["docs_refused_contract"]) == ("failed", 1)
+    assert rep["refused_contract_doc_ids"] == ["doc0"]
+
+
+def test_count_only_says_how_many_manifest_rows_are_refused(tmp_path, capsys):
+    root = _cb_corpus_with_documents(tmp_path, 3, legacy={2})
+    assert cli.main(["cb_corpus", "--no-vault", "--count-only", "--root", str(root)]) == 0
+    captured = capsys.readouterr()
+    assert "Matching documents: 2" in captured.out
+    assert "warning: 1 document(s) skipped, never read: their manifest row is refused by " \
+           "the documents contract (doc2: missing_corpus, missing_source_code, legacy_key)" \
+           in captured.err
+    assert captured.err.count("skipped, never read") == 1
+
+
+@pytest.mark.parametrize("extra", [[], ["--count-only"]])
+def test_a_corpus_that_is_not_a_corpus_code_is_a_usage_error_exit_2(tmp_path, monkeypatch,
+                                                                    capsys, extra):
+    """Every manifest row is checked against --corpus: a value that is not a
+    corpus code is the operator's error (exit 2), before any work, never a
+    refusal of every row."""
+    def no_run(*args, **kwargs):
+        raise AssertionError("the run must not start")
+
+    monkeypatch.setattr(cli, "run_ingest", no_run)
+    root = _cb_corpus_with_documents(tmp_path, 1)
+    assert cli.main(["cb_corpus", "--no-vault", "--root", str(root),
+                     "--corpus", "Central Bank", *extra]) == 2
+    assert "error: corpus 'Central Bank' is not a corpus code" in capsys.readouterr().err
 
 
 def test_a_key_refused_in_the_middle_of_a_run_is_one_fatal_exit_1(tmp_path, monkeypatch, capsys):
@@ -1529,6 +1666,19 @@ def test_rows_with_a_bad_local_path_are_counted_in_the_run_report(monkeypatch, t
     assert rep["bad_local_path_doc_ids"] == ["escape", "abs"]
     err = capsys.readouterr().err
     assert "warning: 2 document(s) skipped, never read" in err
+    assert err.count("skipped, never read") == 1  # one warning: the source leaves it to the CLI
+
+
+def test_the_bad_local_path_doc_ids_are_bounded_by_the_setting(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_ORCHESTRATOR_REPORT_DOC_IDS", "1")
+    _conn, reports = _fake_vault(
+        monkeypatch, tmp_path, [],
+        selection_rows=[("ok", "raw/ok.pdf"), ("escape", "raw/../../x.pdf"),
+                        ("abs", "/etc/x.pdf")])
+    cli.main(["vault"])
+    (rep,) = reports
+    assert rep["docs_bad_local_path"] == 2
+    assert rep["bad_local_path_doc_ids"] == ["escape"]
 
 
 def test_a_clean_selection_reports_no_bad_local_path(monkeypatch, tmp_path):
@@ -1542,6 +1692,20 @@ def test_the_removed_company_source_is_not_offered_in_the_help(capsys):
         cli.main(["--help"])
     usage = capsys.readouterr().out
     assert "{cb_corpus,vault,probe,sync-metadata}" in usage and "company," not in usage
+
+
+def test_the_include_links_help_names_what_it_compares_and_removes(monkeypatch, capsys):
+    """Compared with its whitespace collapsed at a fixed width: argparse wraps
+    to the terminal width (a narrow one splits long words), and its layout
+    differs between Python 3.12 and 3.13."""
+    monkeypatch.setenv("COLUMNS", "100")
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert ("--include-links also compare and write document_url, source_url, mime_type, "
+            "and remove the extra keys dropped by design "
+            "(DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS) from the points (off by default)"
+            ) in help_text
 
 
 def test_company_as_the_value_of_corpus_is_no_removed_source(monkeypatch, capsys):

@@ -19,18 +19,18 @@ CORPUS, COLLECTION = "central-bank", "central-bank-e5b-v1"
 
 # (doc_id, source_code, mime_type, local_path, expected selected)
 MATRIX = [
-    ("null-mime-upper-pdf", "us", None, "data/raw/us/C1/2015/UPPER.PDF", True),
-    ("null-mime-html", "us", None, "data/raw/us/C1/2015/page.html", False),
-    ("plain-charset-txt", "ecb", "text/plain; charset=utf-8", "data/raw/ecb/a.txt", True),
-    ("blank-mime-md", "ecb", "", "data/raw/ecb/note.md", True),
-    ("tab-pdf-mime", "fr", "\tapplication/pdf", "data/raw/fr/x.pdf", True),
-    ("pdf-mime-html-ext", "fr", "application/pdf", "data/raw/fr/x.html", False),
-    ("pdf-mime-no-ext", "fr", "application/pdf", "data/raw/fr/noext", False),
+    ("null-mime-upper-pdf", "us", None, "raw/us/C1/2015/UPPER.PDF", True),
+    ("null-mime-html", "us", None, "raw/us/C1/2015/page.html", False),
+    ("plain-charset-txt", "ecb", "text/plain; charset=utf-8", "raw/ecb/a.txt", True),
+    ("blank-mime-md", "ecb", "", "raw/ecb/note.md", True),
+    ("tab-pdf-mime", "fr", "\tapplication/pdf", "raw/fr/x.pdf", True),
+    ("pdf-mime-html-ext", "fr", "application/pdf", "raw/fr/x.html", False),
+    ("pdf-mime-no-ext", "fr", "application/pdf", "raw/fr/noext", False),
     ("null-mime-null-path", "us", None, None, False),
-    ("html-html", "ecb", "text/html", "data/raw/ecb/p.html", False),
-    ("html-mime-pdf-ext", "ecb", "text/html", "data/raw/ecb/q.pdf", False),
-    ("pdf-trailing-ws", "us", "APPLICATION/PDF ", "data/raw/us/y.pdf\n", True),
-    ("no-source-unsupported", None, "text/html", "data/raw/x/p.html", False),
+    ("html-html", "ecb", "text/html", "raw/ecb/p.html", False),
+    ("html-mime-pdf-ext", "ecb", "text/html", "raw/ecb/q.pdf", False),
+    ("pdf-trailing-ws", "us", "APPLICATION/PDF ", "raw/us/y.pdf\n", True),
+    ("no-source-unsupported", None, "text/html", "raw/x/p.html", False),
 ]
 
 

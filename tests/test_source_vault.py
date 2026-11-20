@@ -52,15 +52,14 @@ def _row(**over):
         "document_url": "https://example.org/d1.pdf", "source_url": "https://example.org/d1",
         "mime_type": "application/pdf",
         "date_precision": None, "date_kind": None, "entity_scheme": None, "entity_value": None,
-        "local_path": "data/raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
+        "local_path": "raw/us/C1/2015/d1.pdf", "extra": {"cik": "0001"},
     }
     row.update(over)
     return row
 
 
 def test_row_to_item_maps_payload_and_path(monkeypatch, tmp_path):
-    # local_path is repo-root-relative ("data/raw/..."); resolve_local_path
-    # (routing) strips "data/" for central-bank before joining with the root.
+    # local_path is relative to the corpus data root (documents contract).
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     item = row_to_item(_row(), "central-bank")
     assert item.doc_id == "d1"
@@ -94,7 +93,7 @@ def test_row_to_item_strips_trailing_whitespace_from_local_path(monkeypatch, tmp
     """The SQL compares on rtrim(local_path, ' \\t\\r\\n'): a row it selected as
     '.pdf' must resolve to the '.pdf' file, not to a name ending in blanks."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    item = row_to_item(_row(local_path="data/raw/us/C1/2015/d1.pdf" + tail), "central-bank")
+    item = row_to_item(_row(local_path="raw/us/C1/2015/d1.pdf" + tail), "central-bank")
     assert item.path == tmp_path / "raw" / "us" / "C1" / "2015" / "d1.pdf"
 
 
@@ -281,7 +280,7 @@ def test_a_vault_item_with_a_dirty_extra_is_ingested_not_failed(monkeypatch, tmp
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     path = _md_item(tmp_path / "raw", doc_id="d1").path
-    item = row_to_item(_row(local_path="data/raw/d1.md",
+    item = row_to_item(_row(local_path="raw/d1.md",
                             extra={"filename": "old.pdf", "page": 4, "cik": "0001"}),
                        "central-bank")
     assert item.path == path
@@ -296,8 +295,8 @@ def test_a_vault_item_with_a_dirty_extra_is_ingested_not_failed(monkeypatch, tmp
 def test_a_vault_extra_holding_the_derived_interval_is_ingested_not_failed(monkeypatch, tmp_path):
     """The vault's ``extra`` must never make ingestion fail: a stale
     ``date_start`` / ``date_end`` there is left out and counted, and the engine
-    writes the interval it derives from ``date`` and ``date_precision``, which
-    pass through from ``extra`` with ``date_kind``."""
+    writes the interval it derives from ``date`` and ``date_precision`` (columns,
+    with ``date_kind``)."""
     import datetime
 
     from data_orchestrator.core import run_ingest
@@ -306,10 +305,9 @@ def test_a_vault_extra_holding_the_derived_interval_is_ingested_not_failed(monke
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     _md_item(tmp_path / "raw", doc_id="d1")
-    item = row_to_item(_row(local_path="data/raw/d1.md", date=datetime.date(2016, 7, 1),
-                            year=2016,
-                            extra={"date_precision": "month", "date_kind": "meeting",
-                                   "date_source": "title",
+    item = row_to_item(_row(local_path="raw/d1.md", date=datetime.date(2016, 7, 1),
+                            year=2016, date_precision="month", date_kind="meeting",
+                            extra={"date_source": "title",
                                    "date_start": "1999-01-01T00:00:00Z", "date_end": 5}),
                        "central-bank")
     assert item.dropped_keys == ("date_start", "date_end")
@@ -333,8 +331,8 @@ def test_an_undated_vault_row_gets_no_interval(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     (tmp_path / "raw").mkdir()
     _md_item(tmp_path / "raw", doc_id="d1")
-    item = row_to_item(_row(local_path="data/raw/d1.md", date=None, year=None,
-                            extra={"date_precision": "garbage"}), "central-bank")
+    item = row_to_item(_row(local_path="raw/d1.md", date=None, year=None,
+                            date_precision="garbage"), "central-bank")
     store = FakeStore([])
     run_ingest([item], collection="c", store=store, embedder=FakeEmbedder())
     payload = store.client.points[0].payload
@@ -369,10 +367,9 @@ def test_null_link_columns_are_absent_and_remove_the_same_key_of_extra(monkeypat
     (the column wins, as for every other column)."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     item = row_to_item(_row(document_url=None, source_url=None, mime_type=None,
-                            extra={"document_url": "https://stale.org/x.pdf",
-                                   "pdf_url": "https://stale.org/x.pdf", "source_url": "s"}),
+                            extra={"document_url": "https://stale.org/x.pdf", "source_url": "s"}),
                        "central-bank")
-    for col in ("document_url", "pdf_url", "source_url", "mime_type"):
+    for col in ("document_url", "source_url", "mime_type"):
         assert col not in item.payload
     assert item.dropped_keys == ()
 
@@ -384,59 +381,42 @@ def test_a_link_column_wins_over_extra(monkeypatch, tmp_path):
     assert item.payload["document_url"] == "https://col.org/a.pdf"
 
 
-def test_a_pdf_url_of_extra_never_reaches_the_payload(monkeypatch, tmp_path):
-    """``pdf_url`` is the former name of the ``document_url`` column: the column
-    wins, so the old name is left out of the payload (silently, not counted),
-    whatever ``extra`` holds."""
+def test_a_pdf_url_of_extra_is_an_ordinary_key(monkeypatch, tmp_path):
+    """The contract's transition is over: ``pdf_url`` is no longer read as the
+    former name of ``document_url``. The vault (transition=False) keeps a
+    manifest's ``pdf_url`` in ``extra`` as any other field, so it is carried
+    as given, next to the column."""
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     item = row_to_item(_row(document_url="https://col.org/a.pdf",
                             extra={"pdf_url": "https://extra.org/a.pdf", "cik": "1"}),
                        "central-bank")
-    assert "pdf_url" not in item.payload and item.dropped_keys == ()
+    assert item.payload["pdf_url"] == "https://extra.org/a.pdf" and item.dropped_keys == ()
     assert item.payload["document_url"] == "https://col.org/a.pdf"
     assert item.payload["cik"] == "1"
 
 
 # ---------------------------------------------------------------------------
-# Transition (2026-11 rename): the selection reads whichever of document_url
-# and pdf_url the vault has, as document_url.
+# The document's address is the column document_url: the vault's 2026-11
+# rename is behind every vault, nothing reads pdf_url any more.
 # ---------------------------------------------------------------------------
-def test_a_vault_before_the_rename_is_selected_through_pdf_url():
-    sql, _ = build_selection_sql("central-bank", "c", document_url_from="pdf_url")
-    assert "d.pdf_url AS document_url" in sql and "d.document_url" not in sql
-
-
-def test_build_selection_sql_refuses_another_address_column():
-    with pytest.raises(ValueError, match="address"):
-        build_selection_sql("central-bank", "c", document_url_from="html_path")
-
-
-@pytest.mark.parametrize("schema_columns, selected", [
-    (("document_url",), "d.document_url,"),
-    (("pdf_url",), "d.pdf_url AS document_url"),
-    (("pdf_url", "document_url"), "d.document_url,"),
-    ((), "d.document_url,"),  # no documents table found: Postgres names the missing column
-])
-def test_iter_items_reads_the_column_of_the_vault_first(monkeypatch, tmp_path, schema_columns,
-                                                        selected):
+def test_the_selection_reads_document_url_without_reading_the_schema(monkeypatch, tmp_path):
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS,
-                             schema_columns=schema_columns)
+    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS)
     (item,) = iter_items(conn, "central-bank", "c")
-    assert "information_schema.columns" in conn.executed[0][0]
-    assert selected in conn.executed[1][0]
+    (sql, _), = conn.executed
+    assert "information_schema" not in sql and "pdf_url" not in sql
+    assert "d.document_url," in sql
     assert item.payload["document_url"] == "https://example.org/d1.pdf"
 
 
-def test_the_column_is_read_once_per_connection(monkeypatch, tmp_path):
-    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
-    conn = DescribedFakeConn(rows=[_tuple_row()], columns=_SELECT_COLUMNS,
-                             schema_columns=("pdf_url",))
-    list(iter_items(conn, "central-bank", "c"))
-    list(iter_items(conn, "central-bank", "c"))
-    reads = [sql for sql, _ in conn.executed if "information_schema" in sql]
-    assert len(reads) == 1
-    assert "d.pdf_url AS document_url" in conn.executed[-1][0]
+def test_the_rename_fallback_is_gone():
+    import inspect
+
+    from data_orchestrator import vault
+
+    for name in ("document_url_column", "document_url_select", "LEGACY_DOCUMENT_URL_COLUMN"):
+        assert not hasattr(vault, name), name
+    assert "document_url_from" not in inspect.signature(build_selection_sql).parameters
 
 
 def test_the_keys_dropped_by_design_never_reach_the_payload_and_are_not_counted(
@@ -447,9 +427,9 @@ def test_the_keys_dropped_by_design_never_reach_the_payload_and_are_not_counted(
     monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
     extra = {"html_path": "/Users/someone/cb/x.html", "alt_urls": ["https://a", "https://b"],
              "alt_source_urls": [], "local_path": "data/raw/x.pdf", "text": "stale",
-             "date_precision": "month", "date_kind": "meeting", "date_source": "title",
-             "repec_handle": "RePEc:x:y:z"}
-    item = row_to_item(_row(extra=extra), "central-bank")
+             "date_source": "title", "repec_handle": "RePEc:x:y:z"}
+    item = row_to_item(_row(extra=extra, date_precision="month", date_kind="meeting"),
+                       "central-bank")
     for key in ("html_path", "alt_urls", "alt_source_urls", "local_path", "text"):
         assert key not in item.payload
     assert item.dropped_keys == ("text",)

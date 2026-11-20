@@ -28,7 +28,7 @@ vault's Postgres schema (`documents`, `rag_ingestions`) but never owns or
 migrates it — the vault's own ingestion service runs that DDL.
 
 **The `documents` contract.** What a corpus writes on each manifest line, and
-what the vault stores from it, is the vault's `documents` contract 1.0.0
+what the vault stores from it, is the vault's `documents` contract 1.1.0
 ([`vault-contract`](https://github.com/MyOpenFund/vault/tree/master/contract),
 standard library only), a runtime dependency pinned by commit in
 `pyproject.toml` next to the engine. This repo uses it three ways:
@@ -42,13 +42,16 @@ standard library only), a runtime dependency pinned by commit in
   match the corpus too;
 - `local_path` is relative to the corpus data root (the directory holding
   `manifest/` and `raw/`), joined with that corpus's root env key; a path the
-  contract refuses (`vault_contract.is_bad_local_path`: absolute, `..`, a
-  drive, a backslash, ...), or one leaving the root through a symbolic link,
+  contract refuses (`vault_contract.is_bad_local_path` with
+  `transition=False`: absolute, `..`, a drive, a backslash, a leading `data/`,
+  ...), or one leaving the root through a symbolic link,
   is never read: the document is skipped, counted in the run report
   (`docs_bad_local_path`) and as a failure for the outcome.
 
 This version needs a vault on the contract (vault `12ffd11` or later, after its
-ingestion ran once: that run is the DDL train). Against an older vault every
+ingestion ran once: that run is the DDL train), and reads only the contract
+form: since the contract's transition cleanup (vault `2859fa6`) no pre-contract
+form is read (see [Deploying with the documents contract](#deploying-with-the-documents-contract)). Against an older vault every
 run that uses it (the vault source, `sync-metadata`, a disk source with the
 vault ledger) stops before any Qdrant write with `VaultSchemaTooOld`, naming
 what is missing (one catalog read, `vault.require_contract_schema`). See [Deploying with the documents contract](#deploying-with-the-documents-contract).
@@ -146,8 +149,9 @@ the `vault` source:
    | `DATA_ORCHESTRATOR_LOG_LEVEL` | optional, level of the log lines the CLI sends to stderr (this package's and the engine's: model loaded, collection created, a text file with invalid bytes, …): `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`; anything else is an error (exit 2) |
    | `DATA_ORCHESTRATOR_STATE_DIR` | optional, where the `--no-vault` file ledger and run reports are written; defaults to `<repo>/state` (`~` is expanded) |
    | `DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES` | optional comma list narrowing the types the vault selection offers to the engine (default: every type the pinned engine reads; see [Supported document types](#supported-document-types)); a type the engine cannot read is an error (exit 2) |
-   | `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` | optional comma list of the keys of the vault's `extra` (and of a manifest row's fields outside the vault's columns) left out of every payload by design, silently and without being counted (default `html_path,alt_urls,alt_source_urls,local_path,pdf_path,text_path,primary_path,submission_path`: a path on the producer's machine, other addresses of the document, paths in the corpus, the last four the company corpus's other artefacts; see [Qdrant payload](#qdrant-payload)). `none` drops no key; unset or blank is the default. A vault column (`title`, `document_url`, and since the documents contract `date_precision`, `date_kind`, `entity_scheme`, `entity_value`, which were keys of `extra` before: the column always wins), a former column name `pdf_url` or `bank_code` (already left out) or a key the engine writes or derives itself is refused, as is a list with no entry (exit 2) |
+   | `DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS` | optional comma list of the keys of the vault's `extra` (and of a manifest row's fields outside the vault's columns) left out of every payload by design, silently and without being counted (default `html_path,alt_urls,alt_source_urls,local_path,pdf_path,text_path,primary_path,submission_path`: a path on the producer's machine, other addresses of the document, paths in the corpus, the last four the company corpus's other artefacts; see [Qdrant payload](#qdrant-payload)). `none` drops no key; unset or blank is the default. A vault column (`title`, `document_url`, `date_precision`, `date_kind`, `entity_scheme`, `entity_value`, ...: the column always wins) or a key the engine writes or derives itself is refused (`pdf_url` and `bank_code`, former column names, are ordinary keys of `extra` since the contract's transition cleanup and may be named; the `cb_corpus` disk source refuses a manifest row carrying either, `legacy_key`), as is a list with no entry (exit 2) |
    | `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO` | optional plain decimal in `[0, 1]`, default `0.10` (see [Run reports](#run-reports-and-exit-codes)); anything else is an error (exit 2) |
+   | `DATA_ORCHESTRATOR_REPORT_DOC_IDS` | optional whole number >= 0, default `20`: how many `doc_id`s of the documents skipped, never read, a run report names per kind (`bad_local_path_doc_ids`, `refused_contract_doc_ids`; the counts beside them are always whole; `0` names none). Anything else is an error (exit 2) |
 
 3. **Qdrant** reachable at `QDRANT_HOST:QDRANT_PORT`.
 
@@ -223,24 +227,38 @@ payload keys and values from this source as from the `vault` source
 (`payload.manifest_row_to_payload`). Both sources build it with the same
 `payload.row_to_payload`, and the split of a manifest row into the vault's
 columns and `extra` is the vault's own: `vault_contract.split_row` (the
-`documents` contract, transition on), through
+`documents` contract, with `transition=False` as the vault ingests), through
 `payload.manifest_row_to_vault_row`. Its 18 columns are `doc_id`, `corpus`,
 `source_code`, `doc_type`, `title`, `date`, `year`, `date_precision`,
 `date_kind`, `language`, `provenance`, `document_url`, `source_url`,
 `mime_type`, `sha256`, `local_path`, `entity_scheme`, `entity_value`; every
-other field is `extra`. During the contract's transition an old name fills its
-column when the new one is absent or blank (`bank_code` for `source_code`,
-`pdf_url` for `document_url`) and never reaches the payload; a blank optional
-value is absent; an undated row has no `date_precision` nor `date_kind`; a
-`local_path` loses a leading `data/`. So a manifest written before the
-contract and one migrated to it (`corpus`, `source_code`, `local_path` under
-`raw/`) give the same payload.
+other field is `extra`. A blank optional value is absent; an undated row has
+no `date_precision` nor `date_kind`. No old name is mapped any more: in
+this split `bank_code` and `pdf_url` are ordinary fields of `extra`, and
+`local_path` is kept as given (the disk source never gets there with such a
+row: since contract 1.1.0 it is refused `legacy_key`, below).
 `tests/test_cb_corpus.py::test_the_disk_and_the_vault_sources_give_the_same_payload`
 compares it with a vault row written out by hand in the test, and
 `tests/test_payload.py` checks the split against the contract's golden rows.
 A manifest row the contract refuses (`vault_contract.check_row` without
-vocabulary: the vault keeps no row for it) is still used; the run logs a
-warning with their number and the first reasons (also when it stops early).
+vocabulary, `transition=False` as the vault ingests: the vault keeps no row for
+it) is skipped, never read, as the vault skips it: the run warns once with
+their number and the first doc_ids and reasons (also when it stops early), and
+the run report counts them (`docs_refused_contract`, the first doc_ids in
+`refused_contract_doc_ids`: 20 by default, `DATA_ORCHESTRATOR_REPORT_DOC_IDS`;
+every reason with its count in
+`refused_contract_reasons`; `runs.extra`) and as failures for the outcome,
+like `docs_bad_local_path` (a run where they pass the degraded ratio is
+`degraded`, exit 3). `--count-only` leaves them out of its count and says how
+many there are. A row in the pre-contract form (`bank_code`, `pdf_url`,
+`local_path` under `data/`, no `corpus`) is such a row (`missing_corpus`,
+`missing_source_code`, `bad_local_path`, `legacy_key`): nothing is mapped.
+Since contract 1.1.0 a row carrying `bank_code` or `pdf_url` is refused
+`legacy_key` whatever its value, even beside its contract key (`source_code`,
+`document_url`), as the vault refuses it. Migrate the manifest first
+(central-bank-corpus `migrate-contract`). Every row is checked
+against `--corpus`: a value that is not a corpus code (`[A-Za-z0-9_.-]{1,32}`,
+`vault_contract.CODE_PATTERN`) is a usage error, exit 2, before any work.
 **Change with the contract:** `date` and `year` are taken as the row gives
 them; this source used to cut a `date` with a time to its day
 (`2015-03-01T09:00:00Z` -> `2015-03-01`) and read a `year` of digits as an
@@ -258,12 +276,12 @@ this corpus). This source adds one key, `metadata_source`:
 |-------|-------|-------|
 | `doc_id` | manifest | filename stem |
 | `corpus` | manifest, else `--corpus` | `--corpus` (default `central-bank`) |
-| `source_code` | manifest (`source_code`, else `bank_code`) | bank folder (`ecb`) |
+| `source_code` | manifest | bank folder (`ecb`) |
 | `doc_type` | manifest | doc-type folder, upper-cased (`C1`) |
 | `year` | manifest | year folder (`2019`; absent for a non-numeric folder) |
 | `date` | manifest | `<year>-01-01` (absent without a year) |
 | `date_precision` | manifest (absent on an undated row) | `year` (absent without a year) |
-| `title`, `document_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance`, `date_kind`, `entity_scheme`, `entity_value` | manifest, each absent when the row has none (a blank one is none; `document_url` is the row's `document_url`, else its legacy `pdf_url`) | absent (never an empty string) |
+| `title`, `document_url`, `source_url`, `mime_type`, `sha256`, `language`, `provenance`, `date_kind`, `entity_scheme`, `entity_value` | manifest, each absent when the row has none (a blank one is none) | absent (never an empty string) |
 | any other field of the row (`date_source`, `repec_handle`, …) | manifest (`extra`) | — |
 | `metadata_source` | `manifest` | `path` |
 | `filename`, `page`, `chunk_number`, `ingestion_date`, `text` | engine | engine |
@@ -321,13 +339,14 @@ directory on this machine, and `routing.resolve_local_path(corpus,
 local_path)` joins the two.
 
 Before joining, a `local_path` the contract refuses
-(`vault_contract.is_bad_local_path`: absolute, a `..`, `.` or empty segment, a
-drive or a scheme, a backslash, an invisible character, a leading `~`) raises
+(`vault_contract.is_bad_local_path` with `transition=False`, as the vault
+ingests: absolute, a `..`, `.` or empty segment, a drive or a scheme, a
+backslash, an invisible character, a leading `~`, a leading `data/`) raises
 `routing.BadLocalPath`: it is never joined with a root nor read. So does a
 plain path that leaves the root all the same through a **symbolic link**: the
 joined path is resolved (every link followed, the root's own included) and
-must stay under the resolved root. The vault source skips such a row, logs it
-with its `doc_id`, counts it in the run report (`docs_bad_local_path`,
+must stay under the resolved root. The vault source skips such a row, names
+its `doc_id` in a warning, counts it in the run report (`docs_bad_local_path`,
 `bad_local_path_doc_ids`; [Run reports](#run-reports-and-exit-codes)) and
 counts it as a failure for the outcome; the probe skips it. The vault refuses
 a bad path at ingestion, so the first check is a second line of defence; the
@@ -340,12 +359,10 @@ root, e.g. `find "$COMPANY_CORPUS_ROOT/raw" -maxdepth 3 -type l`: every
 document behind such a link would be skipped and the run degraded. A root that
 is itself a link is fine (it is resolved first).
 
-Transition: central-bank manifests gave `local_path` relative to the
-repository (`data/raw/...`). The vault strips that `data/` when it ingests, so
-a vault on the contract never returns it; for a row stored before the
-contract, `ROUTING["central-bank"].local_path_strip` (`"data/"`, a
-leading-prefix match only) still strips it. It goes with the contract's
-transition cleanup.
+Central-bank manifests gave `local_path` relative to the repository
+(`data/raw/...`) before the contract. That form is refused now (no `data/` is
+stripped): every live vault row was rewritten on the contract (0 rows under
+`data/` on 2026-11-20).
 
 ## Usage
 
@@ -516,8 +533,10 @@ error (exit 1 or 2, before any work). Exit codes are honest:
   ratio is `DATA_ORCHESTRATOR_DEGRADED_FAILURE_RATIO`, default `0.10`; `0` =
   any failure degrades, `1` = rule (b) off. `docs_unsupported` never degrades;
   the documents the `vault` source skipped for a bad `local_path`
-  (`docs_bad_local_path`, below) count as failed in (a) and (b), so a run where
-  they pass the ratio is at least `degraded`;
+  (`docs_bad_local_path`, below) and the documents the `cb_corpus` source
+  skipped for a manifest row the contract refuses (`docs_refused_contract`,
+  below) count as failed in (a) and (b), so a run where they pass the ratio is
+  at least `degraded`;
 - `1` **failed**: a fatal error (e.g. Qdrant unreachable; a refused API key,
   at setup or in the middle of a run; an embedding model whose dimension is
   not the declared one; a collection that is not a single unnamed vector of
@@ -566,15 +585,25 @@ Report fields that have no column of their own are swept into `runs.extra`
 applies to central-bank-corpus's `runs.jsonl`. A `vault` run carries
 `unsupported_by_source` (even `{}`) whenever its unsupported count was computed
 — every successful one, so a successful `vault` run's `extra` is never NULL;
-a disk source's successful run has a NULL `extra`. A fatal run's reason is
+a disk source's successful run has a NULL `extra` (unless it skipped refused
+manifest rows, below). A fatal run's reason is
 `extra->>'fatal'` (capped at 500 characters, the key central-bank-corpus
 writes); rows written before 2026-11 carry it as `extra->>'error'`, so a reader
 covering both uses `coalesce(extra->>'fatal', extra->>'error')`. A `vault` run
 that skipped documents for their `local_path` ([Path resolution
 convention](#path-resolution-convention)) carries `docs_bad_local_path` (how
 many, on success and on a fatal error alike) and `bad_local_path_doc_ids` (the
-first 20 `doc_id`s) in `extra`, and says so on stderr (`warning: N document(s)
-skipped, never read: …`); they are absent from a run without any.
+first `doc_id`s: 20 by default, `DATA_ORCHESTRATOR_REPORT_DOC_IDS`) in `extra`,
+and says so once on stderr (`warning: N document(s) skipped, never read: …`);
+they are absent from a run without any. Likewise a
+`cb_corpus` run that skipped documents for a manifest row the documents
+contract refuses ([cb_corpus](#cb_corpus--the-central-bank-corpus)) carries
+`docs_refused_contract` (how many, on success and on a fatal error alike),
+`refused_contract_doc_ids` (the first `doc_id`s, as many as for
+`bad_local_path_doc_ids`) and `refused_contract_reasons` (each
+`vault_contract` reason with the number of rows it refused; contract 1.1.0
+added `legacy_key`, so a reader of these reports may meet a reason a 1.0.0
+list does not name) in `extra`, with the same stderr warning.
 `totals.docs_failed` stays the engine's count.
 
 ## Collections & embedding model
@@ -621,14 +650,14 @@ Every chunk's Qdrant point carries:
 |---|---|
 | `doc_id`, `corpus`, `source_code`, `doc_type`, `title`, `date`, `year`, `language`, `sha256`, `provenance` | vault (`documents`, merged with corpus-specific `extra`) |
 | `document_url`, `source_url`, `mime_type` | vault (`documents`): the addresses a citation links back to (`document_url`: the document itself, whatever its type; `pdf_url` until 2026-11), and the document's type |
-| `date_precision`, `date_kind`, `entity_scheme`, `entity_value` | vault (`documents`), columns of the documents contract, after every earlier column (`date_precision`: `day`/`month`/`year`, absent = not stated; `date_kind`: `meeting`/`publication`/`period`; `entity_*`: the company a document is about, e.g. `cik` / `0000320193`). Central-bank rows carried the first two in `extra` before the contract, under the same names and values: the points ingested then need no rewrite, with two exceptions by the contract: the precision of an undated row is dropped (7 public central-bank rows) and a blank title is absent (110 public rows; `title` is compared only with `sync-metadata --include-title`). See [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11). A NULL one keeps the value of `extra` (a vault row stored before the contract; transition) |
+| `date_precision`, `date_kind`, `entity_scheme`, `entity_value` | vault (`documents`), columns of the documents contract, after every earlier column (`date_precision`: `day`/`month`/`year`, absent = not stated; `date_kind`: `meeting`/`publication`/`period`; `entity_*`: the company a document is about, e.g. `cik` / `0000320193`). Central-bank rows carried the first two in `extra` before the contract, under the same names and values: the points ingested then need no rewrite, with two exceptions by the contract: the precision of an undated row is dropped (7 public central-bank rows) and a blank title is absent (110 public rows; `title` is compared only with `sync-metadata --include-title`). See [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11-or-later). A NULL one removes the same key of `extra`, like any column |
 | `date_source`, any other key of `extra` | vault `extra`, copied as given, except the keys dropped by design (below) |
 | `filename`, `page`, `chunk_number`, `text` | engine (chunking output; `page` only for formats with pages) |
 | `ingestion_date` | engine — one ISO timestamp per document, shared by all of its points |
 | `date_start`, `date_end` | engine, derived from `date` and `date_precision` (absent without a readable `date`): the first and the last day the document is dated to, RFC 3339 at midnight UTC (`2016-07-01T00:00:00Z` / `2016-07-31T00:00:00Z` for a `month` date of July 2016; a precision that is absent or not one of the three is read as a day) |
 
 A NULL column is left out (and removes the same key of `extra`: a column
-always wins; the four contract columns above excepted during the transition).
+always wins).
 An empty or whitespace-only value of any column but the identity and the codes
 (`doc_id`, `corpus`, `source_code`, `doc_type`, `language`, `provenance`)
 counts as NULL, as the contract reads it (`split_row`); a vault row stored
@@ -641,18 +670,16 @@ addresses of the document; `local_path`) are **dropped by design**: never
 sent, never counted as reserved keys. The `cb_corpus` disk source builds the
 same payload from the manifest (see [its section](#cb_corpus--the-central-bank-corpus)).
 Points ingested before the links were sent (no `document_url`, an
-`html_path`), or before the rename (the address under `pdf_url`), are aligned
-by `sync-metadata --include-links`.
+`html_path`) are aligned by `sync-metadata --include-links`.
 
-**`pdf_url` became `document_url` (2026-11).** The payload never carries
-`pdf_url` nor `bank_code` (the contract's `TRANSITION_ALIASES`): a key of
-`extra` with one of these names is left out (the column wins).
-Transition, to remove once every vault and manifest has migrated: the vault
-source and `sync-metadata` read the vault's column under whichever name it
-has (`information_schema`, once per connection: `document_url`, else
-`pdf_url`, selected as `document_url`), so a run before the vault's DDL still
-carries the address; the `cb_corpus` source reads a manifest row's
-`document_url`, else its `pdf_url`.
+**`pdf_url` became `document_url` (2026-11).** The vault source and
+`sync-metadata` read `document_url` only (every vault has run the rename), and
+a manifest row's address is its `document_url` only. Since the contract's
+transition cleanup `pdf_url` and `bank_code` are ordinary keys for the vault
+source and the payload functions: a vault row that still held one in `extra`
+would carry it onto its points as given. No new one can appear: since contract
+1.1.0 the vault refuses a manifest row carrying either (`legacy_key`), and so
+does the `cb_corpus` disk source.
 
 This is rag-engine's payload schema v2 (`rag_engine.schema`): schema v1, the
 payload this repo assembled itself before 2026-11, plus `date_start` and
@@ -775,13 +802,11 @@ and written keys, explicitly, for a run whose CSV has been read for titles.
 **After the documents contract** `date_precision` and `date_kind` are columns
 of the vault (they were keys of `extra`, same names, same values), read from
 there; the first dry run after the vault deploy is expected to find nothing to
-write but the stated rows ([SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11)).
+write but the stated rows ([SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11-or-later)).
 
 **The links are not owned by default either.** `--include-links` adds
 `document_url`, `source_url` and `mime_type` (set from the vault's columns; a NULL
-or blank column removes the key), `pdf_url` (the former name of
-`document_url`: expected absent, so one run renames the key on the points
-that carry it) and the keys of `extra` dropped by design
+or blank column removes the key) and the keys of `extra` dropped by design
 (`DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS`, default `html_path`,
 `alt_urls`, `alt_source_urls`, `local_path`, `pdf_path`, `text_path`,
 `primary_path`, `submission_path`): an ingestion never sends these,
@@ -902,7 +927,7 @@ help: on a dead link the server never receives the statement.
 | `--page-size N` | points per Qdrant scroll request (default 256) |
 | `--doc-batch N` | documents per Qdrant read, one `doc_id` match-any filter (default 100) |
 | `--include-title` | also compare and write `title` (off by default, see above) |
-| `--include-links` | also compare and write `document_url`, `source_url`, `mime_type`, and remove `pdf_url` (its former name) and the keys of `extra` dropped by design (off by default, see above) |
+| `--include-links` | also compare and write `document_url`, `source_url`, `mime_type`, and remove the keys of `extra` dropped by design (off by default, see above) |
 | `--create-indexes` | only create the missing payload indexes, print them, exit; alone (with `--corpus`/`--collection`) |
 | `--progress-every N` | a progress line every N documents (default 25) |
 
@@ -988,12 +1013,14 @@ first, vectors byte-identical before and after, then production) is in
 
 ## Deploying with the documents contract
 
-This version follows the vault's `documents` contract 1.0.0 (vault `12ffd11`).
+This version follows the vault's `documents` contract 1.1.0 (vault `12ffd11` or later
+for the schema; the pinned `vault-contract` is 1.1.0, whose `legacy_key` the
+`cb_corpus` disk source applies).
 Old and new versions of the two do not mix:
 
-| | vault before the contract (`2d0457e`) | vault on the contract (`12ffd11`), after its first ingestion |
+| | vault before the contract (`2d0457e`) | vault on the contract (`12ffd11` or later), after its first ingestion |
 |---|---|---|
-| **this repo before** (`81ead10`) | works | **ingestion works** (the vault keeps a transitional unique index on `rag_ingestions (doc_id, collection)` for it) but its payloads lose `date_precision` / `date_kind` (moved out of `extra`): **no ingestion and no `sync-metadata` with it** (a `--write` would strip both keys from every point) |
+| **this repo before** (`81ead10`) | works | **ingestion works** until the vault's transition cleanup (`2859fa6` drops the transitional unique index on `rag_ingestions (doc_id, collection)` it relies on: after it, its ledger writes fail) but its payloads lose `date_precision` / `date_kind` (moved out of `extra`): **no ingestion and no `sync-metadata` with it** (a `--write` would strip both keys from every point) |
 | **this repo now** | **refused** before any Qdrant write: the vault source (and its `--count-only`), `sync-metadata` and `cb_corpus` with the vault ledger read the catalog first (`vault.require_contract_schema`: the four contract columns, the key `(corpus, doc_id, collection)`) and stop with `VaultSchemaTooOld`, exit 1 | works |
 
 So: deploy the vault and let its ingestion run once (the DDL train, then the
@@ -1011,7 +1038,7 @@ the 39,664 public central-bank rows: `date_precision` lost on 14,659 rows,
    root (the folder holding `manifest/` and `raw/`); `COMPANY_CORPUS_ROOT` was
    optional, it is now required to ingest the company corpus;
 3. `sync-metadata` dry run on `central-bank-e5b-v1`: nothing to write except
-   the rows stated in [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11);
+   the rows stated in [SYNC-METADATA.md](SYNC-METADATA.md#after-the-documents-contract-vault-12ffd11-or-later);
 4. a pilot of the company corpus into a scratch collection (it creates the
    collection and its `rag_ingestions` rows; remove both after):
    `data-orchestrator vault --corpus company --collection zz-company-pilot --limit 5`.
@@ -1024,33 +1051,86 @@ re-ingest the company corpus from the vault into a fresh collection. A vault
 row of another corpus with the same `doc_id` no longer counts as ingested for
 this one.
 
-**Transition code, removed with the contract's cleanup** (once every manifest
-is migrated and the vault drops its transitional aliases, `TRANSITION_ALIASES`
-and the `rag_ingestions (doc_id, collection)` index):
+**Transition code: removed** (the contract's transition cleanup, with the
+vault's: vault `2859fa6`, which ingests with `transition=False` and drops the
+transitional `rag_ingestions (doc_id, collection)` index). Gates measured on
+2026-11-20 before the removal: the query below returned 0, no live row had a
+`local_path` under `data/`, the last ingestions of both corpora logged no
+`corpus_missing` / `legacy_alias` / `legacy_data_prefix` notice, and no point
+of `central-bank-e5b-v1` carried `pdf_url` (2026-11-19).
 
-- `payload.LEGACY_COLUMN_NAMES` (`pdf_url`, `bank_code` left out of `extra`);
-- `payload.CONTRACT_COLUMNS_FROM_EXTRA` (a NULL contract column keeping the
-  value of `extra`). A row the vault's ingestion did not rewrite on the
-  contract keeps the keys in `extra` with a NULL column: a row refused since
-  then, or soft-deleted. Gate: this query on the vault returns 0 before the
-  removal:
+```sql
+SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind') OR (entity_scheme IS NULL AND extra ? 'entity_scheme') OR (entity_value IS NULL AND extra ? 'entity_value'));
+```
 
-  ```sql
-  SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind') OR (entity_scheme IS NULL AND extra ? 'entity_scheme') OR (entity_value IS NULL AND extra ? 'entity_value'));
-  ```
-- the `data/` strip of `routing.TRANSITION_LOCAL_PATH_STRIP`, and the
-  transition mode of `vault_contract.is_bad_local_path` in
-  `routing.resolve_local_path` (a leading `data/` accepted);
+Before deploying this version, a second gate, on the vault: no live row keeps
+a pre-contract name in `extra` (the vault source reads `pdf_url` and
+`bank_code` as ordinary keys, so a row that still had one would carry it onto
+its points as such; the vault on contract 1.1.0 refuses any new one). Expected: 0.
+
+```sql
+SELECT count(*) FROM documents WHERE deleted_at IS NULL AND extra ?| array['pdf_url','bank_code'];
+```
+
+On deploy day, with this version installed and before any ingestion: re-run
+both gate queries (each 0), then two `sync-metadata` dry runs on
+`central-bank-e5b-v1` (no `--write`; each expects `documents to write : 0`):
+
+- `data-orchestrator sync-metadata --collection central-bank-e5b-v1`: the
+  dates this version builds from the vault's contract columns (`date`,
+  `year`, `date_precision`, `date_kind`, `date_source` and the interval) are
+  the ones on the points, so no `date_precision` / `date_kind` is lost now
+  that only the columns are read;
+- `data-orchestrator sync-metadata --collection central-bank-e5b-v1
+  --include-links`: the links this version builds (`document_url` from its
+  column only, `source_url`, `mime_type`) are the ones on the points, and no
+  point carries a key of `extra` dropped by design. It does not look at
+  `pdf_url` (no longer owned): its absence from the points is the
+  2026-11-19 measurement above.
+
+Any other result stops the deploy: nothing in this version maps the old names
+back.
+
+What went, and what replaces it:
+
+- `payload.LEGACY_COLUMN_NAMES`: in the vault source and the payload
+  functions (`payload.manifest_row_to_vault_row`, `row_to_payload`), `pdf_url`
+  and `bank_code` are ordinary keys of `extra` (carried as given; the drop
+  setting may name them); the `cb_corpus` disk source never reads them: since
+  contract 1.1.0 a manifest row carrying either is refused `legacy_key`, as
+  the vault refuses it;
+- `payload.CONTRACT_COLUMNS_FROM_EXTRA`: a NULL `date_precision`,
+  `date_kind`, `entity_scheme` or `entity_value` removes the same key of
+  `extra`, like any column;
+- `routing.TRANSITION_LOCAL_PATH_STRIP` (and `CorpusRoute.local_path_strip`):
+  `vault_contract.is_bad_local_path` runs with `transition=False` in
+  `routing.resolve_local_path`, so a leading `data/` is a bad local path
+  (skipped, counted, never read);
 - the transition mode of `vault_contract.check_row` in
-  `sources/cb_corpus.py::_refusals` (a row without `corpus`, an old alias
-  accepted), and of `split_row` in `payload.manifest_row_to_vault_row`
-  (`transition=True`, the contract's default);
-- `sync_metadata.LEGACY_LINK_KEYS` (`pdf_url` removed from points);
-- `vault.document_url_column` / `LEGACY_DOCUMENT_URL_COLUMN` (a vault before
-  the `pdf_url` rename);
-- the copy of the vault's transitional index
-  `rag_ingestions_doc_collection_transition` in
-  `tests/integration/conftest.py`.
+  `sources/cb_corpus.py::_refusals` and of `split_row` in
+  `payload.manifest_row_to_vault_row`: both pass `transition=False`, so the
+  `cb_corpus` disk source skips a manifest row in the pre-contract form
+  (`missing_corpus`, `missing_source_code`, `bad_local_path`, `legacy_key`) or
+  any other row the contract refuses, never reads or maps it, and counts it in the
+  run report (`docs_refused_contract`, `refused_contract_doc_ids`,
+  `refused_contract_reasons`) and as a failure for the outcome; a `--corpus`
+  that is not a corpus code is a usage error (exit 2);
+- `sync_metadata.LEGACY_LINK_KEYS`: `--include-links` no longer owns
+  `pdf_url` (neither compared nor removed);
+- `vault.document_url_column` / `LEGACY_DOCUMENT_URL_COLUMN` /
+  `document_url_select`: `document_url` is selected directly;
+- the copy of the transitional index in `tests/integration/conftest.py`
+  (`tests/test_contract.py` now checks the pinned vault DDL drops it).
+
+The preflight is unchanged (`vault.require_contract_schema`). Deploy order
+with the vault's cleanup: either is safe. This version needs no transitional
+index (it writes `ON CONFLICT (corpus, doc_id, collection)`, as `2695b26`
+did), and a vault on the contract stores every row in contract form whichever
+mode it ingests with, so it reads the vault before and after its cleanup the
+same way; the vault's cleanup in turn only needs every orchestrator to be at
+`2695b26` or later. The `cb_corpus` disk source, unlike a vault still on
+`transition=True`, refuses and skips a pre-contract manifest row: run it on
+migrated manifests only.
 
 ## Testing
 

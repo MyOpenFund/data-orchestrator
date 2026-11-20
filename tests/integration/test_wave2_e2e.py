@@ -17,9 +17,9 @@ pytestmark = pytest.mark.integration
 def corpus_dir(tmp_path):
     """Vault-realistic corpus root, overriding conftest's flat disk-source fixture.
 
-    Real vault rows have local_path values like "data/raw/us/C1/2010/<doc_id>.pdf"
-    (relative to the cb_corpus REPO root), while CB_CORPUS_ROOT points at the
-    data dir that already contains raw/ — so fixtures must live under
+    Vault rows have local_path values like "raw/us/C1/2010/<doc_id>.pdf", relative to the
+    corpus data root (documents contract), and CB_CORPUS_ROOT points at that
+    data root, which contains raw/ — so fixtures must live under
     <corpus_dir>/raw/... with CB_CORPUS_ROOT=<corpus_dir> to actually exercise
     the CB_CORPUS_ROOT/local_path join (F6), instead of masking it with bare
     filenames.
@@ -28,7 +28,7 @@ def corpus_dir(tmp_path):
     d.mkdir()
     write_text_pdf(d / "raw" / "us" / "C1" / "2015" / "text.pdf")
     write_note_md(d / "raw" / "ecb" / "A3" / "2020" / "note.md")
-    # "data/raw/fr/C1/2019/missing.pdf" deliberately left absent (doc-gone).
+    # "raw/fr/C1/2019/missing.pdf" deliberately left absent (doc-gone).
     return d
 
 
@@ -40,13 +40,13 @@ def _coll():
 def _seed(pg_url, corpus_dir):
     insert_documents(pg_url, [
         {"doc_id": "doc-text", "corpus": "central-bank", "source_code": "us",
-         "doc_type": "C1", "year": 2015, "local_path": "data/raw/us/C1/2015/text.pdf"},
+         "doc_type": "C1", "year": 2015, "local_path": "raw/us/C1/2015/text.pdf"},
         {"doc_id": "doc-md", "corpus": "central-bank", "source_code": "ecb",
-         "doc_type": "A3", "year": 2020, "local_path": "data/raw/ecb/A3/2020/note.md"},
+         "doc_type": "A3", "year": 2020, "local_path": "raw/ecb/A3/2020/note.md"},
         {"doc_id": "doc-gone", "corpus": "central-bank", "source_code": "fr",
-         "doc_type": "C1", "year": 2019, "local_path": "data/raw/fr/C1/2019/missing.pdf"},
+         "doc_type": "C1", "year": 2019, "local_path": "raw/fr/C1/2019/missing.pdf"},
         {"doc_id": "doc-other-corpus", "corpus": "company", "source_code": "edgar",
-         "local_path": "data/raw/text.pdf"},
+         "local_path": "raw/text.pdf"},
     ])
 
 
@@ -88,6 +88,76 @@ def test_cli_vault_ingests_selection_and_records_state(
         runs = cur.fetchall()
     # Every seeded row is a supported type (NULL mime + .pdf/.md path).
     assert runs == [("data-orchestrator", "degraded", "central-bank", "0")]
+
+
+def test_a_pre_contract_local_path_is_skipped_and_counted(
+    clean_state, qdrant_addr, corpus_dir, monkeypatch, capsys
+):
+    """A local_path in the pre-contract central-bank form ("data/raw/...") is
+    refused as the vault refuses it (transition=False): never stripped, never
+    read, counted in the run report even though the file exists under raw/."""
+    insert_documents(clean_state, [
+        {"doc_id": "doc-text", "corpus": "central-bank", "source_code": "us",
+         "doc_type": "C1", "year": 2015, "local_path": "raw/us/C1/2015/text.pdf"},
+        {"doc_id": "doc-legacy", "corpus": "central-bank", "source_code": "ecb",
+         "doc_type": "A3", "year": 2020, "local_path": "data/raw/ecb/A3/2020/note.md"},
+    ])
+    rc = _cli(monkeypatch, clean_state, qdrant_addr, corpus_dir)
+    # 1 skipped of 2: past the 10 % default failure ratio, degraded.
+    assert rc == 3
+    assert "doc-legacy" in capsys.readouterr().err
+    with psycopg2.connect(clean_state) as conn, conn.cursor() as cur:
+        cur.execute("SELECT doc_id FROM rag_ingestions ORDER BY doc_id")
+        assert [r[0] for r in cur.fetchall()] == ["doc-text"]
+        cur.execute("SELECT extra->>'docs_bad_local_path', extra->'bad_local_path_doc_ids' "
+                    "FROM runs")
+        assert cur.fetchall() == [("1", ["doc-legacy"])]
+
+
+def test_a_manifest_row_the_contract_refuses_is_skipped_by_the_disk_source(
+    clean_state, qdrant_addr, tmp_path, monkeypatch, capsys
+):
+    """``cb_corpus`` with the vault ledger: a manifest row ``check_row``
+    (``transition=False``) refuses is never read, and the run report the vault
+    stores counts it (``runs.extra``) and as a failure for the outcome. Since
+    contract 1.1.0 an old key is refused (``legacy_key``) even beside its
+    contract key (``doc-shadow``: ``pdf_url`` next to ``document_url``)."""
+    import json
+
+    root = tmp_path / "cbc"
+    good = {"corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+            "language": "en", "provenance": "bank_site", "date": "2015-01-01", "year": 2015}
+    doc_ids = ("doc-a", "doc-legacy", "doc-shadow")
+    for doc_id in doc_ids:
+        write_text_pdf(root / "raw" / "us" / "C1" / "2015" / f"{doc_id}.pdf")
+    legacy = dict(good, doc_id="doc-legacy", bank_code="us")
+    del legacy["source_code"], legacy["corpus"]
+    shadow = dict(good, doc_id="doc-shadow", document_url="https://x.org/s.pdf",
+                  pdf_url="https://x.org/s.pdf")
+    lines = [json.dumps({"doc_id": "doc-a", **good}), json.dumps(legacy), json.dumps(shadow)]
+    (root / "manifest").mkdir()
+    (root / "manifest" / "us.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    insert_documents(clean_state, [
+        {"doc_id": d, "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+         "year": 2015, "local_path": f"raw/us/C1/2015/{d}.pdf"} for d in doc_ids])
+    monkeypatch.setenv("DATABASE_URL", clean_state)
+    monkeypatch.setenv("QDRANT_HOST", qdrant_addr[0])
+    monkeypatch.setenv("QDRANT_PORT", str(qdrant_addr[1]))
+    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
+    rc = cli.main(["cb_corpus", "--root", str(root), "--corpus", "central-bank"])
+    assert rc == 3  # 2 skipped of 3: past the 10 % default failure ratio
+    err = capsys.readouterr().err
+    assert "doc-legacy" in err and "doc-shadow" in err
+    assert err.count("skipped, never read") == 1
+    with psycopg2.connect(clean_state) as conn, conn.cursor() as cur:
+        cur.execute("SELECT doc_id FROM rag_ingestions ORDER BY doc_id")
+        assert [r[0] for r in cur.fetchall()] == ["doc-a"]
+        cur.execute("SELECT outcome, extra->>'docs_refused_contract', "
+                    "extra->'refused_contract_doc_ids', extra->'refused_contract_reasons' "
+                    "FROM runs")
+        assert cur.fetchall() == [("degraded", "2", ["doc-legacy", "doc-shadow"],
+                                   {"legacy_key": 2, "missing_corpus": 1,
+                                    "missing_source_code": 1})]
 
 
 def test_cli_vault_second_run_selects_nothing(
@@ -159,7 +229,7 @@ def _seed_mixed_types(pg_url, corpus_dir):
     (base / "plain.txt").write_text(PROSE * 3)
     write_note_md(base / "blank.md")
     common = {"corpus": "central-bank", "source_code": "us", "doc_type": "C1", "year": 2015}
-    rel = "data/raw/us/C1/2015/"
+    rel = "raw/us/C1/2015/"
     insert_documents(pg_url, [
         {"doc_id": "doc-pdf", **common, "mime_type": "application/pdf",
          "local_path": rel + "typed.pdf"},

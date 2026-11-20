@@ -37,7 +37,6 @@ def test_the_setting_is_read_from_the_environment(monkeypatch, raw, expected):
     (" , ,", "lists no key"),
     ("html_path,title", "title cannot be dropped"),
     ("document_url", "document_url cannot be dropped"),
-    ("pdf_url", "pdf_url cannot be dropped"),  # the former name: already left out
     ("text,page", "text, page cannot be dropped"),
     ("date_start", "date_start cannot be dropped"),
 ])
@@ -47,19 +46,29 @@ def test_the_setting_refuses_what_it_cannot_drop(monkeypatch, raw, match):
         pl.dropped_extra_keys()
 
 
+@pytest.mark.parametrize("old", ["pdf_url", "bank_code"])
+def test_a_former_column_name_can_be_dropped_like_any_extra_key(monkeypatch, old):
+    """The contract's transition is over: ``pdf_url`` and ``bank_code`` are
+    ordinary keys of ``extra``, which the setting may drop."""
+    monkeypatch.setenv(ENV, f"html_path,{old}")
+    assert pl.dropped_extra_keys() == ("html_path", old)
+
+
 # ---------------------------------------------------------------------------
-# A manifest row, split like the vault splits it (vault_contract.split_row)
+# A manifest row, split like the vault splits it (vault_contract.split_row,
+# transition=False: the contract proper, as the vault ingests since its
+# transition cleanup)
 # ---------------------------------------------------------------------------
 def test_a_manifest_row_is_split_into_the_vault_s_columns_and_extra():
-    rec = {"doc_id": "a", "bank_code": "us", "doc_type": "C1", "title": "T",
-           "document_url": "https://x/a.pdf", "date": "2015-06-30", "year": 2015,
-           "local_path": "data/raw/us/C1/2015/a.pdf", "date_precision": "day",
+    rec = {"doc_id": "a", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
+           "title": "T", "document_url": "https://x/a.pdf", "date": "2015-06-30",
+           "year": 2015, "local_path": "raw/us/C1/2015/a.pdf", "date_precision": "day",
            "html_path": "/Users/x/a.html", "unknown_key": {"nested": [1, 2]}}
     row = pl.manifest_row_to_vault_row(rec, "central-bank")
     assert row["corpus"] == "central-bank" and row["source_code"] == "us"
     assert row["year"] == 2015 and row["date"] == "2015-06-30"
     assert row["date_precision"] == "day" and row["date_kind"] is None
-    assert row["local_path"] == "raw/us/C1/2015/a.pdf"  # transition: no data/ prefix
+    assert row["local_path"] == "raw/us/C1/2015/a.pdf"
     assert row["document_url"] == "https://x/a.pdf"
     assert row["source_url"] is None and row["mime_type"] is None
     assert row["entity_scheme"] is None and row["entity_value"] is None
@@ -76,45 +85,42 @@ def test_the_vault_row_has_every_contract_column_and_extra():
 
 @pytest.mark.parametrize("rec,expected", [
     ({"document_url": "https://new"}, "https://new"),
-    ({"pdf_url": "https://old"}, "https://old"),  # a manifest row not migrated yet
     ({"document_url": "https://new", "pdf_url": "https://old"}, "https://new"),
-    ({"document_url": "", "pdf_url": "https://old"}, "https://old"),
-    ({"document_url": None, "pdf_url": "https://old"}, "https://old"),
+    ({"document_url": "", "pdf_url": "https://old"}, None),
+    ({"pdf_url": "https://old"}, None),
     ({}, None),
 ])
-def test_document_url_wins_over_the_legacy_pdf_url_and_an_empty_one_does_not(rec, expected):
+def test_document_url_comes_from_document_url_only(rec, expected):
+    """No alias any more: a ``pdf_url`` never fills ``document_url``, it is
+    an ordinary field of ``extra``."""
     row = pl.manifest_row_to_vault_row(rec, "c")
     assert row["document_url"] == expected
-    assert "pdf_url" not in row and row["extra"] is None  # the old name is no extra field
+    assert (row["extra"] or {}).get("pdf_url") == rec.get("pdf_url")
 
 
-def test_a_legacy_manifest_row_gives_the_payload_document_url():
-    payload, _ = pl.manifest_row_to_payload({"doc_id": "a", "pdf_url": "https://x/a.pdf"},
-                                            "central-bank")
-    assert payload["document_url"] == "https://x/a.pdf" and "pdf_url" not in payload
+def test_bank_code_never_fills_source_code():
+    assert pl.manifest_row_to_vault_row({"source_code": "ecb", "bank_code": "fr"},
+                                        "c")["source_code"] == "ecb"
+    row = pl.manifest_row_to_vault_row({"source_code": "", "bank_code": "fr"}, "c")
+    assert not row["source_code"] and row["extra"] == {"bank_code": "fr"}
+
+
+def test_a_data_prefix_is_no_longer_stripped_from_local_path():
+    """The vault refuses such a row (bad_local_path); the split leaves the
+    path as it is."""
+    row = pl.manifest_row_to_vault_row({"local_path": "data/raw/a.pdf"}, "c")
+    assert row["local_path"] == "data/raw/a.pdf"
 
 
 @pytest.mark.parametrize("old", ["pdf_url", "bank_code"])
-def test_a_former_column_name_in_extra_is_left_out_of_the_payload_and_not_counted(old):
-    """``pdf_url`` and ``bank_code`` name the ``document_url`` and
-    ``source_code`` columns (their former names): the column always wins, so
-    the payload never carries the old name."""
-    row = {"doc_id": "a", "document_url": None, "extra": {old: "stale", "s": 1}}
-    assert pl.row_to_payload(row) == ({"s": 1, "doc_id": "a"}, ())
+def test_a_former_column_name_in_extra_is_an_ordinary_key_of_the_payload(old):
+    row = {"doc_id": "a", "document_url": None, "extra": {old: "kept", "s": 1}}
+    assert pl.row_to_payload(row) == ({old: "kept", "s": 1, "doc_id": "a"}, ())
 
 
-def test_the_former_names_are_the_contract_s_transition_aliases():
-    from vault_contract import TRANSITION_ALIASES
-
-    assert pl.LEGACY_COLUMN_NAMES == TRANSITION_ALIASES
-    assert set(pl.LEGACY_COLUMN_NAMES.values()) <= set(pl.PAYLOAD_COLUMNS)
-
-
-def test_source_code_wins_over_the_legacy_bank_code_and_an_empty_one_does_not():
-    assert pl.manifest_row_to_vault_row({"source_code": "ecb", "bank_code": "fr"},
-                                        "c")["source_code"] == "ecb"
-    assert pl.manifest_row_to_vault_row({"source_code": "", "bank_code": "fr"},
-                                        "c")["source_code"] == "fr"
+def test_the_transition_names_are_gone():
+    for name in ("LEGACY_COLUMN_NAMES", "CONTRACT_COLUMNS_FROM_EXTRA"):
+        assert not hasattr(pl, name), name
 
 
 @pytest.mark.parametrize("raw,expected", [("", None), (None, None), ("2015-06-30", "2015-06-30")])
@@ -201,7 +207,6 @@ def test_the_contract_columns_come_last_and_leave_every_earlier_position_unchang
         "document_url", "source_url", "mime_type")
     assert pl.PAYLOAD_COLUMNS[13:] == ("date_precision", "date_kind", "entity_scheme",
                                        "entity_value")
-    assert pl.CONTRACT_COLUMNS_FROM_EXTRA == pl.PAYLOAD_COLUMNS[13:]
 
 
 def test_every_payload_column_is_a_contract_column_and_local_path_is_not_carried():
@@ -217,14 +222,15 @@ def test_a_contract_column_wins_over_the_same_key_of_extra():
     assert payload["date_precision"] == "day" and payload["entity_value"] == "0000320193"
 
 
-def test_a_null_contract_column_keeps_the_value_of_extra_of_a_row_stored_before_the_contract():
-    """A vault row stored before the contract has the four new columns NULL
-    and ``date_precision`` / ``date_kind`` in ``extra``: the payload keeps them
-    (any other NULL column removes the same key of ``extra``)."""
-    row = {"doc_id": "a", "date_precision": None, "date_kind": None, "title": None,
-           "extra": {"date_precision": "month", "date_kind": "meeting", "title": "stale"}}
+@pytest.mark.parametrize("column", ["date_precision", "date_kind", "entity_scheme",
+                                    "entity_value", "title"])
+def test_a_null_contract_column_removes_the_same_key_of_extra(column):
+    """No extra fallback for the four columns the contract added: every live
+    vault row was rewritten on the contract (gate query, README: 0 rows), so a
+    NULL column removes the same key of ``extra``, as every column does."""
+    row = {"doc_id": "a", column: None, "extra": {column: "stale", "s": 1}}
     payload, _ = pl.row_to_payload(row)
-    assert payload == {"date_precision": "month", "date_kind": "meeting", "doc_id": "a"}
+    assert payload == {"s": 1, "doc_id": "a"}
 
 
 def test_a_company_row_carries_its_entity():
@@ -239,17 +245,36 @@ def test_a_company_row_carries_its_entity():
     assert not {"pdf_path", "text_path", "primary_path", "submission_path"} & set(payload)
 
 
-@pytest.mark.parametrize("name", sorted(golden.accepted()))
+#: The golden case of the pre-contract central-bank form: accepted with
+#: transition=True only. The vault ingests with transition=False and refuses it.
+GOLDEN_LEGACY_FORM = "cb_legacy_form"
+
+
+@pytest.mark.parametrize("name", sorted(set(golden.accepted()) - {GOLDEN_LEGACY_FORM}))
 def test_the_split_of_every_golden_row_is_the_contract_s(name):
     """The contract's reference rows (shipped in the package, the cases the
     vault tests its ingestion with): the vault row built here holds exactly
-    their expected columns."""
+    their expected columns, and the vault accepts them as it ingests."""
+    from vault_contract import check_row
+
     case = golden.accepted()[name]
+    assert check_row(case["row"], None, expected_corpus=case["expected_corpus"],
+                     transition=False).accepted
     row = pl.manifest_row_to_vault_row(case["row"], case["expected_corpus"])
-    expected = dict(case["expected_columns"])
-    if expected["corpus"] is None:  # transition: the ingesting service's CORPUS applies
-        expected["corpus"] = case["expected_corpus"]
-    assert {k: v for k, v in row.items() if k != "extra"} == expected
+    assert {k: v for k, v in row.items() if k != "extra"} == case["expected_columns"]
+
+
+def test_the_golden_legacy_form_is_refused_as_the_vault_ingests():
+    from vault_contract import check_row
+
+    case = golden.accepted()[GOLDEN_LEGACY_FORM]
+    checked = check_row(case["row"], None, expected_corpus=case["expected_corpus"],
+                        transition=False)
+    assert {r.reason for r in checked.refusals} == {"missing_corpus", "missing_source_code",
+                                                    "bad_local_path", "legacy_key"}
+    # Contract 1.1.0: one legacy_key per old key, whatever its value.
+    assert sorted(r.field for r in checked.refusals if r.reason == "legacy_key") == [
+        "bank_code", "pdf_url"]
 
 
 # ---------------------------------------------------------------------------
@@ -373,46 +398,23 @@ def _migrated(rec):
     return out
 
 
-def _vault_row_before_the_contract(rec):
-    """The documents row a vault before the contract stored (vault 2d0457e):
-    its 16 columns, every other field in extra, date_precision and date_kind
-    there too; date a datetime.date."""
-    import datetime
-
-    known = {"doc_id", "corpus", "source_code", "bank_code", "doc_type", "title",
-             "document_url", "pdf_url", "source_url", "date", "year", "language", "provenance",
-             "mime_type", "sha256", "local_path"}
-    return {
-        "doc_id": rec["doc_id"], "corpus": "central-bank", "source_code": rec["bank_code"],
-        "doc_type": rec["doc_type"], "title": rec["title"], "document_url": rec["document_url"],
-        "source_url": rec["source_url"],
-        "date": datetime.date.fromisoformat(rec["date"]) if rec["date"] else None,
-        "year": rec["year"], "language": rec["language"], "provenance": rec["provenance"],
-        "mime_type": rec["mime_type"], "sha256": rec["sha256"], "local_path": rec["local_path"],
-        # the vault reads the four new columns as NULL on such a row
-        "date_precision": None, "date_kind": None, "entity_scheme": None, "entity_value": None,
-        "extra": {k: v for k, v in rec.items() if k not in known} or None,
-    }
-
-
 def _vault_row_on_the_contract(rec):
-    """The documents row the vault stores on the contract (vault 12ffd11):
-    split_row's columns (date_precision and date_kind among them), the rest
-    in extra."""
+    """The documents row the vault stores on the contract (vault 2859fa6,
+    transition=False): split_row's columns (date_precision and date_kind
+    among them), the rest in extra; ``date`` a ``datetime.date``."""
     import datetime
 
     from vault_contract import split_row
 
-    columns, extra = split_row(rec)
-    columns["corpus"] = columns["corpus"] or "central-bank"
+    columns, extra = split_row(rec, transition=False)
     if columns["date"]:
         columns["date"] = datetime.date.fromisoformat(columns["date"])
     return {**columns, "extra": extra or None}
 
 
-def _expected(doc_id, *, undated_precision_kept=False):
+def _expected(doc_id):
     want = dict(OLD_PAYLOADS[doc_id])
-    if doc_id == UNDATED_WITH_PRECISION and not undated_precision_kept:
+    if doc_id == UNDATED_WITH_PRECISION:
         del want["date_precision"]
     if doc_id == BLANK_TITLE:
         del want["title"]
@@ -420,37 +422,55 @@ def _expected(doc_id, *, undated_precision_kept=False):
 
 
 @pytest.mark.parametrize("rec", CB_ROWS, ids=lambda r: r["doc_id"])
-@pytest.mark.parametrize("form", ["legacy manifest", "migrated manifest",
-                                  "vault row before the contract", "vault row on the contract"])
+@pytest.mark.parametrize("form", ["migrated manifest", "vault row on the contract"])
 def test_a_central_bank_payload_is_the_one_its_points_were_ingested_with(rec, form):
-    """Same keys, same values: ``date_precision`` and ``date_kind`` now come
-    from their columns instead of ``extra`` (a column is a payload key under
-    the same name), so no Qdrant point of the central-bank collection needs a
-    rewrite, whichever form the manifest or the vault row is in. Two
+    """Same keys, same values, from the row in contract form (the manifest as
+    migrate-contract rewrote it, or the vault row the vault stores for it):
+    no Qdrant point of the central-bank collection needs a rewrite. Two
     exceptions, by the contract: an undated row's precision is dropped (7
     public rows) and a blank title is absent (110 public rows)."""
-    if form == "legacy manifest":
-        payload, dropped = pl.manifest_row_to_payload(rec, "central-bank")
-    elif form == "migrated manifest":
+    if form == "migrated manifest":
         payload, dropped = pl.manifest_row_to_payload(_migrated(rec), "central-bank")
-    elif form == "vault row before the contract":
-        payload, dropped = pl.row_to_payload(_vault_row_before_the_contract(rec))
     else:
-        payload, dropped = pl.row_to_payload(_vault_row_on_the_contract(rec))
-    # A vault row stored before the contract still has the precision in extra.
-    kept = form == "vault row before the contract"
-    assert payload == _expected(rec["doc_id"], undated_precision_kept=kept)
+        payload, dropped = pl.row_to_payload(_vault_row_on_the_contract(_migrated(rec)))
+    assert payload == _expected(rec["doc_id"])
     assert dropped == ()
 
 
-def test_the_engine_writes_the_same_points_for_both_vault_rows():
+@pytest.mark.parametrize("rec", CB_ROWS, ids=lambda r: r["doc_id"])
+def test_a_central_bank_row_in_contract_form_is_accepted_as_the_vault_ingests(rec):
+    from vault_contract import check_row
+
+    assert check_row(_migrated(rec), None, expected_corpus="central-bank",
+                     transition=False).accepted
+
+
+@pytest.mark.parametrize("rec", CB_ROWS, ids=lambda r: r["doc_id"])
+def test_a_central_bank_row_in_the_legacy_form_is_refused_and_not_mapped(rec):
+    """The pre-contract form (``bank_code``, no ``corpus``, ``data/raw/...``)
+    is refused as the vault ingests (transition=False; ``legacy_key`` for
+    ``bank_code`` since contract 1.1.0), and the payload functions' split maps
+    no old key: ``bank_code`` stays an ordinary extra field there,
+    ``source_code`` is absent."""
+    from vault_contract import check_row
+
+    checked = check_row(rec, None, expected_corpus="central-bank", transition=False)
+    assert {r.reason for r in checked.refusals} == {"missing_corpus", "missing_source_code",
+                                                    "bad_local_path", "legacy_key"}
+    assert [r.field for r in checked.refusals if r.reason == "legacy_key"] == ["bank_code"]
+    payload, _ = pl.manifest_row_to_payload(rec, "central-bank")
+    assert "source_code" not in payload and payload["bank_code"] == rec["bank_code"]
+
+
+def test_the_engine_writes_the_same_points_from_the_manifest_and_the_vault_row():
     """What the engine writes from the payload (``build_payload``) is the same
-    for the vault row before and on the contract, interval included."""
+    for the migrated manifest row and the vault row, interval included."""
     from rag_engine.schema import build_payload
 
-    for rec in CB_ROWS[:3]:
-        points = [build_payload(rec["doc_id"], pl.row_to_payload(row)[0], filename="f.pdf",
-                                chunk_number=0, ingestion_date="t", text="x", page=1)
-                  for row in (_vault_row_before_the_contract(rec),
-                              _vault_row_on_the_contract(rec))]
+    for rec in CB_ROWS:
+        points = [build_payload(rec["doc_id"], payload, filename="f.pdf", chunk_number=0,
+                                ingestion_date="t", text="x", page=1)
+                  for payload in (pl.manifest_row_to_payload(_migrated(rec), "central-bank")[0],
+                                  pl.row_to_payload(_vault_row_on_the_contract(
+                                      _migrated(rec)))[0])]
         assert points[0] == points[1]

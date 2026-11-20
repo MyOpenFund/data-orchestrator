@@ -105,7 +105,7 @@ def _build(pg_url, addr, corpus_dir, tmp_path, monkeypatch):
     client = _client(addr)
     for c in client.get_collections().collections:
         client.delete_collection(c.name)
-    gb = "data/raw/gb/A3/"
+    gb = "raw/gb/A3/"
     insert_documents(pg_url, [
         {"doc_id": "a-moved-year", "corpus": "central-bank", "source_code": "gb",
          "doc_type": "A3", "title": "Minutes", "date": "2016-01-01", "year": 2016,
@@ -125,7 +125,7 @@ def _build(pg_url, addr, corpus_dir, tmp_path, monkeypatch):
         {"doc_id": "f-unchanged-date", "corpus": "central-bank", "source_code": "us",
          "doc_type": "A2", "title": "Statement", "date": "2010-03-04", "year": 2010,
          "language": "en", "local_path": gb + "f.md",
-         "extra": json.dumps({"date_precision": "day", "date_kind": "meeting"})},
+         "date_precision": "day", "date_kind": "meeting"},
         {"doc_id": "g-garbage-precision", "corpus": "central-bank", "source_code": "gb",
          "doc_type": "A3", "title": "Minutes", "date": "2012-05-09", "year": 2012,
          "language": "en", "local_path": gb + "g.pdf"},
@@ -145,17 +145,18 @@ def _build(pg_url, addr, corpus_dir, tmp_path, monkeypatch):
     stale = dict(d_point.payload, chunk_number=7, date="2014-02-03", year=2014)
     client.upsert(coll, points=[models.PointStruct(
         id=point_id("d-disagree", 0, 7), vector=d_point.vector, payload=stale)], wait=True)
-    # The corrections of the vault (what the policy-dates backfill did).
-    _sql(pg_url, "UPDATE documents SET date='2015-12-17', year=2015, extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_precision": "day", "date_kind": "meeting", "date_source": "title"}),
-          "a-moved-year"))
-    _sql(pg_url, "UPDATE documents SET extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_precision": "month", "date_kind": "period",
-                      "date_start": "1999-01-01T00:00:00Z"}), "b-month"))
-    _sql(pg_url, "UPDATE documents SET date=NULL, extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_kind": "meeting"}), "c-undated"))
-    _sql(pg_url, "UPDATE documents SET extra=%s WHERE doc_id=%s",
-         (json.dumps({"date_precision": "fortnight"}), "g-garbage-precision"))
+    # The corrections of the vault (what the policy-dates backfill did), in
+    # the documents contract's columns.
+    _sql(pg_url, "UPDATE documents SET date='2015-12-17', year=2015, date_precision='day', "
+                 "date_kind='meeting', extra=%s WHERE doc_id=%s",
+         (json.dumps({"date_source": "title"}), "a-moved-year"))
+    _sql(pg_url, "UPDATE documents SET date_precision='month', date_kind='period', extra=%s "
+                 "WHERE doc_id=%s",
+         (json.dumps({"date_start": "1999-01-01T00:00:00Z"}), "b-month"))
+    _sql(pg_url, "UPDATE documents SET date=NULL, date_kind='meeting' WHERE doc_id=%s",
+         ("c-undated",))
+    _sql(pg_url, "UPDATE documents SET date_precision='fortnight' WHERE doc_id=%s",
+         ("g-garbage-precision",))
     _sql(pg_url, "UPDATE documents SET deleted_at=now() WHERE doc_id='e-deleted'")
     return coll, client
 
@@ -311,7 +312,7 @@ def test_a_strict_collection_without_the_doc_id_index(
     client.upsert(coll, points=[models.PointStruct(id=1, vector=[0.1] * 768, payload={
         "doc_id": "s1", "date": "2016-01-01", "year": 2016})], wait=True)
     insert_documents(pg, [{"doc_id": "s1", "corpus": "central-bank", "date": "2016-02-01",
-                           "year": 2016, "extra": json.dumps({"date_precision": "month"})}])
+                           "year": 2016, "date_precision": "month"}])
     _sql(pg, "INSERT INTO rag_ingestions (doc_id, collection, corpus, embedding_model, "
              "chunk_count) VALUES ('s1', %s, 'central-bank', 'm', 1)", (coll,))
 
@@ -418,7 +419,7 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
     client = _client(addr)
     for c in client.get_collections().collections:  # the keyed Qdrant is shared
         client.delete_collection(c.name)
-    gb = "data/raw/gb/A3/"
+    gb = "raw/gb/A3/"
     insert_documents(pg, [
         {"doc_id": "linked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
          "title": "Minutes", "date": "2016-01-01", "year": 2016, "language": "en",
@@ -429,7 +430,7 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
                               "date_precision": "day", "repec_handle": "RePEc:a"})},
         {"doc_id": "unlinked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
          "title": "Minutes", "date": "2016-02-01", "year": 2016, "language": "en",
-         "local_path": gb + "b.pdf", "extra": json.dumps({"pdf_url": "https://stale.org/b"})},
+         "local_path": gb + "b.pdf"},
     ])
     _env(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY)
     assert cli.main(["vault", "--corpus", "central-bank"]) == 0
@@ -442,8 +443,8 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
             assert payload["mime_type"] == "application/pdf"
             assert payload["repec_handle"] == "RePEc:a"
             assert "html_path" not in payload and "alt_urls" not in payload
-        else:  # NULL columns: absent, even where extra holds the name
-            assert not {"document_url", "pdf_url", "source_url", "mime_type"} & set(payload)
+        else:  # NULL columns: absent
+            assert not {"document_url", "source_url", "mime_type"} & set(payload)
 
     # The points as an older ingestion wrote them: no links, the producer's keys.
     client.delete_payload(coll, keys=["document_url", "source_url", "mime_type"],
@@ -478,80 +479,6 @@ def test_the_links_reach_the_points_and_include_links_aligns_older_points(
                                               "html_path", "alt_urls")}
 
     capsys.readouterr()
-    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY,
-                 "--include-links", "--write", "--csv", str(tmp_path / "again.csv")) == 0
-    assert "  documents written  : 0" in capsys.readouterr().out
-    assert _snapshot(client, coll) == after
-
-
-def test_include_links_renames_pdf_url_on_the_points_across_the_vault_rename(
-        clean_pg, qdrant_keyed_addr, corpus_dir, tmp_path, monkeypatch, capsys):
-    """The 2026-11 deploy in miniature. The orchestrator runs before the vault's
-    DDL (the column is still ``pdf_url``): ingestion and sync-metadata read it
-    as ``document_url``. The points carry ``pdf_url`` (aligned by an earlier
-    --include-links); once the vault renamed its column, one --include-links
-    --write sets ``document_url`` and removes ``pdf_url`` on every point of
-    every ledger document with an address, changes nothing else, and a second
-    run finds nothing."""
-    pg, addr = clean_pg, qdrant_keyed_addr
-    coll = collection_name("central-bank")
-    client = _client(addr)
-    for c in client.get_collections().collections:  # the keyed Qdrant is shared
-        client.delete_collection(c.name)
-    _sql(pg, "ALTER TABLE documents RENAME COLUMN document_url TO pdf_url")  # the vault before
-    gb = "data/raw/gb/A3/"
-    insert_documents(pg, [
-        {"doc_id": "linked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
-         "title": "Minutes", "date": "2016-01-01", "year": 2016, "language": "en",
-         "pdf_url": "https://example.org/a.pdf", "source_url": "https://example.org/a",
-         "mime_type": "application/pdf", "local_path": gb + "a.pdf",
-         "extra": json.dumps({"date_precision": "day"})},
-        {"doc_id": "unlinked", "corpus": "central-bank", "source_code": "gb", "doc_type": "A3",
-         "title": "Minutes", "date": "2016-02-01", "year": 2016, "language": "en",
-         "local_path": gb + "b.pdf"},
-    ])
-    _env(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY)
-    assert cli.main(["vault", "--corpus", "central-bank"]) == 0
-    fresh = _snapshot(client, coll)
-    linked = {pid for pid, (p, _) in fresh.items() if p["doc_id"] == "linked"}
-    assert linked and all(fresh[pid][0]["document_url"] == "https://example.org/a.pdf"
-                          for pid in linked)
-    assert not any("pdf_url" in p for p, _ in fresh.values())
-
-    # Before the rename sync, against a vault still before its DDL: nothing to do.
-    capsys.readouterr()
-    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_READ_ONLY_KEY,
-                 "--include-links", "--csv", str(tmp_path / "old-vault.csv")) == 0
-    assert _rows(tmp_path / "old-vault.csv") == []
-
-    # Production today: the points carry the address under the old key.
-    client.set_payload(coll, payload={"pdf_url": "https://example.org/a.pdf"},
-                       points=sorted(linked), wait=True)
-    client.delete_payload(coll, keys=["document_url"], points=sorted(linked), wait=True)
-    _sql(pg, "ALTER TABLE documents RENAME COLUMN pdf_url TO document_url")  # the vault's DDL
-    before = _snapshot(client, coll)
-
-    capsys.readouterr()
-    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_READ_ONLY_KEY,
-                 "--include-links", "--csv", str(tmp_path / "dry.csv")) == 0
-    out = capsys.readouterr().out
-    assert "  documents to write : 1" in out
-    assert "document_url x1, pdf_url x1" in out
-    assert _snapshot(client, coll) == before
-    assert {(r["doc_id"], r["field"], r["qdrant_value"], r["vault_value"])
-            for r in _rows(tmp_path / "dry.csv")} == {
-        ("linked", "document_url", "", "https://example.org/a.pdf"),
-        ("linked", "pdf_url", "https://example.org/a.pdf", "")}
-
-    assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY,
-                 "--include-links", "--write", "--csv", str(tmp_path / "w.csv")) == 0
-    out = capsys.readouterr().out
-    assert "  documents written  : 1" in out
-    assert f"  points written     : {len(linked)}" in out
-    after = _snapshot(client, coll)
-    assert _vector_digest(after) == _vector_digest(before)
-    assert after == fresh  # exactly the points a fresh ingestion writes (ingestion_date kept)
-
     assert _sync(monkeypatch, pg, addr, corpus_dir, tmp_path, IT_QDRANT_KEY,
                  "--include-links", "--write", "--csv", str(tmp_path / "again.csv")) == 0
     assert "  documents written  : 0" in capsys.readouterr().out

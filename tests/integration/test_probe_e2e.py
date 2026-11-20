@@ -13,9 +13,9 @@ pytestmark = pytest.mark.integration
 def corpus_dir(tmp_path):
     """Vault-realistic corpus root, overriding conftest's flat disk-source fixture.
 
-    Real vault rows have local_path values like "data/raw/<doc_id>.pdf"
-    (relative to the cb_corpus REPO root), while CB_CORPUS_ROOT points at the
-    data dir that already contains raw/ — so fixtures must live under
+    Vault rows have local_path values like "raw/<doc_id>.pdf", relative to the
+    corpus data root (documents contract), and CB_CORPUS_ROOT points at that
+    data root, which contains raw/ — so fixtures must live under
     <corpus_dir>/raw/... with CB_CORPUS_ROOT=<corpus_dir> to actually exercise
     the CB_CORPUS_ROOT/local_path join (F6), instead of masking it with bare
     filenames.
@@ -24,7 +24,7 @@ def corpus_dir(tmp_path):
     d.mkdir()
     write_text_pdf(d / "raw" / "text.pdf")
     write_note_md(d / "raw" / "note.md")
-    # "data/raw/gone.pdf" deliberately left absent.
+    # "raw/gone.pdf" deliberately left absent.
     return d
 
 
@@ -33,9 +33,9 @@ def test_probe_fills_facts_and_is_resumable(clean_state, qdrant_addr, corpus_dir
     os.environ["DATABASE_URL"] = clean_state
     os.environ["CB_CORPUS_ROOT"] = str(corpus_dir)
     insert_documents(clean_state, [
-        {"doc_id": "p1", "corpus": "central-bank", "local_path": "data/raw/text.pdf"},
-        {"doc_id": "p2", "corpus": "central-bank", "local_path": "data/raw/note.md"},
-        {"doc_id": "p3", "corpus": "central-bank", "local_path": "data/raw/gone.pdf"},
+        {"doc_id": "p1", "corpus": "central-bank", "local_path": "raw/text.pdf"},
+        {"doc_id": "p2", "corpus": "central-bank", "local_path": "raw/note.md"},
+        {"doc_id": "p3", "corpus": "central-bank", "local_path": "raw/gone.pdf"},
     ])
     assert cli.main(["probe", "--corpus", "central-bank"]) == 0
     conn = psycopg2.connect(clean_state)
@@ -61,12 +61,12 @@ def test_probe_excludes_deleted_missing_path_and_other_corpus(clean_state, qdran
     os.environ["DATABASE_URL"] = clean_state
     os.environ["CB_CORPUS_ROOT"] = str(corpus_dir)
     insert_documents(clean_state, [
-        {"doc_id": "n1", "corpus": "central-bank", "local_path": "data/raw/text.pdf"},
-        {"doc_id": "n2", "corpus": "central-bank", "local_path": "data/raw/note.md"},
-        {"doc_id": "excl-deleted", "corpus": "central-bank", "local_path": "data/raw/text.pdf",
+        {"doc_id": "n1", "corpus": "central-bank", "local_path": "raw/text.pdf"},
+        {"doc_id": "n2", "corpus": "central-bank", "local_path": "raw/note.md"},
+        {"doc_id": "excl-deleted", "corpus": "central-bank", "local_path": "raw/text.pdf",
          "deleted_at": "2020-01-01T00:00:00Z"},
         {"doc_id": "excl-nopath", "corpus": "central-bank", "local_path": None},
-        {"doc_id": "excl-corpus", "corpus": "company", "local_path": "data/raw/text.pdf"},
+        {"doc_id": "excl-corpus", "corpus": "company", "local_path": "raw/text.pdf"},
     ])
 
     conn = vault_mod.connect()
@@ -133,9 +133,9 @@ def test_probe_savepoint_isolates_poisoned_row_on_real_postgres(clean_state, qdr
 
     try:
         insert_documents(clean_state, [
-            {"doc_id": "aaa_healthy", "corpus": "central-bank", "local_path": "data/raw/text.pdf"},
-            {"doc_id": "poisoned", "corpus": "central-bank", "local_path": "data/raw/note.md"},
-            {"doc_id": "zzz_healthy", "corpus": "central-bank", "local_path": "data/raw/note.md"},
+            {"doc_id": "aaa_healthy", "corpus": "central-bank", "local_path": "raw/text.pdf"},
+            {"doc_id": "poisoned", "corpus": "central-bank", "local_path": "raw/note.md"},
+            {"doc_id": "zzz_healthy", "corpus": "central-bank", "local_path": "raw/note.md"},
         ])
 
         conn = vault_mod.connect()

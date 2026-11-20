@@ -27,17 +27,26 @@ splits it (the ``documents`` contract's columns, the rest as ``extra``), then
 the vault source's rules (columns win over ``extra``, absent/null fields left
 out, the keys of ``extra`` dropped by design left out silently, the keys the
 engine writes itself left out and counted). The split is the contract's own
-(``vault_contract.split_row``, the one the vault ingests with), so a manifest
-written before the contract (``bank_code``, ``pdf_url``, ``local_path`` under
-``data/``, no ``corpus``) and one migrated to it give the same payload. The
-keys are the vault's: ``corpus``, ``source_code``, ``doc_type``, ``title``,
+(``vault_contract.split_row`` with ``transition=False``, as the vault ingests).
+The keys are the vault's: ``corpus``, ``source_code``, ``doc_type``, ``title``,
 ``date``, ``year``, ``language``, ``sha256``, ``provenance``, ``document_url``,
 ``source_url``, ``mime_type``, ``date_precision``, ``date_kind``,
 ``entity_scheme``, ``entity_value`` and the other fields of the row
 (``date_source``, ...), plus ``metadata_source="manifest"``. A manifest row
-the contract refuses (``vault_contract.check_row`` without vocabulary: the
-vault keeps no row for it) is still used; the run logs how many there are,
-with the first reasons.
+the contract refuses (``vault_contract.check_row`` without vocabulary and with
+``transition=False``, as the vault ingests: the vault keeps no row for it) is
+skipped, never read, as the vault skips it: the run logs how many there are,
+with the first reasons, and the CLI counts them in the run report
+(``docs_refused_contract``, ``refused_contract_doc_ids``,
+``refused_contract_reasons``; ``iter_items(refused=)``) and as failures for the
+outcome. A row in the pre-contract form (``bank_code``, ``pdf_url``,
+``local_path`` under ``data/``, no ``corpus``) is such a row
+(``missing_corpus``, ``missing_source_code``, ``bad_local_path``,
+``legacy_key``): no old key is mapped, and since contract 1.1.0 a row carrying
+``bank_code`` or ``pdf_url`` is refused ``legacy_key`` even beside its contract
+key. Migrate the manifest (central-bank-corpus ``migrate-contract``).
+A ``corpus`` that is not a corpus code (``vault_contract.CODE_PATTERN``) is a
+usage error (``check_corpus``, ``ValueError``), never a refusal per row.
 
 When it is not yet indexed we fall back to what the path encodes:
 ``corpus``, ``source_code`` (the bank folder), ``doc_type``, ``year``, and
@@ -58,7 +67,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
-from vault_contract import check_row
+from vault_contract import CODE_PATTERN, check_row
 
 from ..config import get_path
 from ..core import SourceItem
@@ -66,7 +75,8 @@ from ..payload import dropped_extra_keys, manifest_row_to_payload, row_to_payloa
 
 logger = logging.getLogger(__name__)
 
-#: How many refused manifest rows the run's warning names, with their reasons.
+#: How many refused manifest rows a warning names, with their reasons (this
+#: source's own, or the CLI's).
 REFUSED_EXAMPLES = 5
 
 # Name of the ``.env`` key holding this machine's corpus root. The path itself
@@ -75,9 +85,9 @@ REFUSED_EXAMPLES = 5
 ROOT_ENV_KEY = "CB_CORPUS_ROOT"
 
 #: The vault corpus of this source's documents (the vault's own default
-#: ``CORPUS``, ``central-bank``): the ``corpus`` of a payload whose manifest row
-#: names none, and of every path-derived payload. ``iter_items(corpus=...)``
-#: (the CLI's ``--corpus``) overrides it.
+#: ``CORPUS``, ``central-bank``): the ``corpus`` of every path-derived payload
+#: (a manifest row without ``corpus`` is refused ``missing_corpus``).
+#: ``iter_items(corpus=...)`` (the CLI's ``--corpus``) overrides it.
 DEFAULT_CORPUS = "central-bank"
 
 #: ``date_precision`` of a path-derived date (``<year>-01-01``).
@@ -91,6 +101,15 @@ def default_root() -> Optional[Path]:
     explicit ``--root``).
     """
     return get_path(ROOT_ENV_KEY)
+
+def check_corpus(corpus: str) -> None:
+    """Raise ``ValueError`` unless ``corpus`` is a corpus code
+    (``vault_contract.CODE_PATTERN``): every manifest row is checked against
+    it, so a bad one is a usage error, not a refusal of every row."""
+    if not (isinstance(corpus, str) and CODE_PATTERN.fullmatch(corpus)):
+        raise ValueError(f"corpus {corpus!r} is not a corpus code "
+                         f"(must match {CODE_PATTERN.pattern})")
+
 
 def _parse_year(value: str) -> Optional[int]:
     return int(value) if value.isdigit() else None
@@ -184,6 +203,7 @@ def iter_items(
     year_max: Optional[int] = None,
     prefer_manifest: bool = True,
     corpus: str = DEFAULT_CORPUS,
+    refused: Optional[list] = None,
 ) -> Iterator[SourceItem]:
     """Walk the corpus and yield one :class:`SourceItem` per document.
 
@@ -206,17 +226,28 @@ def iter_items(
         flag for it); mostly useful for testing.
     corpus:
         The vault corpus of the documents (:data:`DEFAULT_CORPUS`; the CLI
-        passes ``--corpus``): ``corpus`` of a manifest row without one, and of
-        every path-derived payload.
+        passes ``--corpus``): the corpus every manifest row must name (a row
+        without ``corpus`` is refused ``missing_corpus``, one naming another
+        corpus ``corpus_conflict``, as the vault refuses them), and the
+        ``corpus`` of every path-derived payload.
+    refused:
+        When given, receives ``(doc_id, reasons)`` (``reasons`` a tuple of
+        ``vault_contract`` refusal reasons) for every manifest row the
+        documents contract refuses, as they are met: those documents are
+        skipped, never read, and the caller reports them. When ``None``
+        (default) the source logs one warning naming the first
+        :data:`REFUSED_EXAMPLES` with their reasons.
 
     Raises
     ------
     ValueError
-        ``root`` is not configured (no argument and no ``CB_CORPUS_ROOT``).
+        ``root`` is not configured (no argument and no ``CB_CORPUS_ROOT``),
+        or ``corpus`` is not a corpus code (:func:`check_corpus`).
     FileNotFoundError
         ``<root>/raw`` does not exist, or (when ``prefer_manifest`` is True)
         ``<root>/manifest`` has no ``*.jsonl`` files.
     """
+    check_corpus(corpus)
     if root is None:
         root = default_root()
     if root is None:
@@ -241,10 +272,15 @@ def iter_items(
     else:
         index = {}
     drop_keys = dropped_extra_keys()
-    refused: list[tuple[str, str]] = []
+    # A caller collecting the refused rows reports them itself (the CLI: one
+    # warning and the run report); for any other caller the source warns.
+    warn = refused is None
+    if refused is None:
+        refused = []
+    first_refused = len(refused)
 
     # The warning is given in a finally: a run that stops early (--limit, a
-    # fatal error) still says which rows it used although the vault refuses them.
+    # fatal error) still says which rows it skipped.
     try:
         for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
             bank_code = bank_dir.name
@@ -285,6 +321,7 @@ def iter_items(
                             reasons = _refusals(rec, corpus)
                             if reasons:
                                 refused.append((doc_id, reasons))
+                                continue  # the vault keeps no row for it
                         payload, dropped = _build_payload(
                             doc_id=doc_id, bank_code=bank_code, doc_type=doc_type, year=year,
                             rec=rec, corpus=corpus, drop_keys=drop_keys,
@@ -292,19 +329,19 @@ def iter_items(
                         yield SourceItem(doc_id=doc_id, path=f, payload=payload,
                                          dropped_keys=dropped)
     finally:
-        if refused:
+        mine = refused[first_refused:]
+        if warn and mine:
             logger.warning(
                 "%d manifest row(s) the documents contract refuses (the vault keeps no row for "
-                "them) were used as they are: %s", len(refused),
-                "; ".join(f"{doc_id}: {reasons}" for doc_id, reasons in refused[:REFUSED_EXAMPLES]))
+                "them) skipped, never read: %s", len(mine),
+                "; ".join(f"{doc_id}: {', '.join(reasons)}"
+                          for doc_id, reasons in mine[:REFUSED_EXAMPLES]))
 
 
-def _refusals(rec: dict, corpus: str) -> str:
+def _refusals(rec: dict, corpus: str) -> tuple[str, ...]:
     """The reasons the vault would refuse manifest row ``rec`` for
-    (``vault_contract.check_row`` without vocabulary, transition on), as
-    text; "" when it is accepted."""
-    try:
-        checked = check_row(rec, None, expected_corpus=corpus)
-    except (TypeError, ValueError) as exc:  # --corpus that is not a corpus code
-        return str(exc)
-    return ", ".join(r.reason for r in checked.refusals)
+    (``vault_contract.check_row`` without vocabulary, ``transition=False``
+    as the vault ingests); empty when it is accepted. ``corpus`` is a corpus
+    code (:func:`check_corpus`, checked once per run)."""
+    checked = check_row(rec, None, expected_corpus=corpus, transition=False)
+    return tuple(r.reason for r in checked.refusals)
