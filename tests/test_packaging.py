@@ -131,7 +131,17 @@ def test_the_engine_is_a_dependency_pinned_by_commit():
         r"rag-engine\[ingest,torch\] @ "
         r"git\+https://github\.com/MyOpenFund/rag-engine@[0-9a-f]{40}", engine)
     extras = _load_pyproject()["project"]["optional-dependencies"]
-    assert set(extras) == {"company", "dev"}
+    assert set(extras) == {"dev"}  # the company disk source and its extra are gone
+
+
+def test_the_documents_contract_is_a_dependency_pinned_by_commit():
+    import re
+
+    deps = _load_pyproject()["project"]["dependencies"]
+    (contract,) = [d for d in deps if d.startswith("vault-contract")]
+    assert re.fullmatch(
+        r"vault-contract @ git\+https://github\.com/MyOpenFund/vault@[0-9a-f]{40}"
+        r"#subdirectory=contract", contract)
 
 
 def test_nothing_imports_the_engine_fork():

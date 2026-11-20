@@ -280,7 +280,7 @@ _ALL_SOURCE_ARGVS = [
     ["vault", "--count-only"],
     ["probe"],
     ["cb_corpus", "--no-vault"],
-    ["company", "--no-vault"],
+    ["vault", "--corpus", "company"],
 ]
 
 
@@ -795,9 +795,19 @@ def test_cb_count_only_prints_no_qdrant_line(tmp_path, capsys):
     assert "warning:" not in cap.err
 
 
-def test_company_count_only_prints_no_qdrant_line(fake_company_corpus, capsys):
-    assert cli.main(["company", "--count-only"]) == 0
-    assert "Qdrant:" not in capsys.readouterr().out
+@pytest.mark.parametrize("argv", [["company"], ["company", "--no-vault", "--ciks", "320193"]],
+                         ids=" ".join)
+def test_the_removed_company_source_says_where_company_documents_come_from(
+        monkeypatch, capsys, argv):
+    _forbid_any_work(monkeypatch)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "the 'company' disk source was removed" in err
+    assert "data-orchestrator vault --corpus company" in err
+
+
+def test_company_is_no_source_any_more():
+    assert "company" not in cli.SOURCES and "company" not in cli.IMPLIED_CORPUS
 
 
 def test_vault_count_only_prints_no_qdrant_line(monkeypatch, tmp_path, capsys):
@@ -946,8 +956,8 @@ def test_vault_count_only_query_failure_is_a_clean_fatal_and_closes(monkeypatch,
 # QDRANT_PORT pre-flight: an ingest run refuses a port that is not a plain
 # integer in 1..65535 before any DB/engine work.
 # ---------------------------------------------------------------------------
-_INGEST_ARGVS = [["vault"], ["cb_corpus", "--no-vault"], ["company", "--no-vault"],
-                 ["cb_corpus"], ["company"]]
+_INGEST_ARGVS = [["vault"], ["cb_corpus", "--no-vault"], ["vault", "--corpus", "company"],
+                 ["cb_corpus"]]
 
 
 @pytest.mark.parametrize("argv", _INGEST_ARGVS, ids=" ".join)
@@ -971,11 +981,9 @@ def test_absent_qdrant_port_passes_the_preflight():
     assert cli._qdrant_port_error({}) is None
 
 
-@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["probe"],
-                                  ["company", "--count-only"]], ids=" ".join)
+@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["probe"]], ids=" ".join)
 def test_qdrant_port_is_not_checked_when_qdrant_is_never_touched(monkeypatch, tmp_path,
-                                                                 capsys, argv,
-                                                                 fake_company_corpus):
+                                                                 capsys, argv):
     monkeypatch.setenv("QDRANT_PORT", "abc")
     _fake_vault(monkeypatch, tmp_path, [])
     cli.main(argv)
@@ -1302,10 +1310,9 @@ def test_another_model_without_its_dimension_fails_before_any_work(monkeypatch, 
     assert "org/another-model" in err and "DATA_ORCHESTRATOR_EMBEDDING_DIM" in err
 
 
-@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["probe"],
-                                  ["company", "--count-only"]], ids=" ".join)
+@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["probe"]], ids=" ".join)
 def test_engine_settings_are_not_read_when_the_engine_is_never_used(
-        monkeypatch, tmp_path, capsys, argv, fake_company_corpus):
+        monkeypatch, tmp_path, capsys, argv):
     monkeypatch.setenv("RAG_ENGINE_BATCH_SIZE", "many")
     _fake_vault(monkeypatch, tmp_path, [])
     cli.main(argv)
@@ -1411,10 +1418,8 @@ def test_the_other_ocr_modes_do_not_need_the_language_data(tmp_path, monkeypatch
                      "--root", str(_minimal_cb_corpus(tmp_path))]) == 0
 
 
-@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["company", "--count-only"]],
-                         ids=" ".join)
-def test_a_count_only_run_does_not_check_the_language_data(monkeypatch, tmp_path, argv,
-                                                           fake_company_corpus):
+@pytest.mark.parametrize("argv", [["vault", "--count-only"]], ids=" ".join)
+def test_a_count_only_run_does_not_check_the_language_data(monkeypatch, tmp_path, argv):
     _fake_vault(monkeypatch, tmp_path, [])
     assert cli.main(argv + ["--ocr", "always"]) == 0
 
@@ -1430,10 +1435,8 @@ def test_vault_run_prints_the_ocr_line_before_ingesting(monkeypatch, tmp_path, c
     assert out.index(line) < out.index("Done.")
 
 
-@pytest.mark.parametrize("argv", [["vault", "--count-only"], ["company", "--count-only"]],
-                         ids=" ".join)
-def test_a_count_only_run_prints_no_ocr_line(monkeypatch, tmp_path, capsys, argv,
-                                             fake_company_corpus):
+@pytest.mark.parametrize("argv", [["vault", "--count-only"]], ids=" ".join)
+def test_a_count_only_run_prints_no_ocr_line(monkeypatch, tmp_path, capsys, argv):
     _fake_vault(monkeypatch, tmp_path, [])
     assert cli.main(argv) == 0
     assert "OCR:" not in capsys.readouterr().out

@@ -4,11 +4,9 @@ Installed as the ``data-orchestrator`` console script. Standalone repo that
 drives the rag-engine library (a dependency, see ``README.md``)::
 
     data-orchestrator vault --corpus central-bank
+    data-orchestrator vault --corpus company --doctypes A1 --year-min 2024
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
     data-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
-
-    data-orchestrator company --ciks 320193 --collection company-e5b-v1
-    data-orchestrator company --ciks 320193 --doctypes A1 --year-min 2024
 
     data-orchestrator sync-metadata --collection central-bank-e5b-v1           # dry run
     data-orchestrator sync-metadata --collection central-bank-e5b-v1 --write
@@ -17,16 +15,17 @@ drives the rag-engine library (a dependency, see ``README.md``)::
 
 The default collection is routed per corpus by
 ``routing.collection_name`` — ``{corpus}-{model_tag}-v1``, e.g.
-``central-bank-e5b-v1`` for the ``cb_corpus``/``vault`` sources or
-``company-e5b-v1`` for ``company`` — for every source, never a
-hard-coded legacy name. Each disk source implies its own vault corpus
-(``cb_corpus`` -> ``central-bank``, ``company`` -> ``company``), so
-``--corpus`` defaults per-source; an explicit ``--corpus`` always wins.
+``central-bank-e5b-v1`` for the ``cb_corpus`` source or ``vault --corpus
+central-bank``, ``company-e5b-v1`` for ``vault --corpus company`` — for every
+source, never a hard-coded legacy name. The ``cb_corpus`` disk source implies
+the ``central-bank`` corpus, which is also the default of the other commands;
+an explicit ``--corpus`` always wins. Company documents come from the vault
+(``vault --corpus company``): the company corpus has no disk source.
 
 The vault (``rag_ingestions``) is the *default* resume mechanism: a re-run
 skips documents already recorded there. Pass ``--no-vault`` to fall back to a
-local JSON-lines ledger under ``<repo>/state/`` instead (disk sources —
-``cb_corpus``, ``company`` — only; the vault source's resume *is*
+local JSON-lines ledger under ``<repo>/state/`` instead (the disk source
+``cb_corpus`` only; the vault source's resume *is*
 the vault anti-join in ``sources/vault.py``, so ``--no-vault`` is rejected
 there). ``--no-resume`` ignores the ledger and re-ingests everything; it is
 likewise rejected for the vault source (its anti-join always filters on the
@@ -52,7 +51,6 @@ from .core import (
 from .payload import dropped_extra_keys
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
-from .sources import company_corpus as company_corpus_source
 
 
 def state_dir() -> Path:
@@ -70,23 +68,26 @@ def state_dir() -> Path:
 
 # Selectable sources (and the two vault maintenance commands, probe and
 # sync-metadata, which take the same first positional argument).
-SOURCES = ("cb_corpus", "company", "vault", "probe", "sync-metadata")
+SOURCES = ("cb_corpus", "vault", "probe", "sync-metadata")
 SYNC_METADATA = "sync-metadata"
+# The disk source of the company corpus, removed with the documents contract:
+# named in a clear refusal rather than argparse's list of choices.
+REMOVED_COMPANY_SOURCE = "company"
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
 # _count_vault_source; cb_corpus payloads use the vault's keys).
 COUNT_KEYS = {
     "cb_corpus": ("source_code", "doc_type"),
-    "company": ("cik", "doc_type"),
 }
 
 # Each disk source implies its own vault corpus, so --corpus can default
 # per-source instead of one hard-coded value; an explicit --corpus always
 # wins. Sources absent here (vault, probe) keep the "central-bank" default.
+# The company corpus has no disk source: its documents come from the vault
+# (``vault --corpus company``).
 IMPLIED_CORPUS = {
     "cb_corpus": "central-bank",
-    "company": "company",
 }
 
 
@@ -105,17 +106,6 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         year_min=args.year_min,
         year_max=args.year_max,
         corpus=args.corpus,
-    )
-
-
-def _build_company_items(args: argparse.Namespace):
-    return company_corpus_source.iter_items(
-        root=Path(args.root) if args.root else None,
-        ciks=_csv(args.ciks),
-        doctypes=_csv(args.doctypes),
-        year_min=args.year_min,
-        year_max=args.year_max,
-        prefer=args.prefer,
     )
 
 
@@ -501,12 +491,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source", choices=list(SOURCES), help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/, or the source's data dir)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
-    parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3 (cb_corpus) or A1 (company)")
+    parser.add_argument("--doctypes", help="comma list of doc-type codes of the corpus, e.g. "
+                                           "C1,A3 (central-bank) or A1 (company)")
     parser.add_argument("--groups", help="comma list of doc groups, e.g. A,C")
-    parser.add_argument("--ciks", help="comma list of SEC CIK numbers, e.g. 320193,789019 (company source)")
-    parser.add_argument("--prefer", choices=["pdf", "text"], default="pdf",
-                        help="(company source) artifact to ingest: rendered PDF "
-                             "(default) or cleaned text")
     parser.add_argument("--source-codes", help="comma list of vault source codes, e.g. ecb,fr")
     parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
     parser.add_argument("--year-min", type=int, help="inclusive lower year bound")
@@ -530,9 +517,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="use the local file ledger instead of the vault "
                              "(no rag_ingestions state is read or written)")
     parser.add_argument("--corpus", default=None,
-                        help="vault corpus this run belongs to (default: per-source — "
-                             "central-bank for cb_corpus/vault/probe, company for "
-                             "company)")
+                        help="vault corpus this run belongs to (default: central-bank; "
+                             "company documents: vault --corpus company)")
     parser.add_argument("--count-only", action="store_true",
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
@@ -560,6 +546,12 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "
                            "(date_start, date_end) and exit; needs a key allowed to write")
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    if raw_argv[:1] == [REMOVED_COMPANY_SOURCE]:
+        print("error: the 'company' disk source was removed: company documents come from the "
+              "vault now. Run: data-orchestrator vault --corpus company (COMPANY_CORPUS_ROOT "
+              "names the company corpus data root)", file=sys.stderr)
+        return 2
     args = parser.parse_args(argv)
     # The one .env loader (issue #8), run before anything reads the
     # environment: the engine loads no .env of its own, it reads the process
@@ -681,8 +673,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         items = _build_cb_corpus_items(args)
-    elif args.source == "company":
-        items = _build_company_items(args)
 
     if args.source == "vault":
         if args.no_vault:
@@ -885,7 +875,7 @@ def _sync_metadata(args) -> int:
         ("--doctypes", args.doctypes is not None), ("--languages", args.languages is not None),
         ("--year-min", args.year_min is not None), ("--year-max", args.year_max is not None),
         ("--banks", args.banks is not None), ("--groups", args.groups is not None),
-        ("--ciks", args.ciks is not None), ("--root", args.root is not None),
+        ("--root", args.root is not None),
     ) if given]
     if unsupported:
         print(f"error: {', '.join(unsupported)} not supported by sync-metadata (it reads "

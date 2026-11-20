@@ -386,20 +386,15 @@ def test_cb_corpus_report_carries_its_implied_corpus(monkeypatch, tmp_path):
     assert [r["corpus"] for r in captured] == ["central-bank"]
 
 
-def test_company_report_carries_its_implied_corpus(monkeypatch, tmp_path,
-                                                   fake_company_corpus):
-    from data_orchestrator import cli
-
-    monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
-    monkeypatch.setenv("DATA_ORCHESTRATOR_STATE_DIR", str(tmp_path / "state"))
-    captured = _capture_no_vault_report(monkeypatch)
-
-    assert cli.main(["company", "--no-vault", "--ciks", "320193"]) == 0
-    assert [r["corpus"] for r in captured] == ["company"]
+def _cb_root(tmp_path):
+    root = tmp_path / "corpus"
+    (root / "raw").mkdir(parents=True)
+    (root / "manifest").mkdir()
+    (root / "manifest" / "us.jsonl").write_text("", encoding="utf-8")
+    return str(root)
 
 
-def test_fatal_report_from_cli_carries_the_corpus(monkeypatch, tmp_path,
-                                                  fake_company_corpus):
+def test_fatal_report_from_cli_carries_the_corpus(monkeypatch, tmp_path):
     from data_orchestrator import cli
 
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
@@ -412,9 +407,10 @@ def test_fatal_report_from_cli_carries_the_corpus(monkeypatch, tmp_path,
     monkeypatch.setattr(cli, "run_ingest", boom)
     monkeypatch.setattr(cli, "_append_report_jsonl", captured.append)
 
-    assert cli.main(["company", "--no-vault"]) == 1
+    assert cli.main(["cb_corpus", "--no-vault", "--root", _cb_root(tmp_path),
+                     "--corpus", "company"]) == 1
     assert len(captured) == 1
-    assert captured[0]["corpus"] == "company"
+    assert captured[0]["corpus"] == "company"  # an explicit --corpus wins
     assert captured[0]["fatal"] == "RuntimeError: engine init failed"
 
 
@@ -441,8 +437,7 @@ def test_fatal_report_is_built_from_the_statistics_of_the_interrupted_run():
     assert (rep["outcome"], rep["exit_code"], rep["fatal"]) == ("failed", 1, "RuntimeError: x")
 
 
-def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, capsys,
-                                                      fake_company_corpus):
+def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, capsys):
     """Same warning as the success path: a report that cannot be appended is
     never silent, and never masks the fatal outcome."""
     from data_orchestrator import cli
@@ -459,7 +454,7 @@ def test_a_failed_no_vault_fatal_report_append_is_said(monkeypatch, tmp_path, ca
     monkeypatch.setattr(cli, "run_ingest", boom)
     monkeypatch.setattr(cli, "_append_report_jsonl", append_boom)
 
-    assert cli.main(["company", "--no-vault"]) == 1
+    assert cli.main(["cb_corpus", "--no-vault", "--root", _cb_root(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert "warning: failed to append run report: disk full" in err
     assert "error: fatal: RuntimeError: engine init failed" in err
