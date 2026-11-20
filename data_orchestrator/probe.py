@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .routing import resolve_local_path
+from .routing import BadLocalPath, resolve_local_path
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ ORDER BY doc_id
 """
 
 UPDATE_FACTS_SQL = """
-UPDATE documents SET has_text_layer = %s, page_count = %s WHERE doc_id = %s
+UPDATE documents SET has_text_layer = %s, page_count = %s WHERE corpus = %s AND doc_id = %s
 """
 
 
@@ -65,14 +65,23 @@ def run_probe(conn, corpus: str, *, limit: int | None = None, batch: int = 50) -
     stats = {"probed": 0, "skipped": 0, "errors": 0}
     pending = 0
     for doc_id, local_path in rows:
-        has_text, page_count = probe_file(resolve_local_path(corpus, local_path))
+        # The vault source's trim (sources.vault.row_to_item): trailing blanks
+        # are not part of the file name.
+        local_path = local_path.rstrip(" \t\r\n")
+        try:
+            path = resolve_local_path(corpus, local_path)
+        except BadLocalPath as exc:
+            logger.warning("probe skips %s: %s", doc_id, exc)
+            stats["skipped"] += 1
+            continue
+        has_text, page_count = probe_file(path)
         if has_text is None and page_count is None:
             stats["skipped"] += 1
             continue
         try:
             with conn.cursor() as cur:
                 cur.execute("SAVEPOINT probe_doc")
-                cur.execute(UPDATE_FACTS_SQL, (has_text, page_count, doc_id))
+                cur.execute(UPDATE_FACTS_SQL, (has_text, page_count, corpus, doc_id))
                 cur.execute("RELEASE SAVEPOINT probe_doc")
             stats["probed"] += 1
             pending += 1

@@ -4,11 +4,9 @@ Installed as the ``data-orchestrator`` console script. Standalone repo that
 drives the rag-engine library (a dependency, see ``README.md``)::
 
     data-orchestrator vault --corpus central-bank
+    data-orchestrator vault --corpus company --doctypes A1 --year-min 2024
     data-orchestrator cb_corpus --banks ecb --doctypes C1 --limit 20
     data-orchestrator cb_corpus --year-min 2015 --collection central-bank-e5b-v1
-
-    data-orchestrator company --ciks 320193 --collection company-e5b-v1
-    data-orchestrator company --ciks 320193 --doctypes A1 --year-min 2024
 
     data-orchestrator sync-metadata --collection central-bank-e5b-v1           # dry run
     data-orchestrator sync-metadata --collection central-bank-e5b-v1 --write
@@ -17,16 +15,17 @@ drives the rag-engine library (a dependency, see ``README.md``)::
 
 The default collection is routed per corpus by
 ``routing.collection_name`` — ``{corpus}-{model_tag}-v1``, e.g.
-``central-bank-e5b-v1`` for the ``cb_corpus``/``vault`` sources or
-``company-e5b-v1`` for ``company`` — for every source, never a
-hard-coded legacy name. Each disk source implies its own vault corpus
-(``cb_corpus`` -> ``central-bank``, ``company`` -> ``company``), so
-``--corpus`` defaults per-source; an explicit ``--corpus`` always wins.
+``central-bank-e5b-v1`` for the ``cb_corpus`` source or ``vault --corpus
+central-bank``, ``company-e5b-v1`` for ``vault --corpus company`` — for every
+source, never a hard-coded legacy name. The ``cb_corpus`` disk source implies
+the ``central-bank`` corpus, which is also the default of the other commands;
+an explicit ``--corpus`` always wins. Company documents come from the vault
+(``vault --corpus company``): the company corpus has no disk source.
 
 The vault (``rag_ingestions``) is the *default* resume mechanism: a re-run
 skips documents already recorded there. Pass ``--no-vault`` to fall back to a
-local JSON-lines ledger under ``<repo>/state/`` instead (disk sources —
-``cb_corpus``, ``company`` — only; the vault source's resume *is*
+local JSON-lines ledger under ``<repo>/state/`` instead (the disk source
+``cb_corpus`` only; the vault source's resume *is*
 the vault anti-join in ``sources/vault.py``, so ``--no-vault`` is rejected
 there). ``--no-resume`` ignores the ledger and re-ingests everything; it is
 likewise rejected for the vault source (its anti-join always filters on the
@@ -52,7 +51,6 @@ from .core import (
 from .payload import dropped_extra_keys
 from .routing import collection_name, supported_mime_types
 from .sources import cb_corpus as cb_corpus_source
-from .sources import company_corpus as company_corpus_source
 
 
 def state_dir() -> Path:
@@ -70,23 +68,35 @@ def state_dir() -> Path:
 
 # Selectable sources (and the two vault maintenance commands, probe and
 # sync-metadata, which take the same first positional argument).
-SOURCES = ("cb_corpus", "company", "vault", "probe", "sync-metadata")
+SOURCES = ("cb_corpus", "vault", "probe", "sync-metadata")
 SYNC_METADATA = "sync-metadata"
+# The disk source of the company corpus, removed with the documents contract:
+# named in a clear refusal rather than argparse's list of choices.
+REMOVED_COMPANY_SOURCE = "company"
+
+
+class _Sources(list):
+    """The choices of the source argument: :data:`SOURCES`, plus the removed
+    company source, accepted (``in``) but never listed (iteration), so that
+    neither the help nor argparse's invalid-choice message offers it."""
+
+    def __contains__(self, value) -> bool:
+        return value == REMOVED_COMPANY_SOURCE or super().__contains__(value)
 
 # For ``--count-only``: the two payload fields each disk source is summarised
 # by (the vault source has its own count path — source_code/doc_type — in
 # _count_vault_source; cb_corpus payloads use the vault's keys).
 COUNT_KEYS = {
     "cb_corpus": ("source_code", "doc_type"),
-    "company": ("cik", "doc_type"),
 }
 
 # Each disk source implies its own vault corpus, so --corpus can default
 # per-source instead of one hard-coded value; an explicit --corpus always
 # wins. Sources absent here (vault, probe) keep the "central-bank" default.
+# The company corpus has no disk source: its documents come from the vault
+# (``vault --corpus company``).
 IMPLIED_CORPUS = {
     "cb_corpus": "central-bank",
-    "company": "company",
 }
 
 
@@ -105,17 +115,6 @@ def _build_cb_corpus_items(args: argparse.Namespace):
         year_min=args.year_min,
         year_max=args.year_max,
         corpus=args.corpus,
-    )
-
-
-def _build_company_items(args: argparse.Namespace):
-    return company_corpus_source.iter_items(
-        root=Path(args.root) if args.root else None,
-        ciks=_csv(args.ciks),
-        doctypes=_csv(args.doctypes),
-        year_min=args.year_min,
-        year_max=args.year_max,
-        prefer=args.prefer,
     )
 
 
@@ -196,7 +195,13 @@ FATAL_MAX_CHARS = 500
 
 def _build_report(command: str, stats: IngestStats, started_at: str, *,
                   corpus: str, ratio: float,
-                  unsupported: dict[str, int] | None = None) -> dict:
+                  unsupported: dict[str, int] | None = None, bad_paths: int = 0) -> dict:
+    """The run report of a run that finished. ``bad_paths``: documents the
+    vault source skipped for a ``local_path`` the documents contract refuses
+    (``routing.BadLocalPath``): never attempted, they count as failures for
+    the outcome (``policy.run_outcome``), so a run where they pass the
+    degraded ratio is ``degraded``; ``totals.docs_failed`` stays the engine's
+    count, the skipped ones are ``docs_bad_local_path`` (``_report_bad_paths``)."""
     totals = {
         "docs_seen": stats.docs_seen,
         "docs_new": stats.docs_ingested,
@@ -222,7 +227,7 @@ def _build_report(command: str, stats: IngestStats, started_at: str, *,
     sources = [{"source_code": code, **counts} for code, counts in sorted(by_source.items())]
     outcome, exit_code = policy.run_outcome(
         docs_ingested=stats.docs_ingested, docs_empty=stats.docs_empty,
-        docs_failed=stats.docs_error, ratio=ratio,
+        docs_failed=stats.docs_error + bad_paths, ratio=ratio,
     )
     report = {
         "run_id": str(uuid.uuid4()),
@@ -498,15 +503,15 @@ def main(argv: list[str] | None = None) -> int:
         prog="data-orchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
-    parser.add_argument("source", choices=list(SOURCES), help="data source to ingest")
+    # The removed company source is accepted by the parser but never listed
+    # (help, invalid-choice message), so that it is refused with its
+    # replacement wherever it stands on the line.
+    parser.add_argument("source", choices=_Sources(SOURCES), help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/, or the source's data dir)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
-    parser.add_argument("--doctypes", help="comma list of doc-type codes, e.g. C1,A3 (cb_corpus) or A1 (company)")
+    parser.add_argument("--doctypes", help="comma list of doc-type codes of the corpus, e.g. "
+                                           "C1,A3 (central-bank) or A1 (company)")
     parser.add_argument("--groups", help="comma list of doc groups, e.g. A,C")
-    parser.add_argument("--ciks", help="comma list of SEC CIK numbers, e.g. 320193,789019 (company source)")
-    parser.add_argument("--prefer", choices=["pdf", "text"], default="pdf",
-                        help="(company source) artifact to ingest: rendered PDF "
-                             "(default) or cleaned text")
     parser.add_argument("--source-codes", help="comma list of vault source codes, e.g. ecb,fr")
     parser.add_argument("--languages", help="comma list of vault language codes, e.g. en,fr")
     parser.add_argument("--year-min", type=int, help="inclusive lower year bound")
@@ -530,9 +535,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="use the local file ledger instead of the vault "
                              "(no rag_ingestions state is read or written)")
     parser.add_argument("--corpus", default=None,
-                        help="vault corpus this run belongs to (default: per-source — "
-                             "central-bank for cb_corpus/vault/probe, company for "
-                             "company)")
+                        help="vault corpus this run belongs to (default: central-bank; "
+                             "company documents: vault --corpus company)")
     parser.add_argument("--count-only", action="store_true",
                         help="just count matching documents, do not ingest")
     parser.add_argument("--progress-every", type=int, default=25,
@@ -560,7 +564,15 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "
                            "(date_start, date_end) and exit; needs a key allowed to write")
-    args = parser.parse_args(argv)
+    # Known arguments first: a line naming the removed source with its old
+    # flags (--ciks, --prefer) gets the replacement, not "unrecognized arguments".
+    args, _unknown = parser.parse_known_args(argv)
+    if args.source == REMOVED_COMPANY_SOURCE:
+        print("error: the 'company' disk source was removed: company documents come from the "
+              "vault now. Run: data-orchestrator vault --corpus company (COMPANY_CORPUS_ROOT "
+              "names the company corpus data root)", file=sys.stderr)
+        return 2
+    args = parser.parse_args(argv)  # anything unknown is an error now (exit 2)
     # The one .env loader (issue #8), run before anything reads the
     # environment: the engine loads no .env of its own, it reads the process
     # environment when asked (its settings below; ENABLE_OCR / TESSDATA_PREFIX
@@ -681,8 +693,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         items = _build_cb_corpus_items(args)
-    elif args.source == "company":
-        items = _build_company_items(args)
 
     if args.source == "vault":
         if args.no_vault:
@@ -766,6 +776,9 @@ def main(argv: list[str] | None = None) -> int:
             vault_conn = vault_mod.connect()
             vault_mod.lock_collection(vault_conn, collection, exclusive=False,
                                       holder=f"{args.source} ingestion")
+            # Before any Qdrant write: a vault before the documents contract
+            # has no key (corpus, doc_id, collection) for the ledger.
+            vault_mod.require_contract_schema(vault_conn)
             if not args.no_resume:
                 ledger = vault_mod.VaultLedger(
                     vault_conn, collection=collection, corpus=args.corpus,
@@ -885,7 +898,7 @@ def _sync_metadata(args) -> int:
         ("--doctypes", args.doctypes is not None), ("--languages", args.languages is not None),
         ("--year-min", args.year_min is not None), ("--year-max", args.year_max is not None),
         ("--banks", args.banks is not None), ("--groups", args.groups is not None),
-        ("--ciks", args.ciks is not None), ("--root", args.root is not None),
+        ("--root", args.root is not None),
     ) if given]
     if unsupported:
         print(f"error: {', '.join(unsupported)} not supported by sync-metadata (it reads "
@@ -952,6 +965,9 @@ def _sync_metadata(args) -> int:
         # (its report may then be stale for the documents that ingestion
         # writes), but it never runs beside a --write.
         vault_mod.lock_collection(conn, collection, exclusive=args.write, holder="sync-metadata")
+        # An older vault keeps date_precision / date_kind in extra: comparing
+        # against it would read them as removed.
+        vault_mod.require_contract_schema(conn)
         schema = sm.payload_schema(store, collection)
         from rag_engine.schema import PAYLOAD_INDEXES
 
@@ -1032,11 +1048,13 @@ def _run_vault_source(args, collection: str) -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     conn = None
     unsupported = None  # known once count_unsupported ran; kept by a fatal report
+    bad_paths: list[str] = []  # rows skipped for their local_path (routing.BadLocalPath)
     try:
         conn = vault_mod.connect()
         # Never alongside a sync-metadata run of this collection (shared:
         # ingestions do not exclude each other).
         vault_mod.lock_collection(conn, collection, exclusive=False, holder="vault ingestion")
+        vault_mod.require_contract_schema(conn)  # before any Qdrant write
         # --no-resume is rejected for this source before we ever get here
         # (main()), so the ledger — and therefore the anti-join's resume
         # semantics — is always coherent: always on.
@@ -1056,7 +1074,8 @@ def _run_vault_source(args, collection: str) -> int:
             print(f"Skipping {n_unsupported} document(s) of a type the engine cannot read "
                   "(see DATA_ORCHESTRATOR_SUPPORTED_MIME_TYPES and the README's "
                   "'Supported document types')")
-        items = vault_source.iter_items(conn, args.corpus, collection, **filters)
+        items = vault_source.iter_items(conn, args.corpus, collection, refused=bad_paths,
+                                        **filters)
         print(f"→ Ingesting vault selection (corpus={args.corpus}) into "
               f"'{collection}' (ocr={args.ocr}, limit={args.limit})")
         _print_ocr_state(args.engine_settings, args.ocr)
@@ -1069,7 +1088,9 @@ def _run_vault_source(args, collection: str) -> int:
         _print_summary(stats)
 
         rep = _build_report("vault", stats, started_at, corpus=args.corpus,
-                            ratio=args.degraded_ratio, unsupported=unsupported)
+                            ratio=args.degraded_ratio, unsupported=unsupported,
+                            bad_paths=len(bad_paths))
+        _report_bad_paths(rep, bad_paths)
         try:
             vault_mod.insert_run_report(conn, rep)
         except Exception as exc:  # noqa: BLE001 — report write never masks the run's own outcome
@@ -1080,6 +1101,7 @@ def _run_vault_source(args, collection: str) -> int:
         stats = interrupted_stats(exc)
         rep = _fatal_report("vault", started_at, exc, corpus=args.corpus,
                             unsupported=unsupported, stats=stats)
+        _report_bad_paths(rep, bad_paths)
         if conn is not None:
             _insert_fatal_report(vault_mod, conn, rep)
         _print_interrupted_summary(stats)
@@ -1088,6 +1110,23 @@ def _run_vault_source(args, collection: str) -> int:
     finally:
         if conn is not None:
             conn.close()
+
+
+#: How many doc_ids of rows skipped for their local_path the run report names.
+BAD_PATH_EXAMPLES = 20
+
+
+def _report_bad_paths(rep: dict, bad_paths: list) -> None:
+    """Count the rows skipped for a local_path the documents contract refuses
+    (``routing.BadLocalPath``) in the run report (keys outside the ``runs``
+    columns: ``runs.extra``), and say so on stderr. Nothing when there is none."""
+    if not bad_paths:
+        return
+    rep["docs_bad_local_path"] = len(bad_paths)
+    rep["bad_local_path_doc_ids"] = bad_paths[:BAD_PATH_EXAMPLES]
+    print(f"warning: {len(bad_paths)} document(s) skipped, never read: their local_path is "
+          f"refused by the documents contract ({', '.join(bad_paths[:5])}"
+          f"{', …' if len(bad_paths) > 5 else ''})", file=sys.stderr)
 
 
 def _count_vault_source(args, collection: str) -> int:
@@ -1106,6 +1145,7 @@ def _count_vault_source(args, collection: str) -> int:
     conn = None
     try:
         conn = vault_mod.connect()
+        vault_mod.require_contract_schema(conn)
         filters = _vault_filters(args)
         unsupported = vault_source.count_unsupported(conn, args.corpus, collection, **filters)
         items = vault_source.iter_items(conn, args.corpus, collection, **filters)

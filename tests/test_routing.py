@@ -127,3 +127,64 @@ def test_the_engine_model_variable_is_the_fallback_of_ours(monkeypatch):
 def test_a_blank_model_variable_reads_as_unset(monkeypatch):
     monkeypatch.setenv("DATA_ORCHESTRATOR_EMBEDDING_MODEL", "  ")
     assert routing.embedding_model_name() == routing.DEFAULT_EMBEDDING_MODEL
+
+
+# ---------------------------------------------------------------------------
+# The documents contract: local_path relative to the corpus data root
+# ---------------------------------------------------------------------------
+def test_the_company_route_joins_its_root_and_the_local_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(tmp_path))
+    path = routing.resolve_local_path("company", "raw/0000320193/A1/2024/cf0e49e6e176a851.pdf")
+    assert path == tmp_path / "raw" / "0000320193" / "A1" / "2024" / "cf0e49e6e176a851.pdf"
+
+
+def test_a_central_bank_path_on_the_contract_is_joined_as_it_is(monkeypatch, tmp_path):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    assert routing.resolve_local_path("central-bank", "raw/ecb/A1/2022/a.pdf") == \
+        tmp_path / "raw" / "ecb" / "A1" / "2022" / "a.pdf"
+
+
+def test_the_data_prefix_is_only_a_transition_fallback():
+    assert routing.ROUTING["central-bank"].local_path_strip == routing.TRANSITION_LOCAL_PATH_STRIP
+    assert routing.ROUTING["company"].local_path_strip == ""
+
+
+@pytest.mark.parametrize("bad", [
+    "raw/../../etc/passwd", "../raw/a.pdf", "/Users/x/raw/a.pdf", "raw//a.pdf", "./raw/a.pdf",
+    "raw\\a.pdf", "C:/raw/a.pdf", "file:///raw/a.pdf", "~/raw/a.pdf", "raw/a.pdf/",
+    "raw/\u200ba.pdf", "data/", "data/../x.pdf",
+])
+@pytest.mark.parametrize("corpus", ["central-bank", "company"])
+def test_a_local_path_the_contract_calls_bad_is_refused_before_any_read(
+        monkeypatch, tmp_path, corpus, bad):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(tmp_path))
+    with pytest.raises(routing.BadLocalPath, match="documents contract refuses"):
+        routing.resolve_local_path(corpus, bad)
+
+
+def test_a_bad_local_path_is_refused_even_without_a_root(monkeypatch):
+    monkeypatch.delenv("COMPANY_CORPUS_ROOT", raising=False)
+    with pytest.raises(routing.BadLocalPath):
+        routing.resolve_local_path("company", "../x.pdf")
+
+
+def test_a_path_leaving_the_root_through_a_symbolic_link_is_refused(monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    (root / "raw").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "raw" / "link").symlink_to(outside)
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(root))
+    with pytest.raises(routing.BadLocalPath, match="symbolic link"):
+        routing.resolve_local_path("company", "raw/link/a.pdf")
+
+
+def test_a_symbolic_link_inside_the_root_and_a_linked_root_are_followed(monkeypatch, tmp_path):
+    real = tmp_path / "real"
+    (real / "raw" / "a").mkdir(parents=True)
+    (real / "raw" / "b").symlink_to(real / "raw" / "a")
+    linked_root = tmp_path / "linked"
+    linked_root.symlink_to(real)
+    monkeypatch.setenv("COMPANY_CORPUS_ROOT", str(linked_root))
+    assert routing.resolve_local_path("company", "raw/b/x.pdf") == linked_root / "raw" / "b" / "x.pdf"

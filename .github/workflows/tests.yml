@@ -27,20 +27,21 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
-      # Compares the commit pip recorded for rag-engine (direct_url.json) with
-      # the sha in pyproject.toml; fails on any difference.
-      - name: The engine installed is the pinned commit
+      # Compares the commit pip recorded for rag-engine and vault-contract
+      # (direct_url.json) with the shas in pyproject.toml; fails on any difference.
+      - name: The engine and the contract installed are the pinned commits
         run: python tools/check_engine_pin.py
       - name: Versions of the libraries that decide text and vectors
         run: pip freeze | grep -i -E "^(chunknorris|pymupdf|sentence-transformers|torch|transformers|rag-engine|qdrant-client)\b"
-      # The vault's field list is copied in payload.VAULT_KNOWN_FIELDS: check it against
-      # the vault's default branch (tests/test_payload.py, skipped without a checkout). It
-      # tracks that branch on purpose: a vault change to KNOWN_FIELDS turns this CI red until
-      # the copy here follows it, even on an unrelated PR.
+      # The documents contract (vault-contract) is pinned by commit in pyproject.toml.
+      # tests/test_contract.py checks that this ref is that commit, that the package
+      # installed is this checkout's contract/ directory file for file, and that the
+      # vault ingests with it. Bump this ref with the pin.
       - name: Vault checkout for the contract test
         uses: actions/checkout@v4
         with:
           repository: MyOpenFund/vault
+          ref: 12ffd11d15c90c8133dc8c8a38b8e47e3b6a4fce
           path: _vault
           persist-credentials: false
       - name: Unit tests
@@ -72,7 +73,7 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
-      - name: The engine installed is the pinned commit
+      - name: The engine and the contract installed are the pinned commits
         run: python tools/check_engine_pin.py
       - name: Integration tests (throwaway postgres + qdrant)
         run: pytest -m integration -q

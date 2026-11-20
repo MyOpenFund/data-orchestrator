@@ -1,13 +1,14 @@
 """The metadata a document is ingested with, in the vault's vocabulary.
 
-One rule for every source that carries the central-bank corpus, so a document
-gets the same payload keys and values whichever way it reaches the engine:
+One rule for every source of a corpus, so a document gets the same payload
+keys and values whichever way it reaches the engine:
 
 - :func:`row_to_payload`: a ``documents`` row of the vault (the vault source,
   ``sync-metadata``);
 - :func:`manifest_row_to_payload`: a row of a producer's manifest, split the
-  way the vault splits it on ingestion (:func:`manifest_row_to_vault_row`),
-  then the same :func:`row_to_payload` (the ``cb_corpus`` disk source).
+  way the vault splits it on ingestion (:func:`manifest_row_to_vault_row`:
+  ``vault_contract.split_row``, the ``documents`` contract's own split), then
+  the same :func:`row_to_payload` (the ``cb_corpus`` disk source).
 
 The payload is the vault's ``extra`` first, without
 
@@ -22,66 +23,97 @@ The payload is the vault's ``extra`` first, without
 
 then the vault's columns (:data:`PAYLOAD_COLUMNS`), which always win; a NULL
 column is left out and removes the same key of ``extra``, and so does a blank
-link (:data:`BLANK_IS_ABSENT_COLUMNS`: the vault stores ``""`` as given); a
-date is written as its ISO string. A key of ``extra`` named by a former name of
-a column (:data:`LEGACY_COLUMN_NAMES`: ``pdf_url``, now ``document_url``) is
-left out too: the column it names always wins, so the payload never carries the
-old name.
+value of a column the contract reads blank as absent
+(:data:`BLANK_IS_ABSENT_COLUMNS`: every column but the identity and the codes);
+a date is written as its ISO string.
+Two exceptions, both transitions of the ``documents`` contract:
+
+- a key of ``extra`` named by a former name of a column
+  (:data:`LEGACY_COLUMN_NAMES`: ``pdf_url``, now ``document_url``;
+  ``bank_code``, now ``source_code``) is left out: the column it names always
+  wins, so the payload never carries the old name;
+- the four columns the contract added (:data:`CONTRACT_COLUMNS_FROM_EXTRA`:
+  ``date_precision``, ``date_kind``, ``entity_scheme``, ``entity_value``) were
+  keys of ``extra`` on a vault row stored before the contract: a NULL one
+  leaves the value of ``extra`` in place instead of removing it. The vault's
+  ingestion moves them out of ``extra`` on its next run, after which this rule
+  never applies.
 """
 from __future__ import annotations
 
 import os
-import re
 from typing import Mapping
 
 from rag_engine.schema import DERIVED_KEYS, RESERVED_KEYS
 
+from vault_contract import REFUSED_WHEN_ABSENT, TRANSITION_ALIASES, split_row
+
 from .core import split_reserved_keys
 
-#: The vault columns copied into the payload, in payload order.
-#: ``document_url``, ``source_url`` and ``mime_type`` come last: added after the
-#: others, they leave the position of every earlier key unchanged.
-#: ``document_url`` is the address of the document itself (a PDF, an HTML page,
-#: any type); its column was ``pdf_url`` until the 2026-11 rename.
+#: The vault columns copied into the payload, in payload order. A column
+#: added later goes at the end, so the position of every earlier key stays the
+#: same: ``document_url``, ``source_url`` and ``mime_type`` (``document_url``
+#: was ``pdf_url`` until the 2026-11 rename), then the four columns of the
+#: ``documents`` contract 1.0.0 (:data:`CONTRACT_COLUMNS_FROM_EXTRA`).
 PAYLOAD_COLUMNS: tuple[str, ...] = (
     "doc_id", "corpus", "source_code", "doc_type", "title", "date",
     "year", "language", "sha256", "provenance",
     "document_url", "source_url", "mime_type",
+    "date_precision", "date_kind", "entity_scheme", "entity_value",
 )
 
-#: Former names of vault columns: {old name: column}. A manifest row that
-#: still carries the old name gives the column its value when the new name is
-#: absent (:func:`manifest_row_to_vault_row`); a key of ``extra`` with the old
-#: name is left out of the payload (the column always wins). Transition only:
-#: to remove once no manifest row and no point carries ``pdf_url``.
-LEGACY_COLUMN_NAMES: dict[str, str] = {"pdf_url": "document_url"}
+#: The columns of the ``documents`` contract 1.0.0 that were keys of ``extra``
+#: before it (central-bank rows carried ``date_precision`` and ``date_kind``
+#: there). On a vault row stored before the contract the column is NULL and
+#: the value is still in ``extra``: :func:`row_to_payload` then keeps the value
+#: of ``extra``. Transition only: the vault's ingestion on the contract moves
+#: these keys out of ``extra`` for every row it writes, but a row it does not
+#: rewrite keeps them there with a NULL column: a row refused since the
+#: contract (not written, so not migrated) or soft-deleted (no longer in a
+#: manifest). To remove with the contract's transition cleanup, once this
+#: query on the vault returns 0 (the live rows; a soft-deleted row is never
+#: selected for ingestion, but sync-metadata reads it as missing-in-vault)::
+#:
+#:     SELECT count(*) FROM documents WHERE deleted_at IS NULL
+#:       AND ((date_precision IS NULL AND extra ? 'date_precision')
+#:         OR (date_kind IS NULL AND extra ? 'date_kind')
+#:         OR (entity_scheme IS NULL AND extra ? 'entity_scheme')
+#:         OR (entity_value IS NULL AND extra ? 'entity_value'))
+#:
+#: (no row carried ``entity_*`` before the contract, the company corpus entered
+#: the vault with it; the pair is checked all the same, the rule covering it.)
+CONTRACT_COLUMNS_FROM_EXTRA: tuple[str, ...] = (
+    "date_precision", "date_kind", "entity_scheme", "entity_value",
+)
+
+#: Former names of vault columns: {old name: column}, the contract's
+#: ``TRANSITION_ALIASES``. A manifest row that still carries the old name gives
+#: the column its value when the new name is absent or blank (``split_row``); a
+#: key of ``extra`` with the old name is left out of the payload (the column
+#: always wins). Transition only: to remove once no manifest row and no point
+#: carries one.
+LEGACY_COLUMN_NAMES: dict[str, str] = dict(TRANSITION_ALIASES)
 
 #: The columns where an empty or whitespace-only string is no value: read as
-#: NULL. The vault stores a manifest's ``source_url`` as given, and committed
-#: central-bank manifests give ``""`` (2,294 rows): a blank link is no link.
-BLANK_IS_ABSENT_COLUMNS: frozenset[str] = frozenset({"document_url", "source_url",
-                                                     "mime_type"})
-
-#: The fields of a manifest row the vault stores as columns; every other field
-#: goes to ``extra``. A copy of the vault's ``ingestion/ingest.py``
-#: ``KNOWN_FIELDS`` (kept here so this package does not import the vault):
-#: ``bank_code`` is a legacy name of ``source_code`` and ``pdf_url`` a legacy
-#: name of ``document_url``; ``local_path`` is a column the payload does not
-#: carry.
-VAULT_KNOWN_FIELDS: frozenset[str] = frozenset({
-    "doc_id", "corpus", "source_code", "bank_code", "doc_type", "title",
-    "document_url", "pdf_url", "source_url", "date", "year", "language", "provenance",
-    "mime_type", "sha256", "local_path",
-})
+#: NULL, as the contract reads them (``split_row``: a blank value of a column
+#: not refused when absent is absent). The vault stores them so from the
+#: contract on; a vault row stored before it may still hold ``""`` (2,294
+#: central-bank rows have ``source_url: ""``).
+BLANK_IS_ABSENT_COLUMNS: frozenset[str] = (frozenset(PAYLOAD_COLUMNS)
+                                           - frozenset(REFUSED_WHEN_ABSENT))
 
 #: Setting: the comma list of ``extra`` keys left out of the payload by design.
 DROP_EXTRA_KEYS_ENV = "DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS"
 #: Its default: ``html_path`` (a path on the producer's machine),
 #: ``alt_urls`` / ``alt_source_urls`` (lists of other addresses of the
 #: document; ``document_url`` and ``source_url`` are the ones a citation links to),
-#: ``local_path`` (a path in the corpus, never a reader's concern).
+#: ``local_path`` (a path in the corpus, never a reader's concern), and the
+#: company corpus's paths of its other artefacts, ``pdf_path``, ``text_path``,
+#: ``primary_path``, ``submission_path`` (extras of its rows; paths in the
+#: corpus too).
 DEFAULT_DROP_EXTRA_KEYS: tuple[str, ...] = ("html_path", "alt_urls", "alt_source_urls",
-                                            "local_path")
+                                            "local_path", "pdf_path", "text_path",
+                                            "primary_path", "submission_path")
 #: The value of the setting that drops no key.
 DROP_NONE = "none"
 
@@ -129,9 +161,10 @@ def row_to_payload(row: Mapping, drop_keys: tuple[str, ...] | None = None
     design are not in the returned tuple: it names the keys the engine would
     refuse, the ones a run counts. ``doc_id`` always comes from its column and
     is never reported. A null key of ``extra`` is left out, not reported; a
-    blank link column (:data:`BLANK_IS_ABSENT_COLUMNS`) is a NULL one. A key
+    blank value of a column of :data:`BLANK_IS_ABSENT_COLUMNS` is a NULL one. A key
     of ``extra`` named by a former column name (:data:`LEGACY_COLUMN_NAMES`) is
-    left out, not reported.
+    left out, not reported. A NULL column of :data:`CONTRACT_COLUMNS_FROM_EXTRA`
+    leaves the value of ``extra`` (a row stored before the contract).
     """
     if drop_keys is None:
         drop_keys = dropped_extra_keys()
@@ -144,67 +177,31 @@ def row_to_payload(row: Mapping, drop_keys: tuple[str, ...] | None = None
         if col in BLANK_IS_ABSENT_COLUMNS and isinstance(value, str) and not value.strip():
             value = None
         if value is None:
-            payload.pop(col, None)
+            if col not in CONTRACT_COLUMNS_FROM_EXTRA:
+                payload.pop(col, None)
             continue
         payload[col] = value.isoformat() if hasattr(value, "isoformat") else value
     return payload, dropped
 
 
-# A string the vault's DATE column reads as that day: a full date, optionally
-# followed by a time (Postgres keeps the day).
-_DATE_PREFIX = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?=$|[Tt ])")
-
-
-def _as_date_column(value):
-    """``date`` as the vault's DATE column returns it, ISO-written: an empty
-    value is NULL, a date with a time keeps its day; anything else is kept as
-    it is (the vault would refuse it)."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, str):
-        found = _DATE_PREFIX.match(value)
-        if found:
-            return found.group(0)
-    return value
-
-
-def _as_year_column(value):
-    """``year`` as the vault's INTEGER column returns it: a string of digits is
-    the integer (Postgres casts it); anything else is kept as it is."""
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    return value
-
-
 def manifest_row_to_vault_row(rec: Mapping, default_corpus: str) -> dict:
     """The ``documents`` row the vault stores for manifest row ``rec``.
 
-    The vault's split (``ingestion/ingest.py`` ``parse_line``): the fields of
-    :data:`VAULT_KNOWN_FIELDS` are columns (``source_code`` else the legacy
-    ``bank_code``; ``document_url`` else the legacy ``pdf_url``, a blank or
-    null one being absent; an empty ``date`` is NULL; an absent ``corpus`` is
-    ``default_corpus``), every other field goes to ``extra``. The vault
-    refuses a row whose ``corpus`` is not its own; here the row's own
-    ``corpus`` is kept.
+    The vault's split, ``vault_contract.split_row`` (transition on, as the
+    vault ingests): the contract's columns (an old name of
+    :data:`LEGACY_COLUMN_NAMES` filling its column when the new one is absent
+    or blank; blank optional values None; an undated row without
+    ``date_precision`` and ``date_kind``; ``local_path`` without a leading
+    ``data/``), every other field in ``extra`` (None when empty). An absent
+    or blank ``corpus`` is ``default_corpus``, the vault's ``CORPUS``. The split never
+    refuses: the vault refuses a row the contract refuses (``check_row``), and
+    keeps no row for it; here the row is split all the same.
     """
-    corpus = rec.get("corpus")
-    return {
-        "doc_id": rec.get("doc_id"),
-        "corpus": default_corpus if corpus is None else corpus,
-        "source_code": rec.get("source_code") or rec.get("bank_code"),
-        "doc_type": rec.get("doc_type"),
-        "title": rec.get("title"),
-        "document_url": rec.get("document_url") or rec.get("pdf_url"),
-        "source_url": rec.get("source_url"),
-        "date": _as_date_column(rec.get("date")),
-        "year": _as_year_column(rec.get("year")),
-        "language": rec.get("language"),
-        "provenance": rec.get("provenance"),
-        "mime_type": rec.get("mime_type"),
-        "sha256": rec.get("sha256"),
-        "local_path": rec.get("local_path"),
-        "extra": {k: v for k, v in rec.items() if k not in VAULT_KNOWN_FIELDS} or None,
-    }
+    columns, extra = split_row(rec)
+    corpus = columns["corpus"]
+    if corpus is None or (isinstance(corpus, str) and not corpus.strip()):
+        columns["corpus"] = default_corpus
+    return {**columns, "extra": extra or None}
 
 
 def manifest_row_to_payload(rec: Mapping, default_corpus: str,

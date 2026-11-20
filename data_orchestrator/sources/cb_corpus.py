@@ -23,15 +23,21 @@ The **manifest** is the source of truth for *rich metadata*: when an on-disk
 file's ``doc_id`` (its filename stem, == cb_corpus's stable sha1 id) is found in
 the manifest, the payload is the one the vault source gives the same document
 (``payload.manifest_row_to_payload``): the manifest row split like the vault
-splits it (its known fields as columns, the rest as ``extra``), then the vault
-source's rules (columns win over ``extra``, absent/null fields left out, the
-keys of ``extra`` dropped by design left out silently, the keys the engine
-writes itself left out and counted). The keys are the vault's: ``corpus``,
-``source_code``, ``doc_type``, ``title``, ``date``, ``year``, ``language``,
-``sha256``, ``provenance``, ``document_url`` (from the row's ``document_url``, or
-``pdf_url``, its former name), ``source_url``, ``mime_type`` and the
-other fields of the row (``date_precision``, ``date_kind``, ...), plus
-``metadata_source="manifest"``.
+splits it (the ``documents`` contract's columns, the rest as ``extra``), then
+the vault source's rules (columns win over ``extra``, absent/null fields left
+out, the keys of ``extra`` dropped by design left out silently, the keys the
+engine writes itself left out and counted). The split is the contract's own
+(``vault_contract.split_row``, the one the vault ingests with), so a manifest
+written before the contract (``bank_code``, ``pdf_url``, ``local_path`` under
+``data/``, no ``corpus``) and one migrated to it give the same payload. The
+keys are the vault's: ``corpus``, ``source_code``, ``doc_type``, ``title``,
+``date``, ``year``, ``language``, ``sha256``, ``provenance``, ``document_url``,
+``source_url``, ``mime_type``, ``date_precision``, ``date_kind``,
+``entity_scheme``, ``entity_value`` and the other fields of the row
+(``date_source``, ...), plus ``metadata_source="manifest"``. A manifest row
+the contract refuses (``vault_contract.check_row`` without vocabulary: the
+vault keeps no row for it) is still used; the run logs how many there are,
+with the first reasons.
 
 When it is not yet indexed we fall back to what the path encodes:
 ``corpus``, ``source_code`` (the bank folder), ``doc_type``, ``year``, and
@@ -47,13 +53,21 @@ the CLI, so the fallback is never silent.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
+from vault_contract import check_row
+
 from ..config import get_path
 from ..core import SourceItem
 from ..payload import dropped_extra_keys, manifest_row_to_payload, row_to_payload
+
+logger = logging.getLogger(__name__)
+
+#: How many refused manifest rows the run's warning names, with their reasons.
+REFUSED_EXAMPLES = 5
 
 # Name of the ``.env`` key holding this machine's corpus root. The path itself
 # is never hard-coded here: it varies per machine and lives in ``.env`` (see
@@ -153,7 +167,7 @@ def _build_payload(
     row = {
         "doc_id": doc_id, "corpus": corpus, "source_code": bank_code, "doc_type": doc_type,
         "year": year, "date": f"{year:04d}-01-01" if year is not None else None,
-        "extra": {"date_precision": PATH_DATE_PRECISION} if year is not None else None,
+        "date_precision": PATH_DATE_PRECISION if year is not None else None,
     }
     payload, dropped = row_to_payload(row, drop_keys)
     payload["metadata_source"] = "path"
@@ -227,44 +241,70 @@ def iter_items(
     else:
         index = {}
     drop_keys = dropped_extra_keys()
+    refused: list[tuple[str, str]] = []
 
-    for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
-        bank_code = bank_dir.name
-        if bank_set and bank_code.lower() not in bank_set:
-            continue
-
-        for dt_dir in sorted(p for p in bank_dir.iterdir() if p.is_dir()):
-            doc_type = dt_dir.name.upper()
-            group = doc_type[:1]  # the --groups filter
-            if doctype_set and doc_type not in doctype_set:
-                continue
-            if group_set and group not in group_set:
+    # The warning is given in a finally: a run that stops early (--limit, a
+    # fatal error) still says which rows it used although the vault refuses them.
+    try:
+        for bank_dir in sorted(p for p in raw.iterdir() if p.is_dir()):
+            bank_code = bank_dir.name
+            if bank_set and bank_code.lower() not in bank_set:
                 continue
 
-            for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
-                year = _parse_year(year_dir.name)
-                if year is None:
-                    if bounded:
-                        continue  # an unknown year cannot satisfy a bound
-                else:
-                    if year_min is not None and year < year_min:
-                        continue
-                    if year_max is not None and year > year_max:
-                        continue
+            for dt_dir in sorted(p for p in bank_dir.iterdir() if p.is_dir()):
+                doc_type = dt_dir.name.upper()
+                group = doc_type[:1]  # the --groups filter
+                if doctype_set and doc_type not in doctype_set:
+                    continue
+                if group_set and group not in group_set:
+                    continue
 
-                for f in sorted(year_dir.iterdir()):
-                    if not f.is_file():
-                        continue
-                    ext = f.suffix.lower()
-                    # .pdf only: HTML is converted to .md/PDF before the
-                    # engine; see issue #17. (.DS_Store, .html, etc. skipped.)
-                    if ext != ".pdf":
-                        continue
+                for year_dir in sorted(p for p in dt_dir.iterdir() if p.is_dir()):
+                    year = _parse_year(year_dir.name)
+                    if year is None:
+                        if bounded:
+                            continue  # an unknown year cannot satisfy a bound
+                    else:
+                        if year_min is not None and year < year_min:
+                            continue
+                        if year_max is not None and year > year_max:
+                            continue
 
-                    doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
-                    payload, dropped = _build_payload(
-                        doc_id=doc_id, bank_code=bank_code, doc_type=doc_type, year=year,
-                        rec=index.get(doc_id), corpus=corpus, drop_keys=drop_keys,
-                    )
-                    yield SourceItem(doc_id=doc_id, path=f, payload=payload,
-                                     dropped_keys=dropped)
+                    for f in sorted(year_dir.iterdir()):
+                        if not f.is_file():
+                            continue
+                        ext = f.suffix.lower()
+                        # .pdf only: HTML is converted to .md/PDF before the
+                        # engine; see issue #17. (.DS_Store, .html, etc. skipped.)
+                        if ext != ".pdf":
+                            continue
+
+                        doc_id = f.stem  # == cb_corpus's stable sha1 doc_id
+                        rec = index.get(doc_id)
+                        if rec is not None:
+                            reasons = _refusals(rec, corpus)
+                            if reasons:
+                                refused.append((doc_id, reasons))
+                        payload, dropped = _build_payload(
+                            doc_id=doc_id, bank_code=bank_code, doc_type=doc_type, year=year,
+                            rec=rec, corpus=corpus, drop_keys=drop_keys,
+                        )
+                        yield SourceItem(doc_id=doc_id, path=f, payload=payload,
+                                         dropped_keys=dropped)
+    finally:
+        if refused:
+            logger.warning(
+                "%d manifest row(s) the documents contract refuses (the vault keeps no row for "
+                "them) were used as they are: %s", len(refused),
+                "; ".join(f"{doc_id}: {reasons}" for doc_id, reasons in refused[:REFUSED_EXAMPLES]))
+
+
+def _refusals(rec: dict, corpus: str) -> str:
+    """The reasons the vault would refuse manifest row ``rec`` for
+    (``vault_contract.check_row`` without vocabulary, transition on), as
+    text; "" when it is accepted."""
+    try:
+        checked = check_row(rec, None, expected_corpus=corpus)
+    except (TypeError, ValueError) as exc:  # --corpus that is not a corpus code
+        return str(exc)
+    return ", ".join(r.reason for r in checked.refusals)

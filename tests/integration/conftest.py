@@ -1,9 +1,11 @@
 """Throwaway Postgres + Qdrant containers and adversarial corpus fixtures.
 
 The Postgres schema replicates the vault's contract tables (documents +
-rag_ingestions) — the minimal columns this repo's code touches. ``documents``
-has the vault's columns after its 2026-11 rename (``document_url``, formerly
-``pdf_url``); a test of a vault before the rename renames it back. Schema drift
+rag_ingestions) at vault 12ffd11 (documents contract 1.0.0: identity
+``(corpus, doc_id)``, ``rag_ingestions`` keyed ``(corpus, doc_id,
+collection)``, the four contract columns) — the minimal columns this repo's
+code touches. ``documents`` has ``document_url`` (formerly ``pdf_url``); a
+test of a vault before that rename renames it back. Schema drift
 against the real vault is guarded by the contract documented in the vault
 README, not by importing vault code here.
 
@@ -35,7 +37,7 @@ QDRANT_IMAGE = "qdrant/qdrant:v1.20.0"
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
     id SERIAL PRIMARY KEY,
-    doc_id TEXT UNIQUE NOT NULL,
+    doc_id TEXT NOT NULL,
     corpus TEXT NOT NULL,
     source_code TEXT,
     doc_type TEXT,
@@ -49,14 +51,19 @@ CREATE TABLE IF NOT EXISTS documents (
     mime_type TEXT,
     sha256 TEXT,
     local_path TEXT,
+    date_precision TEXT,
+    date_kind TEXT,
+    entity_scheme TEXT,
+    entity_value TEXT,
     last_seen_at TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ,
     has_text_layer BOOLEAN,
     page_count INTEGER,
-    extra JSONB
+    extra JSONB,
+    CONSTRAINT documents_corpus_doc_id_key UNIQUE (corpus, doc_id)
 );
 CREATE TABLE IF NOT EXISTS rag_ingestions (
-    doc_id TEXT NOT NULL REFERENCES documents(doc_id),
+    doc_id TEXT NOT NULL,
     collection TEXT NOT NULL,
     corpus TEXT NOT NULL,
     source_code TEXT,
@@ -64,8 +71,14 @@ CREATE TABLE IF NOT EXISTS rag_ingestions (
     embedding_version TEXT,
     chunk_count INTEGER NOT NULL,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (doc_id, collection)
+    CONSTRAINT rag_ingestions_pkey PRIMARY KEY (corpus, doc_id, collection),
+    CONSTRAINT rag_ingestions_corpus_doc_id_fkey FOREIGN KEY (corpus, doc_id)
+        REFERENCES documents (corpus, doc_id)
 );
+-- The vault's transitional index (kept until the contract's cleanup), here so
+-- that a run against this schema meets the same constraints as against the vault.
+CREATE UNIQUE INDEX IF NOT EXISTS rag_ingestions_doc_collection_transition
+    ON rag_ingestions (doc_id, collection);
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     tool TEXT NOT NULL,

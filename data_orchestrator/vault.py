@@ -17,7 +17,10 @@ import psycopg2
 from .config import load_dotenv
 from .core import FatalRunError
 
-RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s"
+# The vault's identity of a document is (corpus, doc_id) since the documents
+# contract (vault 12ffd11): two corpora may both have a doc_id. rag_ingestions
+# is keyed (corpus, doc_id, collection), its foreign key is (corpus, doc_id).
+RESUME_SQL = "SELECT doc_id FROM rag_ingestions WHERE collection = %s AND corpus = %s"
 
 # The `runs` columns this writer fills, in INSERT order. Single source of
 # truth: the SQL below is built from it, and `insert_run_report` sweeps every
@@ -47,8 +50,7 @@ INSERT INTO rag_ingestions (
     doc_id, collection, corpus, source_code,
     embedding_model, embedding_version, chunk_count
 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (doc_id, collection) DO UPDATE SET
-    corpus = EXCLUDED.corpus,
+ON CONFLICT (corpus, doc_id, collection) DO UPDATE SET
     source_code = EXCLUDED.source_code,
     embedding_model = EXCLUDED.embedding_model,
     embedding_version = EXCLUDED.embedding_version,
@@ -189,6 +191,60 @@ def document_url_column(conn) -> str:
     return column
 
 
+# ---------------------------------------------------------------------------
+# Preflight: the vault is on the documents contract
+# ---------------------------------------------------------------------------
+#: The ``documents`` columns the contract added (vault 12ffd11).
+CONTRACT_DOCUMENT_COLUMNS: tuple[str, ...] = (
+    "date_precision", "date_kind", "entity_scheme", "entity_value",
+)
+#: The key of ``rag_ingestions`` since the contract, as sorted column names.
+RAG_INGESTIONS_KEY: tuple[str, ...] = ("collection", "corpus", "doc_id")
+
+# Both tables as the run's search path finds them (to_regclass), as its
+# queries do. The key: a unique index that ON CONFLICT can infer, i.e. not
+# partial (indpred), immediate, valid, on exactly these key columns.
+CONTRACT_SCHEMA_SQL = (
+    "SELECT ARRAY(SELECT a.attname::text FROM pg_attribute a\n"
+    "             WHERE a.attrelid = to_regclass('documents') AND a.attnum > 0\n"
+    "               AND NOT a.attisdropped AND a.attname = ANY (%(columns)s) ORDER BY 1),\n"
+    "       EXISTS (SELECT 1 FROM pg_index i\n"
+    "               WHERE i.indrelid = to_regclass('rag_ingestions') AND i.indisunique\n"
+    "                 AND i.indpred IS NULL AND i.indimmediate AND i.indisvalid\n"
+    "                 AND i.indnkeyatts = %(key_len)s\n"
+    "                 AND ARRAY(SELECT a.attname::text FROM pg_attribute a\n"
+    "                           WHERE a.attrelid = i.indrelid\n"
+    "                             AND a.attnum = ANY ((i.indkey::int2[])[0:i.indnkeyatts - 1])\n"
+    "                           ORDER BY 1) = %(key)s::text[])"
+)
+
+
+def require_contract_schema(conn) -> None:
+    """Raise :class:`VaultSchemaTooOld` unless the vault behind ``conn`` is on
+    the documents contract: ``documents`` has the four contract columns and
+    ``rag_ingestions`` a unique key ``(corpus, doc_id, collection)``. One read
+    of the catalog, before any Qdrant write (vault source, sync-metadata, a
+    disk source with the vault ledger); the transaction it opens is ended.
+    """
+    with conn.cursor() as cur:
+        cur.execute(CONTRACT_SCHEMA_SQL, {"columns": list(CONTRACT_DOCUMENT_COLUMNS),
+                                          "key": list(RAG_INGESTIONS_KEY),
+                                          "key_len": len(RAG_INGESTIONS_KEY)})
+        columns, keyed = cur.fetchone()
+    conn.rollback()
+    missing = [c for c in CONTRACT_DOCUMENT_COLUMNS if c not in set(columns or ())]
+    problems = []
+    if missing:
+        problems.append(f"documents has no column {', '.join(missing)}")
+    if not keyed:
+        problems.append("rag_ingestions has no key (corpus, doc_id, collection)")
+    if problems:
+        raise VaultSchemaTooOld(
+            f"{'; '.join(problems)}: this vault predates the documents contract (vault "
+            "12ffd11). Deploy the vault and run its ingestion once first (README, "
+            "'Deploying with the documents contract'); nothing was written")
+
+
 def document_url_select(column: str, table: str = "d") -> str:
     """The select-list entry of the document's address, always named
     ``document_url``: ``d.document_url``, or ``d.pdf_url AS document_url``."""
@@ -230,8 +286,14 @@ def insert_run_report(conn, report: dict) -> None:
     conn.commit()
 
 
+#: SQLSTATE invalid_column_reference: Postgres's answer to an ON CONFLICT
+#: naming columns no unique index covers.
+ON_CONFLICT_WITHOUT_KEY = "42P10"
+
+
 class VaultLedger:
-    """``Ledger``-compatible resume/record state backed by ``rag_ingestions``."""
+    """``Ledger``-compatible resume/record state backed by ``rag_ingestions``,
+    for one corpus and one collection: a document is ``(corpus, doc_id)``."""
 
     def __init__(self, conn, collection: str, corpus: str,
                  embedding_model: str, embedding_version: str):
@@ -241,7 +303,7 @@ class VaultLedger:
         self.embedding_model = embedding_model
         self.embedding_version = embedding_version
         with conn.cursor() as cur:
-            cur.execute(RESUME_SQL, (collection,))
+            cur.execute(RESUME_SQL, (collection, corpus))
             self._done = {row[0] for row in cur.fetchall()}
 
     def __contains__(self, doc_id: str) -> bool:
@@ -267,6 +329,15 @@ class VaultLedger:
                 raise VaultSessionLost(
                     f"the vault session was lost while recording document {doc_id!r} "
                     f"({type(exc).__name__}: {str(exc).strip()}); its points are written, "
+                    "the next run writes them again") from exc
+            if getattr(exc, "pgcode", None) == ON_CONFLICT_WITHOUT_KEY:
+                # No unique key (corpus, doc_id, collection): a vault before the
+                # documents contract. Every document would fail the same way.
+                self._conn.rollback()
+                raise VaultSchemaTooOld(
+                    "rag_ingestions has no key (corpus, doc_id, collection): this vault "
+                    "predates the documents contract (vault 12ffd11). Deploy the vault and "
+                    f"run its ingestion first; document {doc_id!r} has its points written, "
                     "the next run writes them again") from exc
             # A raising execute (e.g. an FK violation for a doc_id unknown to
             # `documents`) leaves this shared connection in aborted-transaction
@@ -302,6 +373,11 @@ _LOCK_SQL = {
 
 class CollectionBusyError(RuntimeError):
     """The collection lock is held by a run that excludes this one."""
+
+
+class VaultSchemaTooOld(FatalRunError):
+    """The vault predates the documents contract: ``rag_ingestions`` has no
+    key ``(corpus, doc_id, collection)``. The run stops; deploy the vault."""
 
 
 class VaultSessionLost(FatalRunError):

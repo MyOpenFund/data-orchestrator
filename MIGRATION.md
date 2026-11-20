@@ -430,7 +430,10 @@ one stray key cannot fail a document:
 
 - the **vault source** leaves such a key of `documents.extra` out of the
   payload (the vault's columns are never dropped);
-- the **company source** leaves such a key of company_corpus's payload out;
+- the **company source** leaves such a key of company_corpus's payload out
+  (that source was removed later, with the documents contract: company
+  documents now come from the vault, `data-orchestrator vault --corpus
+  company`; README, "Deploying with the documents contract");
 - each one is counted: a `warning:` in the run summary and
   `totals.payload_keys_dropped` in the run report. The outcome and the exit
   code do not depend on it.

@@ -75,7 +75,8 @@ def test_run_probe_updates_facts(tmp_path, monkeypatch):
     stats = run_probe(conn, "central-bank")
     assert stats == {"probed": 1, "skipped": 1, "errors": 0}
     updates = [e for e in conn.executed if e[0].startswith("UPDATE documents")]
-    assert updates[0][1] == (True, 2, "d1")
+    assert updates[0][1] == (True, 2, "central-bank", "d1")
+    assert "WHERE corpus = %s AND doc_id = %s" in updates[0][0]
     assert conn.commits >= 1
 
 
@@ -231,3 +232,18 @@ def test_probe_file_survives_a_corrupt_pdf(tmp_path, caplog):
 
     assert "probe failed for" in caplog.text
     assert "truncated.pdf" in caplog.text
+
+
+def test_run_probe_never_reads_a_bad_local_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = FakeConn([("d1", "../outside.pdf")])
+    stats = run_probe(conn, "central-bank")
+    assert stats == {"probed": 0, "skipped": 1, "errors": 0}
+    assert not [e for e in conn.executed if e[0].startswith("UPDATE documents")]
+
+
+def test_run_probe_trims_the_local_path_like_the_vault_source(tmp_path, monkeypatch):
+    _pdf(tmp_path, "t.pdf", True)
+    monkeypatch.setenv("CB_CORPUS_ROOT", str(tmp_path))
+    conn = FakeConn([("d1", "t.pdf \r\n")])
+    assert run_probe(conn, "central-bank") == {"probed": 1, "skipped": 0, "errors": 0}

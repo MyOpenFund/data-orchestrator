@@ -316,52 +316,60 @@ def test_a_manifest_row_with_unknown_dropped_and_reserved_keys(tmp_path):
 
 
 # Manifest rows, adversarial on purpose: a legacy bank_code, a legacy pdf_url
-# (a row not migrated to document_url yet, one with both names), NULL columns, an
-# extra-bound key named like a payload key that the vault keeps as a column,
-# keys dropped by design next to a reserved key, unknown keys, a date with a
-# time, a year as a string.
+# (a row not migrated to document_url yet, one with both names), a row
+# migrated to the documents contract (corpus, source_code, local_path without
+# data/), NULL columns, an extra-bound key named like a payload key that the
+# vault keeps as a column, keys dropped by design next to a reserved key,
+# unknown keys, an undated row with a precision and a kind (both dropped).
 PARITY_ROWS = [
     {"doc_id": "a", "corpus": "central-bank", "source_code": "us", "doc_type": "C1",
      "title": "A speech", "document_url": "https://x.org/a.pdf", "source_url": "https://x.org/a",
      "date": "2015-06-30", "year": 2015, "language": "en", "provenance": "bis",
-     "mime_type": "application/pdf", "sha256": "ab12", "local_path": "data/raw/us/C1/2015/a.pdf",
+     "mime_type": "application/pdf", "sha256": "ab12", "local_path": "raw/us/C1/2015/a.pdf",
      "date_precision": "day", "date_kind": "publication", "date_source": "title"},
     {"doc_id": "b", "bank_code": "us", "doc_type": "C1", "title": None, "pdf_url": None,
-     "date": "", "year": "2015", "html_path": "/Users/someone/b.html",
+     "date": "", "year": None, "html_path": "/Users/someone/b.html",
      "alt_urls": ["https://alt/b"], "alt_source_urls": ["https://alt/b2"], "page": 7,
-     "chunk_number": 1, "repec_handle": "RePEc:b", "nested": {"k": [1, 2]}},
+     "chunk_number": 1, "repec_handle": "RePEc:b", "nested": {"k": [1, 2]},
+     "date_precision": "month", "date_kind": "meeting"},
     {"doc_id": "c", "source_code": "", "bank_code": "us", "doc_type": "C1",
-     "date": "2015-03-01T09:00:00Z", "year": 2015, "date_precision": "month",
+     "date": "2015-03-01", "year": 2015, "date_precision": "month",
      "local_path": "data/raw/us/C1/2015/c.pdf", "provenance": None, "flag": False,
      "source_url": "", "mime_type": "  ", "date_kind": None, "pdf_url": "https://x.org/c.pdf"},
-    {"doc_id": "d", "source_code": "us", "doc_type": "C1", "date": "2015-04-01",
-     "document_url": "", "pdf_url": "https://x.org/d.pdf"},
+    {"doc_id": "d", "source_code": "us", "doc_type": "C1", "date": "2015-04-01", "year": 2015,
+     "document_url": "", "pdf_url": "https://x.org/d.pdf", "title": "  "},
 ]
 
 
 def _vault_row_by_hand(rec):
-    """The ``documents`` row the vault stores for ``rec``, written out here
-    independently of ``payload.manifest_row_to_vault_row``: the columns of the
-    vault's KNOWN_FIELDS, ``date`` a ``datetime.date``, ``year`` an integer, the
+    """The ``documents`` row the vault stores for ``rec`` (documents contract
+    1.0.0, transition on), written out here independently of
+    ``payload.manifest_row_to_vault_row``: the contract's columns (an old name
+    filling its column when the new one is blank, blank optional values NULL,
+    no precision nor kind without a date), ``date`` a ``datetime.date``, the
     other fields in ``extra`` after a JSON round trip (JSONB)."""
-    known = {"doc_id", "corpus", "source_code", "bank_code", "doc_type", "title",
-             "document_url", "pdf_url", "source_url", "date", "year", "language", "provenance",
-             "mime_type", "sha256", "local_path"}
-    date = rec.get("date") or None
-    extra = {k: v for k, v in rec.items() if k not in known}
-    return {
-        "doc_id": rec["doc_id"], "corpus": rec.get("corpus") or "central-bank",
-        "source_code": rec.get("source_code") or rec.get("bank_code"),
-        "doc_type": rec.get("doc_type"), "title": rec.get("title"),
-        "document_url": rec.get("document_url") or rec.get("pdf_url"),
-        "source_url": rec.get("source_url"),
-        "date": datetime.date.fromisoformat(date[:10]) if date else None,
-        "year": int(rec["year"]) if rec.get("year") is not None else None,
-        "language": rec.get("language"), "provenance": rec.get("provenance"),
-        "mime_type": rec.get("mime_type"), "sha256": rec.get("sha256"),
-        "local_path": rec.get("local_path") or f"data/raw/us/C1/2015/{rec['doc_id']}.pdf",
-        "extra": json.loads(json.dumps(extra)) if extra else None,
-    }
+    columns = ("doc_id", "corpus", "source_code", "doc_type", "title", "date", "year",
+               "date_precision", "date_kind", "language", "provenance", "document_url",
+               "source_url", "mime_type", "sha256", "local_path", "entity_scheme",
+               "entity_value")
+
+    def blank(v):
+        return v is None or (isinstance(v, str) and not v.strip())
+
+    row = {c: (None if blank(rec.get(c)) else rec.get(c)) for c in columns}
+    row["corpus"] = row["corpus"] or "central-bank"
+    if blank(rec.get("source_code")):
+        row["source_code"] = rec.get("bank_code")
+    if blank(rec.get("document_url")):
+        row["document_url"] = rec.get("pdf_url")
+    if row["date"] is None:
+        row["date_precision"] = row["date_kind"] = None
+    else:
+        row["date"] = datetime.date.fromisoformat(row["date"])
+    extra = {k: v for k, v in rec.items() if k not in columns and k not in ("bank_code", "pdf_url")}
+    row["local_path"] = f"raw/us/C1/2015/{rec['doc_id']}.pdf"
+    row["extra"] = json.loads(json.dumps(extra)) if extra else None
+    return row
 
 
 @pytest.mark.parametrize("drop", [None, "none", "repec_handle"])
@@ -383,7 +391,82 @@ def test_the_disk_and_the_vault_sources_give_the_same_payload(tmp_path, monkeypa
         assert disk[rec["doc_id"]].dropped_keys == vault.dropped_keys
     # A blank link and a null field are left out, whichever the source.
     assert not {"source_url", "mime_type", "date_kind"} & set(disk["c"].payload)
+    # An undated row has no precision nor kind; a blank title is no title.
+    assert not {"date", "date_precision", "date_kind"} & set(disk["b"].payload)
+    assert "title" not in disk["d"].payload
     # The legacy pdf_url of a row not migrated yet is carried as document_url.
     assert disk["c"].payload["document_url"] == "https://x.org/c.pdf"
     assert disk["d"].payload["document_url"] == "https://x.org/d.pdf"
     assert not any("pdf_url" in i.payload for i in disk.values())
+
+
+# ---------------------------------------------------------------------------
+# Manifests before and after the documents contract migration
+# ---------------------------------------------------------------------------
+LEGACY_ROW = {"bank_code": "au", "doc_type": "A1", "title": "RBA decision",
+              "document_url": "https://x.org/a.html", "source_url": "", "date": "1997-07-30",
+              "language": "en", "provenance": "bank_site", "mime_type": "application/pdf",
+              "sha256": "d" * 64, "local_path": "data/raw/au/A1/1997/a.pdf",
+              "html_path": "data/raw/au/A1/1997/a.html", "doc_id": "a", "year": 1997,
+              "date_precision": "day", "date_source": "bank_site", "date_kind": "publication"}
+
+
+def _migrated(rec):
+    out = {("source_code" if k == "bank_code" else k): v for k, v in rec.items()}
+    out.update(corpus="central-bank", local_path=rec["local_path"][len("data/"):],
+               html_path=rec["html_path"][len("data/"):])
+    return out
+
+
+def test_a_legacy_and_a_migrated_manifest_give_the_same_payload(tmp_path, caplog):
+    import logging
+
+    payloads = []
+    for name, rec in (("legacy", LEGACY_ROW), ("migrated", _migrated(LEGACY_ROW))):
+        root = _corpus(tmp_path / name, "au/A1/1997/a.pdf")
+        _manifest(root, "au", json.dumps(rec))
+        if name == "migrated":  # the producer's vocabulary next to manifest/: not read here
+            (root / "vocabulary.json").write_text("{}", encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
+            (item,) = iter_items(root)
+        payloads.append(item.payload)
+    assert payloads[0] == payloads[1]
+    assert payloads[0]["date_precision"] == "day" and payloads[0]["date_kind"] == "publication"
+    assert payloads[0]["source_code"] == "au" and "source_url" not in payloads[0]
+    assert payloads[0]["metadata_source"] == "manifest"
+    assert caplog.text == ""  # both rows are accepted by the contract
+
+
+def test_a_row_the_contract_refuses_is_used_and_the_run_says_so(tmp_path, caplog):
+    import logging
+
+    root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf")
+    bad = dict(LEGACY_ROW, doc_id="b", language="english", local_path="data/raw/../b.pdf")
+    _manifest(root, "au", json.dumps(LEGACY_ROW), json.dumps(bad))
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
+        items = {i.doc_id: i for i in iter_items(root)}
+    assert items["b"].payload["language"] == "english"
+    assert "1 manifest row(s) the documents contract refuses" in caplog.text
+    assert "b: bad_language, bad_local_path" in caplog.text
+
+
+def test_a_path_derived_payload_has_its_precision_as_a_column(tmp_path):
+    root = _corpus(tmp_path, "au/A1/1997/z.pdf")
+    _manifest(root, "au", json.dumps(LEGACY_ROW))
+    (item,) = iter_items(root)
+    assert item.payload == {"doc_id": "z", "corpus": "central-bank", "source_code": "au",
+                            "doc_type": "A1", "date": "1997-01-01", "year": 1997,
+                            "date_precision": "year", "metadata_source": "path"}
+
+
+def test_a_run_stopped_early_still_says_it_used_refused_rows(tmp_path, caplog):
+    import logging
+
+    root = _corpus(tmp_path, "au/A1/1997/a.pdf", "au/A1/1997/b.pdf")
+    bad = dict(LEGACY_ROW, doc_id="a", language="english")
+    _manifest(root, "au", json.dumps(bad), json.dumps(dict(LEGACY_ROW, doc_id="b")))
+    with caplog.at_level(logging.WARNING, logger="data_orchestrator.sources.cb_corpus"):
+        items = iter_items(root)
+        assert next(items).doc_id == "a"
+        items.close()  # --limit 1: the run stops here
+    assert "1 manifest row(s) the documents contract refuses" in caplog.text
