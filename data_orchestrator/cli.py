@@ -488,7 +488,10 @@ def main(argv: list[str] | None = None) -> int:
         prog="data-orchestrator",
         description="Read data from a source and move it into the vector DB.",
     )
-    parser.add_argument("source", choices=list(SOURCES), help="data source to ingest")
+    # The removed company source is accepted by the parser (not listed) so that
+    # it is refused with its replacement wherever it stands on the line.
+    parser.add_argument("source", choices=[*SOURCES, REMOVED_COMPANY_SOURCE],
+                        metavar="{" + ",".join(SOURCES) + "}", help="data source to ingest")
     parser.add_argument("--root", help="corpus root (folder containing raw/, or the source's data dir)")
     parser.add_argument("--banks", help="comma list of bank codes, e.g. ecb,fr")
     parser.add_argument("--doctypes", help="comma list of doc-type codes of the corpus, e.g. "
@@ -546,13 +549,12 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "
                            "(date_start, date_end) and exit; needs a key allowed to write")
-    raw_argv = sys.argv[1:] if argv is None else list(argv)
-    if raw_argv[:1] == [REMOVED_COMPANY_SOURCE]:
+    args = parser.parse_args(argv)
+    if args.source == REMOVED_COMPANY_SOURCE:
         print("error: the 'company' disk source was removed: company documents come from the "
               "vault now. Run: data-orchestrator vault --corpus company (COMPANY_CORPUS_ROOT "
               "names the company corpus data root)", file=sys.stderr)
         return 2
-    args = parser.parse_args(argv)
     # The one .env loader (issue #8), run before anything reads the
     # environment: the engine loads no .env of its own, it reads the process
     # environment when asked (its settings below; ENABLE_OCR / TESSDATA_PREFIX

@@ -795,7 +795,8 @@ def test_cb_count_only_prints_no_qdrant_line(tmp_path, capsys):
     assert "warning:" not in cap.err
 
 
-@pytest.mark.parametrize("argv", [["company"], ["company", "--no-vault", "--ciks", "320193"]],
+@pytest.mark.parametrize("argv", [["company"], ["company", "--no-vault"], ["--no-vault", "company"],
+                                  ["--limit", "3", "company", "--corpus", "company"]],
                          ids=" ".join)
 def test_the_removed_company_source_says_where_company_documents_come_from(
         monkeypatch, capsys, argv):
@@ -1532,3 +1533,17 @@ def test_a_clean_selection_reports_no_bad_local_path(monkeypatch, tmp_path):
     _conn, reports = _fake_vault(monkeypatch, tmp_path, [], selection_rows=[("ok", "raw/ok.pdf")])
     assert cli.main(["vault"]) == 0
     assert "docs_bad_local_path" not in reports[0]
+
+
+def test_the_removed_company_source_is_not_offered_in_the_help(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    usage = capsys.readouterr().out
+    assert "{cb_corpus,vault,probe,sync-metadata}" in usage and "company," not in usage
+
+
+def test_company_as_the_value_of_corpus_is_no_removed_source(monkeypatch, capsys):
+    _forbid_any_work(monkeypatch)
+    monkeypatch.setenv("QDRANT_PORT", "abc")  # stops the run before any work
+    assert cli.main(["vault", "--corpus", "company"]) == 2
+    assert "removed" not in capsys.readouterr().err
