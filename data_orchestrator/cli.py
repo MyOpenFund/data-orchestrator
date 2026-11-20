@@ -558,8 +558,7 @@ def main(argv: list[str] | None = None) -> int:
                       help="also compare and write title (off by default)")
     sync.add_argument("--include-links", action="store_true",
                       help="also compare and write document_url, source_url, mime_type, and "
-                           "remove pdf_url (the former name of document_url) and the extra "
-                           "keys dropped by design (DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS) "
+                           "remove the extra keys dropped by design (DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS) "
                            "from the points (off by default)")
     sync.add_argument("--create-indexes", action="store_true",
                       help="only create the missing payload indexes of rag-engine "

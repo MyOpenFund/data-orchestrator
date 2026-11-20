@@ -16,10 +16,7 @@ copies it from ``extra``, so a synced point must carry it too) and the interval 
 ``date_start`` / ``date_end``. ``title`` only on request
 (:data:`TITLE_KEY`, ``--include-title``). The links only on request
 (``--include-links``): :data:`LINK_KEYS` (``document_url``, ``source_url``,
-``mime_type``, set from the vault), :data:`LEGACY_LINK_KEYS` (``pdf_url``, the
-former name of ``document_url``: an ingestion never sends it, so it must be
-absent and is removed from the points ingested before the rename; one run
-renames the key on every point) and the keys of ``extra`` dropped by
+``mime_type``, set from the vault) and the keys of ``extra`` dropped by
 design (``payload.dropped_extra_keys``, ``DATA_ORCHESTRATOR_PAYLOAD_DROP_EXTRA_KEYS``:
 an ingestion never sends them, so they must be absent and are removed from the
 points ingested before they were dropped). Nothing else is compared or written.
@@ -77,15 +74,9 @@ OWNED_KEYS: tuple[str, ...] = (
 TITLE_KEY = "title"
 
 #: Compared and written only with ``include_links`` (``--include-links``), with
-#: :data:`LEGACY_LINK_KEYS` and the keys of ``extra`` dropped by design
-#: (``payload.dropped_extra_keys``), which must be absent.
+#: the keys of ``extra`` dropped by design (``payload.dropped_extra_keys``),
+#: which must be absent.
 LINK_KEYS: tuple[str, ...] = ("document_url", "source_url", "mime_type")
-
-#: Former names of :data:`LINK_KEYS` (``pdf_url``, now ``document_url``):
-#: owned with ``include_links`` and expected absent (``payload.row_to_payload``
-#: never carries them), so a ``--write`` removes them from the points while it
-#: sets the new name. Transition only: to remove once no point carries one.
-LEGACY_LINK_KEYS: tuple[str, ...] = ("pdf_url",)
 
 #: Points read per scroll request (``--page-size``).
 DEFAULT_PAGE_SIZE = 256
@@ -152,15 +143,15 @@ class SyncStats:
 def owned_keys(include_title: bool = False, include_links: bool = False,
                drop_keys: Sequence[str] | None = None) -> tuple[str, ...]:
     """The keys compared and written: :data:`OWNED_KEYS`, then ``title`` on
-    request, then on request :data:`LINK_KEYS`, :data:`LEGACY_LINK_KEYS` and
-    the keys of ``extra`` dropped by design (``drop_keys``; None ->
+    request, then on request :data:`LINK_KEYS` and the keys of ``extra``
+    dropped by design (``drop_keys``; None ->
     ``payload.dropped_extra_keys``).
     A key named twice is owned once, at its first place."""
     keys = OWNED_KEYS + ((TITLE_KEY,) if include_title else ())
     if include_links:
         if drop_keys is None:
             drop_keys = dropped_extra_keys()
-        keys = keys + LINK_KEYS + LEGACY_LINK_KEYS + tuple(drop_keys)
+        keys = keys + LINK_KEYS + tuple(drop_keys)
     return tuple(dict.fromkeys(keys))
 
 
@@ -178,9 +169,8 @@ def write_fields(doc_id: str, row: Mapping, include_title: bool = False,
     """What ``set_payload`` is given for ``row``: ``date_fields`` with ``year``,
     ``date_kind`` and ``date_source`` (``None`` removes them) and, on request,
     ``title``; with ``include_links``, ``document_url``, ``source_url``,
-    ``mime_type`` (``None`` removes them) and ``None`` for ``pdf_url`` (the
-    former name of ``document_url``) and for each key of ``extra`` dropped by
-    design (which removes it).
+    ``mime_type`` (``None`` removes them) and ``None`` for each key of
+    ``extra`` dropped by design (which removes it).
 
     Raises :class:`SyncError` if, once the ``None`` values are left out, it is
     not exactly :func:`expected_values`: the write must give the points the
@@ -195,7 +185,7 @@ def write_fields(doc_id: str, row: Mapping, include_title: bool = False,
         fields[TITLE_KEY] = metadata.get(TITLE_KEY)
     if include_links:
         for key in owned_keys(include_title, include_links):
-            if key not in fields:  # LINK_KEYS, LEGACY_LINK_KEYS, the dropped keys (absent: None)
+            if key not in fields:  # LINK_KEYS, the dropped keys (absent: None)
                 fields[key] = metadata.get(key)
     written = {k: v for k, v in fields.items() if v is not None}
     expected = expected_values(doc_id, row, owned_keys(include_title, include_links))

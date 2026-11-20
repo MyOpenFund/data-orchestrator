@@ -659,8 +659,8 @@ def test_the_payload_schema_is_read_once_per_run(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # --include-links: document_url, source_url, mime_type from the vault, and
-# pdf_url (the former name of document_url) and the keys of extra dropped by
-# design removed from the points that still carry them.
+# the keys of extra dropped by design removed from the points that still
+# carry them.
 # ---------------------------------------------------------------------------
 LINKS = {"document_url": "https://x.org/d.pdf", "source_url": "https://x.org/d",
          "mime_type": "application/pdf"}
@@ -671,7 +671,7 @@ def test_the_links_are_owned_only_on_request():
     keys = sm.owned_keys(include_links=True)
     assert keys[:len(sm.OWNED_KEYS)] == sm.OWNED_KEYS
     assert set(keys) == set(sm.OWNED_KEYS) | {"document_url", "source_url", "mime_type",
-                                              "pdf_url", "html_path", "alt_urls",
+                                              "html_path", "alt_urls",
                                               "alt_source_urls", "local_path", "pdf_path",
                                               "text_path", "primary_path", "submission_path"}
     assert len(keys) == len(set(keys))
@@ -692,7 +692,7 @@ def test_the_links_write_is_exactly_the_expected_values():
     assert fields["document_url"] == LINKS["document_url"]
     assert fields["mime_type"] == "application/pdf"
     assert fields["source_url"] is None  # a NULL column removes the key
-    assert "pdf_url" in fields and fields["pdf_url"] is None  # the former name: removed
+    assert "pdf_url" not in fields  # the rename is done: no longer owned
     assert all(fields[k] is None for k in ("html_path", "alt_urls", "alt_source_urls",
                                            "local_path"))
     keys = sm.owned_keys(include_links=True)
@@ -760,7 +760,7 @@ def test_cli_include_links(cli_env, tmp_path, capsys):
                    "--csv", str(out_csv)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "document_url, source_url, mime_type, pdf_url, html_path" in out
+    assert "document_url, source_url, mime_type, html_path" in out
     with out_csv.open(encoding="utf-8") as fh:
         fields = {r["field"] for r in csv.DictReader(fh)}
     assert {"document_url", "source_url", "mime_type", "html_path"} <= fields
@@ -789,60 +789,24 @@ def test_include_links_removes_a_blank_link_and_never_writes_one(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The pdf_url -> document_url rename (2026-11): one --include-links run renames
-# the key on the points; the ledger reads either column of the vault.
+# The pdf_url -> document_url rename (2026-11) is done on every point (0 points
+# with pdf_url on production, 2026-11-19): pdf_url is no longer owned.
 # ---------------------------------------------------------------------------
-def _aligned_before_the_rename(store, doc_id, n):
-    """Points as production holds them before the rename: the date set of an
-    ingestion, and the links set by an earlier --include-links under ``pdf_url``."""
-    seed(store, doc_id, n=n, date_precision="day", pdf_url=f"https://x.org/{doc_id}.pdf",
-         source_url=f"https://x.org/{doc_id}", mime_type="application/pdf")
+def test_pdf_url_is_no_longer_owned_nor_removed(tmp_path):
+    store = make_store()
+    seed(store, "a", n=2, date_precision="day", document_url="https://x.org/a.pdf",
+         source_url="https://x.org/a", mime_type="application/pdf",
+         pdf_url="https://x.org/a.pdf")
     store.client.set_payload(COLLECTION, payload={"date_start": "2016-01-01T00:00:00Z",
                                                   "date_end": "2016-01-01T00:00:00Z"},
-                             points=[point_id(doc_id, c, c) for c in range(n)], wait=True)
-
-
-def _renamed_row(doc_id):
-    return vault_row(doc_id, extra={"date_precision": "day"},
-                     document_url=f"https://x.org/{doc_id}.pdf",
-                     source_url=f"https://x.org/{doc_id}", mime_type="application/pdf")
-
-
-def test_include_links_renames_pdf_url_on_every_point_once(tmp_path):
-    store = make_store()
-    for doc_id, n in (("a", 3), ("b", 1), ("c", 2)):
-        _aligned_before_the_rename(store, doc_id, n)
-    conn = LedgerConn([_renamed_row(d) for d in ("a", "b", "c")])
+                             points=[point_id("a", c, c) for c in range(2)], wait=True)
+    row = vault_row("a", extra={"date_precision": "day"}, document_url="https://x.org/a.pdf",
+                    source_url="https://x.org/a", mime_type="application/pdf")
     before = snapshot(store)
-
-    # Without --include-links the dates already agree: nothing to do.
-    stats, rows = run(conn, store, tmp_path)
-    assert stats.to_write == 0 and rows == []
-
-    # The dry run shows the rename: document_url set, pdf_url removed, per document.
-    stats, rows = run(conn, store, tmp_path, include_links=True, csv_name="dry.csv")
+    assert "pdf_url" not in sm.owned_keys(include_links=True)
+    stats, rows = run(LedgerConn([row]), store, tmp_path, include_links=True, write=True)
+    assert stats.to_write == 0 and stats.written == 0 and rows == []
     assert snapshot(store) == before
-    assert stats.to_write == 3 and stats.fields == {"document_url": 3, "pdf_url": 3}
-    assert {(r["doc_id"], r["field"], r["qdrant_value"], r["vault_value"]) for r in rows} == {
-        (d, k, q, v) for d in ("a", "b", "c") for k, q, v in (
-            ("document_url", "", f"https://x.org/{d}.pdf"),
-            ("pdf_url", f"https://x.org/{d}.pdf", ""))}
-
-    # The write: every ledger document once, every point reached.
-    stats, _ = run(conn, store, tmp_path, include_links=True, write=True, csv_name="w.csv")
-    assert stats.written == 3 and stats.points_written == 6 and not stats.count_mismatch
-    after = snapshot(store)
-    for pid, (payload, vector) in after.items():
-        assert vector == before[pid][1]
-        old = before[pid][0]
-        assert "pdf_url" not in payload and payload["document_url"] == old["pdf_url"]
-        changed = {k for k in set(payload) | set(old) if payload.get(k) != old.get(k)}
-        assert changed == {"document_url", "pdf_url"}
-
-    # Idempotent: a second run finds nothing.
-    again, rows = run(conn, store, tmp_path, include_links=True, write=True, csv_name="a.csv")
-    assert again.to_write == 0 and again.written == 0 and rows == []
-    assert snapshot(store) == after
 
 
 # ---------------------------------------------------------------------------
