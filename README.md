@@ -1050,6 +1050,22 @@ of `central-bank-e5b-v1` carried `pdf_url` (2026-11-19).
 SELECT count(*) FROM documents WHERE deleted_at IS NULL AND ((date_precision IS NULL AND extra ? 'date_precision') OR (date_kind IS NULL AND extra ? 'date_kind') OR (entity_scheme IS NULL AND extra ? 'entity_scheme') OR (entity_value IS NULL AND extra ? 'entity_value'));
 ```
 
+Before deploying this version, a second gate, on the vault: no live row keeps
+a pre-contract name in `extra` (this version reads `pdf_url` and `bank_code`
+as ordinary keys, so a row that still had one would carry it onto its points
+as such). Expected: 0.
+
+```sql
+SELECT count(*) FROM documents WHERE deleted_at IS NULL AND extra ?| array['pdf_url','bank_code'];
+```
+
+On deploy day, with this version installed and before any ingestion: re-run
+both gate queries (each 0), then a `sync-metadata` dry run on
+`central-bank-e5b-v1` (`data-orchestrator sync-metadata --collection
+central-bank-e5b-v1`, no `--write`): expect `documents to write : 0`. Any
+other result stops the deploy: nothing in this version maps the old names
+back.
+
 What went, and what replaces it:
 
 - `payload.LEGACY_COLUMN_NAMES`: `pdf_url` and `bank_code` are ordinary keys
